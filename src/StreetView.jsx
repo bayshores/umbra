@@ -1,0 +1,300 @@
+import { useEffect, useRef } from 'react';
+import { Truck, PersonSimple } from '@phosphor-icons/react';
+import * as THREE from 'three';
+import { planCamera } from './plan-camera.mjs';
+import { driverViewport, comparisonScissors, calibrationCamera } from './driver-viewport.mjs';
+import { renderGeometry } from './scene.mjs';
+
+const STATES = { clear: 0x9dc8ba, blocked: 0xd39276, unknown: 0xd1c38e };
+const UP = new THREE.Vector3(0, 1, 0);
+const finite3 = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+
+function validate(scene, eye, scenario) {
+  const c = scene?.camera;
+  const surface = scene ? renderGeometry(scene) : null;
+  if (!surface || !(surface.positions instanceof Float32Array) || !(surface.colors instanceof Float32Array) ||
+      !(surface.triangles instanceof Uint32Array) || surface.positions.length < 3 || surface.positions.length % 3 ||
+      surface.colors.length !== surface.positions.length || surface.triangles.length % 3 ||
+      !finite3(surface.bounds?.min) || !finite3(surface.bounds?.max)) return 'Reconstruction rendering data is incomplete or invalid.';
+  if (!(scene?.positions instanceof Float32Array) || scene.positions.length < 3 || scene.positions.length % 3 ||
+      !(scene.colors instanceof Float32Array) || scene.colors.length !== scene.positions.length ||
+      !(scene.triangles instanceof Uint32Array) || scene.triangles.length % 3 ||
+      !finite3(scene.bounds?.min) || !finite3(scene.bounds?.max) || !finite3(c?.eye) ||
+      !finite3(c?.forward) || !finite3(c?.up) ||
+      ![c?.fx, c?.fy, c?.cx, c?.cy, c?.width, c?.height].every(Number.isFinite) ||
+      c.fx <= 0 || c.fy <= 0 || c.width <= 0 || c.height <= 0) return 'Measured scene data is incomplete or invalid.';
+  if (scene.bounds.min.some((n, i) => n > scene.bounds.max[i]) ||
+      Math.hypot(...c.forward) === 0 || Math.hypot(...c.up) === 0 ||
+      new THREE.Vector3(...c.forward).normalize().cross(new THREE.Vector3(...c.up).normalize()).length() < 1e-6)
+    return 'Measured scene bounds or camera orientation is invalid.';
+  if (eye != null && !finite3(eye)) return 'Camera eye must contain three finite coordinates.';
+  for (const n of surface.positions) if (!Number.isFinite(n)) return 'Scene reconstruction contains non-finite point data.';
+  for (const n of surface.colors) if (!Number.isFinite(n) || n < 0 || n > 1) return 'Scene reconstruction contains invalid RGB color data.';
+  for (const i of surface.triangles) if (i >= surface.positions.length / 3) return 'Scene reconstruction contains an invalid triangle index.';
+  if (scenario) {
+    const points = [scenario.target, scenario.targetGround, scenario.baseline?.center, scenario.proposed?.center, scenario.axis, scenario.crossing];
+    const dims = [scenario.vehicle?.width, scenario.vehicle?.height, scenario.vehicle?.length];
+    const states = [scenario.currentVisibility?.state, scenario.proposedVisibility?.state];
+    if (!points.every(finite3) || !dims.every(n => Number.isFinite(n) && n > 0) ||
+        ![scenario.baselineSetback, scenario.proposedSetback].every(Number.isFinite) ||
+        !states.every(s => Object.hasOwn(STATES, s)) || Math.hypot(scenario.axis[0], scenario.axis[2]) === 0)
+      return 'Comparison geometry or visibility state is invalid.';
+  }
+  return null;
+}
+
+function disposeTree(root) {
+  root.traverse(o => {
+    o.geometry?.dispose();
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m?.dispose());
+  });
+}
+function addMarker(point, color, group) {
+  const marker = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), new THREE.MeshBasicMaterial({ color }));
+  marker.position.set(...point);
+  group.add(marker);
+}
+function addTarget(point, ground, color, group) {
+  if (!finite3(point) || !finite3(ground)) throw new Error('Measured target ground point is missing or invalid.');
+  addMarker(point, color, group);
+  const stem = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...ground), new THREE.Vector3(...point)]);
+  group.add(new THREE.Line(stem, new THREE.LineBasicMaterial({ color })));
+  addMarker(ground, color, group);
+}
+function addVehicle(center, dimensions, axis, group, baseline = false) {
+  const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
+  const yaw = Math.atan2(axis[0], axis[2]);
+  const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+    color: baseline ? 0x9aa5a2 : 0x9dc8ba, transparent: true,
+    opacity: baseline ? 0.08 : 0.12, depthWrite: false, side: THREE.DoubleSide,
+  }));
+  fill.position.set(...center);
+  fill.rotation.y = yaw;
+  group.add(fill);
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({
+    color: baseline ? 0x8b9693 : 0x9dc8ba, transparent: true, opacity: baseline ? 0.58 : 0.96,
+  }));
+  edge.position.copy(fill.position);
+  edge.rotation.copy(fill.rotation);
+  group.add(edge);
+  return fill;
+}
+
+export default function StreetView({ scene, scenario, preview, eye, mode = 'driver', split = .5, onSetbackChange, onError }) {
+  const host = useRef(null), api = useRef(null), labels = useRef({}), latest = useRef(null);
+  latest.current = { scene, scenario, preview, eye, mode, split, onSetbackChange, onError };
+
+  useEffect(() => {
+    const element = host.current, invalid = validate(scene, eye, scenario);
+    if (!element) return undefined;
+    if (invalid) { onError?.(invalid); return undefined; }
+    const world = new THREE.Scene();
+    world.background = mode === 'recorded' ? null : new THREE.Color(0x151a1b);
+    let renderer, observer, removePointer, removeResolution;
+    const contextLost = () => latest.current.onError?.('Measured scene rendering failed: WebGL context lost.');
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: mode === 'recorded' });
+      renderer.domElement.addEventListener('webglcontextlost', contextLost);
+      renderer.setPixelRatio(window.devicePixelRatio);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.domElement.setAttribute('aria-hidden', 'true');
+      renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;';
+      element.appendChild(renderer.domElement);
+      if (mode !== 'recorded') {
+        const surface = renderGeometry(scene);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(surface.positions, 3));
+        geometry.setAttribute('color', new THREE.BufferAttribute(surface.colors, 3));
+        if (surface.triangles.length) {
+          geometry.setIndex(new THREE.BufferAttribute(surface.triangles, 1));
+          world.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })));
+        }
+        const pointGeometry = new THREE.BufferGeometry();
+        pointGeometry.setAttribute('position', geometry.getAttribute('position'));
+        pointGeometry.setAttribute('color', geometry.getAttribute('color'));
+        world.add(new THREE.Points(pointGeometry, new THREE.PointsMaterial({ vertexColors: true, size: 1.5, sizeAttenuation: false })));
+      }
+      const draw = () => {
+        const config = latest.current, width = element.clientWidth, height = element.clientHeight;
+        if (!width || !height) return null;
+        if (renderer.getPixelRatio() !== window.devicePixelRatio) renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setSize(width, height, false);
+        renderer.setScissorTest(false);
+        renderer.setViewport(0, 0, width, height);
+        renderer.clear(true, true, true);
+        let camera, viewport;
+        if (config.mode === 'plan') camera = planCamera(scene, config.scenario, width / height);
+        else {
+          const viewEye = config.eye ?? scene.camera.eye;
+          let far = 0;
+          const surfaceBounds = renderGeometry(scene).bounds;
+          const bounds = {min:scene.bounds.min.map((n,i)=>Math.min(n,surfaceBounds.min[i])),
+            max:scene.bounds.max.map((n,i)=>Math.max(n,surfaceBounds.max[i]))};
+          for (const x of bounds.min[0] === bounds.max[0] ? [bounds.min[0]] : [bounds.min[0], bounds.max[0]])
+            for (const y of [bounds.min[1], bounds.max[1]]) for (const z of [bounds.min[2], bounds.max[2]])
+              far = Math.max(far, new THREE.Vector3(x, y, z).distanceTo(new THREE.Vector3(...viewEye)));
+          if (!(far > 0)) throw new Error('Measured scene bounds do not surround the selected camera.');
+          camera = calibrationCamera(scene.camera, viewEye, far * 2);
+          viewport = driverViewport(width, height, scene.camera);
+          renderer.setViewport(viewport.left, viewport.bottom, viewport.width, viewport.height);
+          renderer.setScissor(viewport.left, viewport.bottom, viewport.width, viewport.height);
+          renderer.setScissorTest(true);
+        }
+        if (config.mode === 'compare' && api.current?.currentOverlay) {
+          // Three.js r186 comparison example: one camera/viewport, two scissor regions.
+          // Keep calibrated projection unchanged as the split moves.
+          const regions = comparisonScissors(viewport, width, config.split);
+          for (let i = 0; i < 2; i++) {
+            api.current.currentOverlay.visible = i === 0;
+            api.current.proposedOverlay.visible = i === 1;
+            if (regions[i][2] > 0) {
+              renderer.setScissor(...regions[i]);
+              renderer.render(world, camera);
+            }
+          }
+        } else renderer.render(world, camera);
+        renderer.setScissorTest(false);
+        return camera;
+      };
+      api.current = { world, renderer, draw, plane: new THREE.Plane(UP, 0), ray: new THREE.Raycaster(), proposed: null };
+      const redraw = () => { try { api.current.camera = draw(); placeLabels(); } catch (error) { latest.current.onError?.(error.message); } };
+      const watchResolution = () => {
+        removeResolution?.();
+        const query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+        const changed = () => { watchResolution(); redraw(); };
+        query.addEventListener('change', changed);
+        removeResolution = () => query.removeEventListener('change', changed);
+      };
+      observer = new ResizeObserver(redraw);
+      observer.observe(element);
+      watchResolution();
+      for (const [type, handler] of [['pointerdown', pointerDown], ['pointermove', pointerMove], ['pointerup', pointerUp], ['pointercancel', pointerUp]]) element.addEventListener(type, handler);
+      removePointer = () => {
+        for (const [type, handler] of [['pointerdown', pointerDown], ['pointermove', pointerMove], ['pointerup', pointerUp], ['pointercancel', pointerUp]]) element.removeEventListener(type, handler);
+      };
+      api.current.camera = draw();
+    } catch (error) {
+      observer?.disconnect();
+      removeResolution?.();
+      removePointer?.();
+      renderer?.domElement.removeEventListener('webglcontextlost', contextLost);
+      renderer?.dispose();
+      element.replaceChildren();
+      api.current = null;
+      latest.current.onError?.(`Measured scene rendering failed: ${error.message}`);
+    }
+    return () => {
+      observer?.disconnect();
+      removeResolution?.();
+      removePointer?.();
+      renderer?.domElement.removeEventListener('webglcontextlost', contextLost);
+      if (api.current?.overlay) disposeTree(api.current.overlay);
+      disposeTree(world);
+      renderer?.dispose();
+      if (renderer?.domElement.parentNode === element) element.removeChild(renderer.domElement);
+      api.current = null;
+    };
+  }, [scene, mode]);
+
+  function pointerDown(event) {
+    const a = api.current, config = latest.current;
+    if (!a?.proposed || config.mode !== 'plan' || !config.onSetbackChange || event.button !== 0) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
+    if (!a.ray.intersectObject(a.proposed, false).length) return;
+    const point = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
+    if (!point) return;
+    const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
+    a.grabOffset = new THREE.Vector3(...s.proposed.center).sub(point).dot(axis);
+    a.dragging = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }
+  function pointerMove(event) {
+    const a = api.current, config = latest.current;
+    if (a?.dragging == null || a.dragging !== event.pointerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
+    const point = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
+    if (!point) return;
+    const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
+    const setback = point.sub(new THREE.Vector3(...s.crossing)).dot(axis) + a.grabOffset - s.vehicle.length / 2;
+    if (Number.isFinite(setback) && setback > 0) config.onSetbackChange(setback);
+  }
+  function pointerUp(event) { if (api.current?.dragging === event.pointerId) api.current.dragging = null; }
+  function placeLabels() {
+    const a = api.current, s = latest.current.scenario;
+    if (!a?.camera || latest.current.mode !== 'plan' || !s) return;
+    const rect = host.current.getBoundingClientRect();
+    for (const [name, point] of [['baseline', s.baseline.center], ['proposed', s.proposed.center], ['target', s.target]]) {
+      const node = labels.current[name];
+      if (!node) continue;
+      const anchor = new THREE.Vector3(...point);
+      const p = anchor.project(a.camera);
+      const proposed = new THREE.Vector3(...s.proposed.center).project(a.camera);
+      const sameFootprint = name === 'baseline' && Math.hypot((p.x - proposed.x) * rect.width / 2, (p.y - proposed.y) * rect.height / 2) < Number.parseFloat(getComputedStyle(node).width);
+      node.style.display = !sameFootprint && p.z > -1 && p.z < 1 && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 ? 'grid' : 'none';
+      node.style.left = `${(p.x + 1) * rect.width / 2}px`;
+      node.style.top = `${(1 - p.y) * rect.height / 2}px`;
+      node.style.transform = 'translate(-50%, -50%)';
+    }
+  }
+
+  useEffect(() => {
+    const a = api.current;
+    if (!a) return;
+    const previousOverlay = a.overlay;
+    try {
+      if (previousOverlay) a.world.remove(previousOverlay);
+      const group = new THREE.Group();
+      a.proposed = null;
+      a.currentOverlay = null;
+      a.proposedOverlay = null;
+      if (scenario) {
+        if (mode === 'compare') {
+          a.currentOverlay = new THREE.Group();
+          a.proposedOverlay = new THREE.Group();
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.currentVisibility.state], a.currentOverlay);
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], a.proposedOverlay);
+          addVehicle(scenario.baseline.center, scenario.vehicle, scenario.axis, a.currentOverlay);
+          addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, a.proposedOverlay);
+          group.add(a.currentOverlay, a.proposedOverlay);
+        } else {
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group);
+          if (mode === 'plan') {
+            addVehicle(scenario.baseline.center, scenario.vehicle, scenario.axis, group, true);
+            a.proposed = addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, group);
+          } else {
+            a.proposed = addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, group);
+          }
+        }
+      } else if (preview) {
+        if (preview.vehicle) addVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group);
+        if (preview.target) addTarget(preview.target, preview.targetGround, 0x9dc8ba, group);
+      }
+      a.world.add(group);
+      a.overlay = group;
+      a.camera = a.draw();
+      placeLabels();
+    } catch (error) { latest.current.onError?.(`Measured scene rendering failed: ${error.message}`); }
+    finally {
+      // Let replacement materials acquire matching programs before releasing their last previous users.
+      if (previousOverlay) disposeTree(previousOverlay);
+    }
+  }, [scene, scenario, preview, eye, mode, onSetbackChange]);
+
+  useEffect(() => {
+    try { if (api.current) api.current.camera = api.current.draw(); }
+    catch (error) { latest.current.onError?.(error.message); }
+  }, [split]);
+
+  const tags = scenario && mode === 'plan' ? [
+    ['baseline', 'Current vehicle', Truck],
+    ['proposed', 'Proposed vehicle', Truck],
+    ['target', 'Person', PersonSimple],
+  ] : [];
+  const sourceLabel = scene.reconstruction ? 'Estimated street reconstruction' : 'Measured street scene';
+  return <div ref={host} role="img" aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 220, overflow: 'hidden', borderRadius: 8, background: mode === 'recorded' ? 'transparent' : '#151a1b' }}>
+    {tags.map(([name, text, Icon]) => <div key={name} ref={node => { labels.current[name] = node; }} className={'map-object-marker map-object-marker--'+name} title={text} aria-label={text}><Icon size={18} weight="bold" aria-hidden="true"/></div>)}
+  </div>;
+}

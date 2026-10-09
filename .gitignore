@@ -1,0 +1,31 @@
+# Local hackathon rules, design references, and development evidence
+/.local/
+/AGENTS.md
+/design-qa.md
+# Acquired/generated measurement datasets and local account configuration
+/public/scenes/
+/.openai/
+/.npmrc
+# Credentials and footage stay local even if created outside .local
+*.pem
+*.key
+*.p12
+*.pfx
+*.mov
+*.mp4
+*.mkv
+*.webm
+*.avi
+*.zip
+*.tar
+*.tar.gz
+*.7z
+node_modules/
+dist/
+.vite/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example

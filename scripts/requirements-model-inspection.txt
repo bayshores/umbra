@@ -1,0 +1,6 @@
+# Optional offline graph-inspection development tool; not frontend/runtime dependencies.
+onnx==1.23.1
+numpy==2.5.3
+protobuf==7.36.2
+typing_extensions==4.16.0
+ml_dtypes==0.6.0
