@@ -207,6 +207,76 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
         domain?.policy!=='numericDepth_rightInputBounds_existingCameraClips'||domain.nearMeters!==scene.camera.near||domain.farMeters!==scene.camera.far||
         JSON.stringify(domain.rightPixelCenters)!==JSON.stringify([0,scene.camera.width-1]))
         throw new Error('Invalid native reconstruction provenance or rendering domain.');
+      if(Object.hasOwn(reuse,'serviceExecution')) {
+        // This is compiled service provenance, not authentication performed in the browser.
+        // The backend collects Job control directly before publishing these pinned artifacts.
+        const service=reuse.serviceExecution,artifacts=estimate.serviceArtifacts,
+          same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),
+          serviceHashes=['expectedJobSha256','runtimeContractSha256','bindingSha256','planSha256','producerSha256',
+            'wrapperSha256','nativeManifestSha256','reviewSha256','jobControlReceiptSha256'],
+          safeId=id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id),
+          utc=value=>{
+            if(typeof value!=='string')return null;
+            const match=value.replace(/\+00:00$/,'Z').match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z$/);
+            return match&&Number.isFinite(Date.parse(value))?match[1]+'.'+(match[2]??'').padEnd(9,'0'):null;
+          };
+        if(!directBinding||service?.schemaVersion!==1||service.claim!=='job_control_and_application_output_association'||
+          service.provider!=='nebius_job'||!safeId(service.jobId)||!safeId(service.projectId)||
+          typeof service.submissionId!=='string'||!/^[a-f0-9]{32}$/.test(service.submissionId)||
+          typeof service.requestedImage!=='string'||!/^[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$/.test(service.requestedImage)||
+          !serviceHashes.every(k=>hash(service[k]))||!hash(provenance.serviceExecutionSha256)||
+          service.nativeManifestSha256!==provenance.preparedManifestSha256||service.planSha256!==provenance.planSha256||
+          service.producerSha256!==provenance.producerManifestSha256||
+          service.inputSha256?.cropManifest!==provenance.preparedManifestSha256||
+          service.inputSha256?.['calibration.json']!==provenance.calibrationSha256||
+          !['cropManifest','left.png','right.png','calibration.json'].every(k=>hash(service.inputSha256?.[k]))||
+          !Array.isArray(service.inputTensorSha256)||service.inputTensorSha256.length!==2||!service.inputTensorSha256.every(hash)||
+          !same(service.inputTensorSha256,execution.inputTensorSha256)||!execution.cpuConfiguration||
+          !same(service.cpuConfiguration,execution.cpuConfiguration)||
+          !same(service.environment,execution.environment)||
+          typeof service.environment!=='object'||service.environment===null||
+          Object.keys(service.environment).sort().join()!=='numpy,onnx,onnxruntime,pillow,python'||
+          !Object.values(service.environment).every(v=>typeof v==='string'&&v.length>0&&v.length<=8192)||
+          provenance.processingCodeHashes?.['cloud/run_stereo_job.py']!==service.wrapperSha256)
+          throw new Error('Invalid native service provenance.');
+        const times=service.timestamps,ordered=['jobCreatedAt','startedAt','cpuCreatedUtc','finishedAt','acquiredAt'].map(k=>utc(times?.[k]));
+        if(ordered.some(t=>t===null)||ordered.some((t,i)=>i>0&&t<ordered[i-1])||times.cpuCreatedUtc!==execution.createdUtc)
+          throw new Error('Invalid native service timestamps.');
+        const names={context:'service-execution.json',jobControl:'job-control.json',outputBinding:'job-result.json'},records={};
+        if(!artifacts||Object.keys(artifacts).sort().join()!=='context,jobControl,outputBinding')
+          throw new Error('Invalid native service artifacts.');
+        for(const [key,name] of Object.entries(names)) {
+          const spec=artifacts[key];
+          if(spec?.path!==name||!integer(spec.bytes)||spec.bytes>2*1024*1024||!hash(spec.sha256))
+            throw new Error('Invalid native service artifact descriptor.');
+          const response=await fetchResource(base+name);if(!response.ok)throw new Error('Native service artifact unavailable.');
+          const bytes=await boundedBytes(response,spec.bytes,true,signal,deadline);
+          if(await digest(bytes)!==spec.sha256)throw new Error('Native service artifact checksum mismatch.');
+          records[key]=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+        }
+        const job=records.jobControl,binding=records.outputBinding;
+        if(!job||typeof job!=='object'||Array.isArray(job)||!binding||typeof binding!=='object'||Array.isArray(binding))
+          throw new Error('Invalid native service records.');
+        if(artifacts.context.sha256!==provenance.serviceExecutionSha256||!same(records.context,service)||
+          artifacts.jobControl.sha256!==service.jobControlReceiptSha256||artifacts.outputBinding.sha256!==service.bindingSha256||
+          job.schemaVersion!==1||job.claim!=='job_control_only'||job.modelExecutionVerified!==false||job.outputsBound!==false||
+          job.job?.metadata?.id!==service.jobId||job.job.metadata.parentId!==service.projectId||
+          job.job.spec?.image!==service.requestedImage||!['COMPLETED',6].includes(job.job.status?.state)||
+          job.source?.kind!=='nebius_job_get'||job.source.httpStatus!==200||job.source.request?.method!=='GET'||
+          job.source.expectedSha256!==service.expectedJobSha256||
+          job.source.request?.url!==`https://api.nebius.cloud/ai/v1/jobs/${service.jobId}`||
+          job.job.metadata.createdAt!==times.jobCreatedAt||job.job.status.startedAt!==times.startedAt||
+          job.job.status.finishedAt!==times.finishedAt||job.acquiredAt!==times.acquiredAt||
+          binding.schemaVersion!==1||binding.claim!=='application_output_binding_only'||binding.submissionId!==service.submissionId||
+          binding.planSha256!==service.planSha256||binding.producerSha256!==service.producerSha256||
+          binding.wrapperSha256!==service.wrapperSha256||binding.modelSha256!==estimate.model.sha256||
+          binding.cacheKey!==reuse.originalCacheKey||!same(binding.inputTensorSha256,service.inputTensorSha256)||
+          binding.outputs?.['disparity.float32le']?.sha256!==provenance.rawPredictionSha256||
+          binding.outputs?.['validity.uint8']?.sha256!==provenance.rawValiditySha256)
+          throw new Error('Native service artifacts disagree with reconstruction provenance.');
+      } else if(Object.hasOwn(estimate,'serviceArtifacts')||Object.hasOwn(provenance,'serviceExecutionSha256')) {
+        throw new Error('Native service artifacts require explicit service provenance.');
+      }
     }
     if(Object.keys(estimate.buffers??{}).sort().join()!=='colors,positions,triangles'||new Set(Object.values(estimate.buffers??{})).size!==3||
       Object.values(estimate.buffers??{}).some(name=>[...Object.values(scene.buffers),...Object.values(measurement?.buffers??{})].includes(name)))

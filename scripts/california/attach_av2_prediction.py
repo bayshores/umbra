@@ -27,13 +27,25 @@ SOURCE_ROLES = {'left', 'right', 'lidar', 'poses', 'intrinsics', 'extrinsics', '
 
 class Capture:
     """Bound every input byte and check the captured identities before publication."""
-    def __init__(self):
+    def __init__(self, *, strict_paths=False):
         self.files = {}
+        self.strict_reader = None
+        if strict_paths:
+            sys.path.insert(0, str(SCRIPTS / 'cloud'))
+            from result_binding import read_path
+            self.strict_reader = read_path
+
+    def snapshot(self, path, expected=None):
+        if self.strict_reader is None:
+            return common.snapshot(path, expected, MAX_FILE)
+        raw = self.strict_reader(path, MAX_FILE)
+        common.require(expected is None or common.digest(raw) == expected, 'Captured SHA256 mismatch')
+        return raw
 
     def read(self, path, expected=None, size=None):
-        path = Path(path).resolve()
+        path = Path(os.path.abspath(path)) if self.strict_reader else Path(path).resolve()
         if path not in self.files:
-            data = common.snapshot(path, expected, MAX_FILE)
+            data = self.snapshot(path, expected)
             common.require(sum(len(value) for value in self.files.values()) + len(data) <= MAX_TOTAL,
                            'Cumulative input byte ceiling')
             self.files[path] = data
@@ -53,7 +65,7 @@ class Capture:
 
     def unchanged(self):
         for path, data in self.files.items():
-            common.require(common.snapshot(path, common.digest(data), MAX_FILE) == data, 'Captured input changed')
+            common.require(self.snapshot(path, common.digest(data)) == data, 'Captured input changed')
 
 
 def bind_measured(scene, prepared, calibration, prepared_path, capture):
@@ -187,24 +199,50 @@ def points(disparity, validity, calibration, camera, rotation, rgb):
 
 
 def attach(scene_path, scene_sha256, prepared_path, prepared_sha256, producer_path, producer_sha256,
-           plan_path, plan_sha256, input_equivalence_path, input_equivalence_sha256, model_path, output, *, direct_native=False):
+           plan_path, plan_sha256, input_equivalence_path, input_equivalence_sha256, model_path, output, *, direct_native=False,
+           nebius_options=None):
     common.require(type(direct_native) is bool, 'Explicit binding mode required')
+    remote = nebius_options is not None
+    common.require(not remote or (direct_native and type(nebius_options) is dict),
+                   'Nebius consumption requires explicit direct-native binding')
     common.require((input_equivalence_path is None and input_equivalence_sha256 is None) if direct_native else
                    (input_equivalence_path is not None and input_equivalence_sha256 is not None), 'Exclusive input binding required')
     hashes = [scene_sha256, prepared_sha256, producer_sha256, plan_sha256]
     if not direct_native: hashes.append(input_equivalence_sha256)
     for sha in hashes:
         common.require(isinstance(sha, str) and re.fullmatch('[a-f0-9]{64}', sha), 'Expected source SHA256 required')
-    paths = [Path(path).resolve() for path in (scene_path, prepared_path, producer_path, plan_path)]
+    paths = [Path(os.path.abspath(path)) if remote else Path(path).resolve()
+             for path in (scene_path, prepared_path, producer_path, plan_path)]
     scene_path, prepared_path, producer_path, plan_path = paths
     if not direct_native: paths.append(Path(input_equivalence_path).resolve())
     output = Path(output).absolute()
     common.require(not os.path.lexists(output), 'Existing destination retained')
-    capture = Capture()
+    capture = Capture(strict_paths=remote)
     raw = [capture.read(path, sha) for path, sha in zip(paths, hashes)]
     scene, prepared, producer, plan = [common.parse(data) for data in raw[:4]]
     proof = None if direct_native else common.parse(raw[4])
+    consumer = None
+    remote_kwargs = None
+    if remote:
+        required = {'expected_submission_id', 'review_path', 'expected_review_sha256', 'expected_job_path',
+                    'expected_job_sha256', 'runtime_contract_path', 'expected_runtime_contract_sha256',
+                    'token_path', 'receipt_path'}
+        common.require(required <= set(nebius_options) <= required | {'expected_binding_sha256', 'scratch_root'},
+                       'Exact Nebius consumption arguments required')
+        common.require(plan_path.name == 'plan.json' and
+                       producer_path == plan_path.parent / 'prediction' / 'prediction.json',
+                       'Exact retrieved bundle paths required')
+        sys.path.insert(0, str(SCRIPTS / 'cloud'))
+        import consume_result as consumer
+        remote_kwargs = {key: value for key, value in nebius_options.items() if key not in {'token_path', 'receipt_path'}}
+        remote_kwargs.update(expected_plan_sha256=plan_sha256, native_manifest_path=prepared_path,
+                             expected_native_manifest_sha256=prepared_sha256)
+        checked_producer, _, _ = consumer.check_result(plan_path.parent, **remote_kwargs)
+        common.require(common.canonical(checked_producer) == common.canonical(producer), 'Captured remote producer changed')
     code_paths = [Path(__file__), SCRIPTS / 'prepare-stereo-crop.py', SCRIPTS / 'inspect-onnx-model.py', *sorted((SCRIPTS / 'sponsors').glob('*.py'))]
+    if remote:
+        code_paths.extend(SCRIPTS / 'cloud' / name for name in
+                          ('consume_result.py', 'job_evidence.py', 'result_binding.py', 'run_stereo_job.py'))
     code_hashes = {str(path.relative_to(SCRIPTS)): common.digest(capture.read(path)) for path in code_paths}
     if not direct_native:
         common.require(proof['oldPlanSha256'] == plan_sha256 and proof['oldProducerSha256'] == producer_sha256,
@@ -212,20 +250,26 @@ def attach(scene_path, scene_sha256, prepared_path, prepared_sha256, producer_pa
     common.require(producer['model'] == plan['model'] == nvidia_stereo.MODEL and producer['cacheKey'] == plan['cacheKey'],
                    'Plan/producer identity mismatch')
     # Capture the existing cache-validation dependency graph before invoking its pure readers.
-    review_path = plan_path.parent / plan['review']['path']
-    review = common.parse(capture.artifact(plan_path.parent, plan['review']))
+    review_path = Path(os.path.abspath(nebius_options['review_path'])) if remote else plan_path.parent / plan['review']['path']
+    review = common.parse(capture.read(review_path, plan['review']['sha256'], plan['review']['bytes']))
     inspection = review['inspection']
     common.require(isinstance(inspection['sha256'], str), 'Inspection SHA256 required')
     capture.read(review_path.parent / inspection['path'], inspection['sha256'])
     for records, base in ((plan['sources'], plan_path.parent), (producer['sources'], producer_path.parent)):
-        for spec in records.values(): capture.artifact(base, spec)
+        for name, spec in records.items():
+            if remote:
+                source = prepared_path if name == 'cropManifest' else prepared_path.parent / name
+                capture.read(source, spec['sha256'], spec['bytes'])
+            else:
+                capture.artifact(base, spec)
     for key in ('prediction', 'validity'): capture.artifact(producer_path.parent, producer[key])
-    old_crop_path = (producer_path.parent / producer['sources']['cropManifest']['path']).resolve()
-    old_crop = common.parse(capture.artifact(producer_path.parent, producer['sources']['cropManifest']))
+    old_crop_path = prepared_path if remote else (producer_path.parent / producer['sources']['cropManifest']['path']).resolve()
+    old_crop = common.parse(capture.read(old_crop_path, producer['sources']['cropManifest']['sha256'],
+                                        producer['sources']['cropManifest']['bytes']))
     for name in ('left.png', 'right.png', 'calibration.json'):
         spec = old_crop['outputs'][name]
         capture.read(old_crop_path.parent / name, spec['sha256'], spec['bytes'])
-    cached = nvidia_stereo.cached(plan_path, producer_path.parent, model_path)
+    cached = checked_producer if remote else nvidia_stereo.cached(plan_path, producer_path.parent, model_path)
     common.require(common.canonical(cached) == common.canonical(producer), 'Captured original producer changed')
     old_raw, _, old_files, old_calibration = nvidia_stereo.read_crop(old_crop_path)
     prepared_raw, _, prepared_files, calibration = nvidia_stereo.read_crop(prepared_path)
@@ -309,6 +353,28 @@ def attach(scene_path, scene_sha256, prepared_path, prepared_sha256, producer_pa
         limitations=['Estimated rendering only; native measured queries, collision states and ground policy remain authoritative.',
                      'Rendering clips and right-input bounds are not confidence, physical accuracy or free-space evidence.',
                      'Full raw disparity, numerical validity and axial depth retain unsupported pixels and numerical tails.'])
+    if remote:
+        # Finish every local source/render check before opening a credential or contacting the service.
+        capture.unchanged()
+        accepted, result, service = consumer.collect_result(plan_path.parent,
+            token_path=nebius_options['token_path'], receipt_path=nebius_options['receipt_path'], **remote_kwargs)
+        common.require(type(service) is dict and type(service.get('schemaVersion')) is int and service['schemaVersion'] == 1 and
+                       service.get('claim') == 'job_control_and_application_output_association' and
+                       service.get('provider') == 'nebius_job', 'Direct collected service association required')
+        common.require(common.canonical(accepted) == common.canonical(producer) and service['producerSha256'] == producer_sha256 and
+                       service['planSha256'] == plan_sha256 and service['nativeManifestSha256'] == prepared_sha256,
+                       'Collected service result differs from captured renderer inputs')
+        service_raw = common.canonical(service)
+        receipt_raw = capture.read(nebius_options['receipt_path'], service['jobControlReceiptSha256'])
+        result_raw = capture.read(plan_path.parent / 'job-result.json', service['bindingSha256'])
+        common.require(common.parse(result_raw) == result, 'Collected output binding changed')
+        scene['reconstruction']['reuse']['serviceExecution'] = service
+        scene['reconstruction']['provenance']['serviceExecutionSha256'] = common.digest(service_raw)
+        scene['reconstruction']['serviceArtifacts'] = {
+            key: dict(path=name, bytes=len(data), sha256=common.digest(data)) for key, name, data in
+            [('context', 'service-execution.json', service_raw), ('jobControl', 'job-control.json', receipt_raw),
+             ('outputBinding', 'job-result.json', result_raw)]}
+        files.update({'service-execution.json': service_raw, 'job-control.json': receipt_raw, 'job-result.json': result_raw})
     # Keep descriptor identities intact while making their external references usable from the new directory.
     prov['preparedManifest']['path'] = os.path.relpath(prepared_path, output)
     prov['references']['path'] = os.path.relpath(prepared_path.parent / 'references.npz', output)
@@ -316,7 +382,8 @@ def attach(scene_path, scene_sha256, prepared_path, prepared_sha256, producer_pa
     files['catalog-entry.json'] = common.canonical(dict(id=scene['id'], label=scene['id'], metadataSha256=common.digest(files['scene.json'])))
     files['attachment-result.json'] = common.canonical(dict(metadataSha256=common.digest(files['scene.json']), diagnostics=diagnostics,
         sourcePins=[dict(path=str(path), bytes=len(data), sha256=common.digest(data)) for path, data in capture.files.items()],
-        newInferenceRuns=0, modelBytesRehashed=False, modelSessions=0, cloudRequests=0, newSpend=0))
+        newInferenceRuns=0, modelBytesRehashed=False, modelSessions=0, cloudRequests=int(remote),
+        **({'jobControlRequests': 1, 'modelInferenceRequests': 0} if remote else {}), newSpend=0))
     capture.unchanged()
     common.publish(output, files)
     return scene
@@ -330,11 +397,19 @@ def main():
     parser.add_argument('--direct-native', action='store_true', help='Exact current native manifest was the model input')
     parser.add_argument('--input-equivalence', type=Path)
     parser.add_argument('--input-equivalence-sha256')
+    parser.add_argument('--nebius-options', type=Path,
+                        help='Pinned private request for explicit direct Job collection; never a receipt or authenticated flag')
+    parser.add_argument('--nebius-options-sha256')
     for key in ('model', 'output'): parser.add_argument('--' + key, type=Path, required=True)
     args = parser.parse_args()
     try:
+        common.require((args.nebius_options is None) == (args.nebius_options_sha256 is None),
+                       'Nebius request path and hash must be supplied together')
+        options = None if args.nebius_options is None else common.parse(
+            common.snapshot(args.nebius_options, args.nebius_options_sha256, MAX_FILE))
         scene = attach(args.scene, args.scene_sha256, args.prepared, args.prepared_sha256, args.producer, args.producer_sha256,
-                       args.plan, args.plan_sha256, args.input_equivalence, args.input_equivalence_sha256, args.model, args.output, direct_native=args.direct_native)
+                       args.plan, args.plan_sha256, args.input_equivalence, args.input_equivalence_sha256, args.model, args.output,
+                       direct_native=args.direct_native, nebius_options=options)
     except (ValueError, KeyError, TypeError, OSError) as exc:
         parser.exit(1, f'Native cached attachment blocked: {type(exc).__name__}: {str(exc)[:250]}\n')
     print(f'Attached cached native estimate: {scene["reconstruction"]["pointCount"]} points, zero triangles, new inference runs 0')

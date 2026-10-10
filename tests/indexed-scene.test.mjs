@@ -231,3 +231,100 @@ test('direct native binding is explicit and exclusive with historical equivalenc
   await assert.rejects(load(fixture(scene=>{scene.reconstruction.provenance.inputBindingResultSha256='e'.repeat(64);},true)),/input binding/);
   await assert.rejects(load(fixture(scene=>{delete scene.reconstruction.provenance.inputEquivalenceResultSha256;},true)),/input binding/);
 });
+
+
+// Analytic service-contract fixtures only. Never a live provider/model result or runtime asset.
+function serviceFixture() {
+  const f=fixture(s=>{
+    const p=s.reconstruction.provenance;
+    delete p.inputEquivalenceResultSha256;p.inputBindingKind='directNative';p.inputBindingResultSha256='e'.repeat(64);
+  },true),r=f.scene.reconstruction,p=r.provenance,e=r.reuse.originalExecution;
+  e.cpuConfiguration={interOpThreads:1,intraOpThreads:1,provider:'CPUExecutionProvider'};
+  e.environment={numpy:'analytic',onnx:'analytic',onnxruntime:'analytic',pillow:'analytic',python:'analytic'};
+  e.inputTensorSha256=['1'.repeat(64),'2'.repeat(64)];
+  const service={schemaVersion:1,claim:'job_control_and_application_output_association',provider:'nebius_job',
+    jobId:'analytic-job-only',projectId:'analytic-project-only',submissionId:'a'.repeat(32),
+    requestedImage:'registry.example/analytic-only@sha256:'+'c'.repeat(64),
+    expectedJobSha256:'d'.repeat(64),runtimeContractSha256:'d'.repeat(64),wrapperSha256:'d'.repeat(64),
+    planSha256:p.planSha256,producerSha256:p.producerManifestSha256,nativeManifestSha256:p.preparedManifestSha256,
+    reviewSha256:'d'.repeat(64),inputSha256:{cropManifest:p.preparedManifestSha256,'left.png':'d'.repeat(64),
+      'right.png':'d'.repeat(64),'calibration.json':p.calibrationSha256},
+    inputTensorSha256:e.inputTensorSha256,cpuConfiguration:e.cpuConfiguration,environment:e.environment,
+    timestamps:{jobCreatedAt:'2026-10-05T11:13:07Z',startedAt:'2026-10-05T11:13:08Z',cpuCreatedUtc:e.createdUtc,
+      finishedAt:'2026-10-05T11:13:10Z',acquiredAt:'2026-10-05T11:13:11Z'}};
+  const job={schemaVersion:1,claim:'job_control_only',modelExecutionVerified:false,outputsBound:false,
+    acquiredAt:service.timestamps.acquiredAt,job:{metadata:{id:service.jobId,parentId:service.projectId,
+      createdAt:service.timestamps.jobCreatedAt},spec:{image:service.requestedImage},
+      status:{state:'COMPLETED',startedAt:service.timestamps.startedAt,finishedAt:service.timestamps.finishedAt}},
+    source:{kind:'nebius_job_get',httpStatus:200,expectedSha256:service.expectedJobSha256,
+      request:{method:'GET',url:`https://api.nebius.cloud/ai/v1/jobs/${service.jobId}`}}};
+  const binding={schemaVersion:1,claim:'application_output_binding_only',submissionId:service.submissionId,
+    planSha256:service.planSha256,producerSha256:service.producerSha256,wrapperSha256:service.wrapperSha256,
+    modelSha256:r.model.sha256,cacheKey:r.reuse.originalCacheKey,inputTensorSha256:service.inputTensorSha256,
+    outputs:{'disparity.float32le':{sha256:p.rawPredictionSha256},'validity.uint8':{sha256:p.rawValiditySha256}}};
+  p.processingCodeHashes={'cloud/run_stereo_job.py':service.wrapperSha256};
+  r.reuse.serviceExecution=service;r.serviceArtifacts={};
+  function seal() {
+    const save=(key,name,value)=>{
+      const raw=Buffer.from(JSON.stringify(value));f.bytes.set(name,raw);
+      r.serviceArtifacts[key]={path:name,bytes:raw.length,sha256:hash(raw)};return hash(raw);
+    };
+    service.jobControlReceiptSha256=save('jobControl','job-control.json',job);
+    service.bindingSha256=save('outputBinding','job-result.json',binding);
+    p.serviceExecutionSha256=save('context','service-execution.json',service);
+  }
+  seal();return {f,service,job,binding,seal};
+}
+
+test('compiled service contract loads without transferring ownership of measured queries or ground',async()=>{
+  const {f}=serviceFixture(),remote=await load(f),baseline=await load(fixture());
+  assert.equal(remote.reconstruction.reuse.serviceExecution.provider,'nebius_job');
+  assert.equal(remote.measurements.groundPolicy,'unvalidated');
+  for(const key of ['positions','colors','triangles','pixelRows'])assert.deepEqual(remote[key],baseline[key]);
+  assert.deepEqual(measuredPoint(remote,[2,2]),measuredPoint(baseline,[2,2]));
+  assert.throws(()=>roadPoint(remote,[2,2],'person'),/Ground placement has no validated support/);
+  assert.equal(classifySightline(remote,[-2,0,0],[2,0,0],{width:2,height:2,length:2},[0,0,1],[0,0,10]).state,'unknown');
+});
+
+test('service identity and native input mismatches reject even with refreshed artifact checksums',async()=>{
+  const changes=[x=>{x.service.claim='offline_consistency_only';},x=>{x.service.provider='local';},
+    x=>{x.service.submissionId='wrong';},x=>{x.service.jobId='../job';},x=>{x.service.requestedImage='mutable:latest';},
+    x=>{x.service.planSha256='f'.repeat(64);},x=>{x.service.nativeManifestSha256='f'.repeat(64);},
+    x=>{x.service.inputSha256['calibration.json']='f'.repeat(64);},
+    x=>{x.service.inputTensorSha256=['f'.repeat(64),'2'.repeat(64)];},
+    x=>{x.service.cpuConfiguration={interOpThreads:1,intraOpThreads:4,provider:'CPUExecutionProvider'};},
+    x=>{x.service.environment={...x.service.environment,python:'different'};},
+    x=>{x.f.scene.reconstruction.provenance.processingCodeHashes['cloud/run_stereo_job.py']='f'.repeat(64);}];
+  for(const change of changes){const x=serviceFixture();change(x);x.seal();await assert.rejects(load(x.f),/Invalid native service/);}
+});
+
+test('service control and output association cannot drift under recomputed file hashes',async()=>{
+  const changes=[x=>{x.job.job.metadata.id='other';},x=>{x.job.job.metadata.parentId='other';},
+    x=>{x.job.job.status.state='FAILED';},x=>{x.job.job.status.state=7;},x=>{x.job.modelExecutionVerified=true;},
+    x=>{x.job.source.request.method='POST';},x=>{x.job.source.request.url+='?view=SECRET';},
+    x=>{x.job.source.expectedSha256='f'.repeat(64);},x=>{x.job.job.spec.image='other';},
+    x=>{x.binding.claim='authenticated';},x=>{x.binding.submissionId='f'.repeat(32);},
+    x=>{x.binding.outputs['disparity.float32le'].sha256='f'.repeat(64);},
+    x=>{x.binding.cacheKey='f'.repeat(64);},x=>{x.binding.modelSha256='f'.repeat(64);}];
+  for(const change of changes){const x=serviceFixture();change(x);x.seal();await assert.rejects(load(x.f),/disagree with reconstruction/);}
+});
+
+test('service timeline retains nanosecond ordering and rejects unbound records',async()=>{
+  let x=serviceFixture();x.service.timestamps.finishedAt='2026-10-05T11:13:08.999999999Z';x.seal();
+  await assert.rejects(load(x.f),/service timestamps/);
+  x=serviceFixture();x.service.timestamps.cpuCreatedUtc='2026-10-05T11:13:09.000000001Z';x.seal();
+  await assert.rejects(load(x.f),/service timestamps/);
+  x=serviceFixture();delete x.f.scene.reconstruction.reuse.serviceExecution;
+  await assert.rejects(load(x.f),/require explicit service provenance/);
+  x=serviceFixture();delete x.f.scene.reconstruction.provenance.inputBindingKind;
+  await assert.rejects(load(x.f),/input binding/);
+});
+
+test('service artifact fetches fail closed on missing, changed, oversized or escaping files',async()=>{
+  let x=serviceFixture();x.f.bytes.delete('job-control.json');await assert.rejects(load(x.f),/artifact unavailable/);
+  x=serviceFixture();x.f.bytes.get('job-result.json')[0]^=1;await assert.rejects(load(x.f),/checksum mismatch/);
+  x=serviceFixture();x.f.scene.reconstruction.serviceArtifacts.context.bytes=2*1024*1024+1;
+  await assert.rejects(load(x.f),/artifact descriptor/);
+  x=serviceFixture();x.f.scene.reconstruction.serviceArtifacts.context.path='../service-execution.json';
+  await assert.rejects(load(x.f),/artifact descriptor/);
+});

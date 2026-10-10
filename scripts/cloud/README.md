@@ -95,7 +95,7 @@ Offline validation uses temporary analytic HTTP/JSON fixtures and no network:
 python3 -m unittest discover -s tests/cloud -p 'test_*.py'
 ```
 
-Tests and this collector do not admit remote predictions to cached readers or
+Tests and this collector alone do not admit remote predictions to cached readers or
 the app, change existing local sponsor evidence, or close the integration gate.
 No genuine successful receipt, expected job identity or provider credential is
 provided by this change. Submission, billing/credit checks, exact inputs/model
@@ -136,5 +136,57 @@ independently captured input/review/tensor identities, the approved image/runtim
 record, and the explicit attachment/application path. Requested image digests and
 local file hashes are not provider signatures. Neither this offline validator nor
 analytic fixture tests establish sponsor use, model accuracy or a usable crossing.
-The existing local cache reader, sponsor source hashes and application remain
-unchanged. No real service output is included or admitted by these tools.
+The existing local cache reader and sponsor source hashes remain unchanged.
+No real service output is included with these tools.
+
+## Direct-native consumption and attachment
+
+`consume_result.check_result(bundle_root, **pins)` reproduces both input tensors
+from independently pinned native images and validates calibration, review,
+processing, model and CPU configuration through the unchanged adapter. A private
+temporary validation plan changes only reference paths; the retrieved plan and
+CPU producer remain byte-for-byte originals. The expected submitted command and
+arguments must match the exact wrapper invocation, submission identifier and
+plan hash. A separately pinned runtime contract fixes the requested image,
+wrapper hash, five environment versions and absolute workload paths. Environment
+strings describe the workload record; they do not attest installed binaries.
+
+`consume_result.collect_result(bundle_root, token_path=..., receipt_path=...,
+**pins)` completes this preflight before credentials or network access, freezes
+the captured expected-job bytes, then invokes the existing direct collector
+once. It checks the returned job, configuration and exact timestamp interval,
+including nanoseconds, and rechecks captured artifacts. It returns the original
+producer, application output binding and separate service context with claim
+`job_control_and_application_output_association`. A failure after collection
+retains the genuine control receipt but returns no accepted association.
+Check-only output has claim `offline_consistency_only` and cannot admit a remote
+result. The CLI defaults to check-only; `--collect` is an explicit service read,
+never job creation, inference or a retry.
+
+The independently pinned inputs are `native_manifest_path`, `review_path`,
+`expected_job_path` and `runtime_contract_path`, each with its expected SHA256,
+plus `expected_submission_id`, `expected_plan_sha256` and optional output-binding
+SHA256. `scratch_root` optionally selects a private project-local temporary root.
+Use `python3 scripts/cloud/consume_result.py --help` for CLI spellings. Preserve
+controlled retrieval of the actual job's output bundle as a separate prerequisite;
+an arbitrary local bundle with matching files does not prove remote origin.
+
+`scripts/california/attach_av2_prediction.py --direct-native` retains its existing
+local-cache behavior by default. Explicit remote mode additionally takes paired
+`--nebius-options` and `--nebius-options-sha256` arguments. This pinned private JSON
+request contains the consumer pins above (native manifest and plan pins come from
+the existing attachment arguments), plus `token_path` and fresh `receipt_path`.
+It contains credential file paths only. Remote mode rejects source/bundle
+symlinks, completes native measured and render checks before collecting, then
+preserves the original producer and plan and adds separate hashed context,
+control and binding artifacts. Its attachment report records one job-control
+request and zero new model runs. The original CPU record keeps its own zero
+service requests, describing the process inside the workload.
+
+The application checks these compiled artifacts against the reconstruction
+identity at scene load. It performs no provider authentication or paid inference
+in the browser. Predicted points remain renderer-only, measured buffers retain
+query ownership, and missing ground evidence stays unvalidated. Ordinary dragging
+and comparisons remain local. Analytic transport and attachment tests establish
+these code paths, not genuine sponsor execution, provider output signatures,
+physical accuracy, usable crossing coverage or hackathon eligibility.
