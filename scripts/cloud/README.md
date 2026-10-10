@@ -101,3 +101,40 @@ No genuine successful receipt, expected job identity or provider credential is
 provided by this change. Submission, billing/credit checks, exact inputs/model
 bindings, job-associated application execution/logs, retrieved output hashes and
 consumer validation remain separately required before remote output acceptance.
+
+## One-job application output binding
+
+`run_stereo_job.py` is the explicit CPU workload wrapper for a separately approved
+job. It creates no cloud resources and makes no service API calls. It refuses to
+execute without `--execute`, reserves a new private output directory, verifies
+the supplied exact plan SHA256, and invokes the existing NVIDIA adapter once.
+The adapter's 120-second child bound and zero-retry policy remain unchanged.
+Existing output or an adapter cache-race return is rejected. It then validates
+the result in the same process and preserves the original CPU producer bytes.
+
+The output contains exact `plan.json`, the four original files in `prediction/`,
+and `job-result.json`. The binding records the unique 32-hex submission identifier,
+plan/model/cache/code/tensor identities, wrapper source hash and output hashes.
+It claims only `application_output_binding_only`. The CPU producer remains a
+record of the process inside the workload; it is not relabelled as authenticated
+Nebius execution. Failure retains available raw child error bytes and never leaves
+this wrapper's success marker. The script accepts no credentials or billing flags.
+Use `python3 scripts/cloud/run_stereo_job.py --help` to inspect required arguments;
+execution is not a setup check and needs the project's separate authorization.
+
+`result_binding.validate_binding(bundle_root, expected_submission_id,
+expected_plan_sha256, expected_binding_sha256=...)` returns the original producer
+and binding after bounded offline consistency checks. It reads exactly the four
+flat output files, rejects symlinks/path escapes/strict-JSON violations and checks
+full raw raster sizes and numerical validity. It preserves invalid pixels and
+raw numerical tails. Comparison of two recorded tensor hashes is not independent
+tensor reproduction, and environment strings do not authenticate installed binaries.
+
+Remote admission still requires trusted authenticated Job control and exact
+submitted configuration, the job-associated controlled artifact retrieval,
+independently captured input/review/tensor identities, the approved image/runtime
+record, and the explicit attachment/application path. Requested image digests and
+local file hashes are not provider signatures. Neither this offline validator nor
+analytic fixture tests establish sponsor use, model accuracy or a usable crossing.
+The existing local cache reader, sponsor source hashes and application remain
+unchanged. No real service output is included or admitted by these tools.
