@@ -9,7 +9,7 @@
     "build:sites": "npm run build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
     "test:sites": "node --test tests/sites-worker.test.mjs",
-    "test": "node --test tests/geometry.test.mjs tests/plan-camera.test.mjs tests/driver-viewport.test.mjs tests/scene-calibration.test.mjs tests/visibility-boundaries.test.mjs tests/placement-ground.test.mjs tests/reconstruction.test.mjs tests/indexed-scene.test.mjs"
+    "test": "node --test tests/geometry.test.mjs tests/plan-camera.test.mjs tests/driver-viewport.test.mjs tests/scene-calibration.test.mjs tests/visibility-boundaries.test.mjs tests/placement-ground.test.mjs tests/reconstruction.test.mjs tests/indexed-scene.test.mjs tests/scene-load-lifecycle.test.mjs"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.3.0",

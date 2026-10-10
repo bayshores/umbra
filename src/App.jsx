@@ -53,9 +53,9 @@ export function App() {
   },[]);
   useEffect(()=>{
     if(!sceneId||!catalog)return;
-    let live=true;setScene(null);setInput(null);setPixels({});setEditing(true);setActive('crossing');setCursor(['','']);setMessage('');setFatal('');
-    loadScene(path=>fetch(path),sceneId,catalog.find(entry=>entry.id===sceneId).metadataSha256).then(s=>{if(live)setScene(s);}).catch(e=>{if(live)setFatal(e.message);});
-    return ()=>{live=false;};
+    let live=true;const controller=new AbortController();setScene(null);setInput(null);setPixels({});setEditing(true);setActive('crossing');setCursor(['','']);setMessage('');setFatal('');
+    loadScene(fetch,sceneId,catalog.find(entry=>entry.id===sceneId).metadataSha256,controller.signal).then(s=>{if(live)setScene(s);}).catch(e=>{if(live)setFatal(e.message);});
+    return ()=>{live=false;controller.abort();};
   },[sceneId,loadAttempt,catalog]);
   useEffect(()=>{
     if(!scene?.recordedImageBlob||fatal){setRecordedImage(null);return;}

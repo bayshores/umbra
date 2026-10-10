@@ -1,14 +1,31 @@
-async function boundedBytes(response,limit,exact=false) {
+const LOAD_TIMEOUT_MS=30_000;
+const timeoutError=()=>new Error('Scene loading exceeded 30 seconds. Retry loading to try again.');
+function checkActive(signal,deadline) {
+  signal.throwIfAborted();
+  if(performance.now()>=deadline)throw timeoutError();
+}
+function checkResponse(response,signal,deadline) {
+  if(!response.ok||signal.aborted||performance.now()>=deadline)
+    void response.body?.cancel(signal.reason).catch(()=>{});
+  checkActive(signal,deadline);
+  return response;
+}
+async function boundedBytes(response,limit,exact,signal,deadline) {
+  checkResponse(response,signal,deadline);
   const reader=response.body?.getReader();
   if(!reader)throw new Error('Artifact stream unavailable.');
+  // Cleanup must not await an untrusted underlying cancel promise.
+  const cancel=reason=>{void reader.cancel(reason).catch(()=>{});};
+  const abort=()=>cancel(signal.reason);
+  signal.addEventListener('abort',abort,{once:true});
   const bytes=new Uint8Array(limit);let offset=0;
   try {
-    for(;;){const {done,value}=await reader.read();if(done)break;
+    for(;;){checkActive(signal,deadline);const {done,value}=await reader.read();checkActive(signal,deadline);if(done)break;
       if(offset+value.byteLength>limit)throw new Error('Artifact exceeds declared byte length.');
       bytes.set(value,offset);offset+=value.byteLength;}
     if(exact&&offset!==limit)throw new Error('Artifact byte length mismatch.');
     return exact?bytes.buffer:bytes.slice(0,offset).buffer;
-  }catch(error){await reader.cancel();throw error;}finally{reader.releaseLock();}
+  }catch(error){cancel(error);throw error;}finally{signal.removeEventListener('abort',abort);reader.releaseLock();}
 }
 
 function recordedCpuConfiguration(execution) {
@@ -30,14 +47,32 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
-export async function loadScene(fetchResource,id,expectedMetadataSha256) {
+export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSignal) {
+  const controller=new AbortController(),signal=controller.signal,deadline=performance.now()+LOAD_TIMEOUT_MS;
+  const abort=()=>controller.abort(callerSignal.reason);
+  const interrupted=new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
+  const timer=setTimeout(()=>controller.abort(timeoutError()),LOAD_TIMEOUT_MS);
+  if(callerSignal?.aborted)abort();else callerSignal?.addEventListener('abort',abort,{once:true});
+  const fetchScoped=async path=>{
+    checkActive(signal,deadline);
+    const response=await fetchResource(path,{signal});
+    // A custom transport may ignore abort; discard/cancel a response arriving after failure.
+    return checkResponse(response,signal,deadline);
+  };
+  try {
+    return await Promise.race([loadSceneData(fetchScoped,id,expectedMetadataSha256,signal,deadline),interrupted]);
+  }catch(error){controller.abort(error);throw error;}
+  finally{clearTimeout(timer);callerSignal?.removeEventListener('abort',abort);}
+}
+
+async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,deadline) {
   if(typeof id!=='string'||!/^[a-zA-Z0-9_-]+$/.test(id))throw new Error('Invalid scene identifier.');
   const hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s),
     digest=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),n=>n.toString(16).padStart(2,'0')).join('');
   if(expectedMetadataSha256!==undefined&&!hash(expectedMetadataSha256))throw new Error('Invalid expected scene metadata checksum.');
   const base=`/scenes/${id}/`,response=await fetchResource(base+'scene.json');
   if(!response.ok)throw new Error(`Scene metadata unavailable (${response.status}).`);
-  const metadataBytes=await boundedBytes(response,128*1024);
+  const metadataBytes=await boundedBytes(response,128*1024,false,signal,deadline);
   if(expectedMetadataSha256!==undefined&&await digest(metadataBytes)!==expectedMetadataSha256)throw new Error('Scene metadata checksum mismatch.');
   const scene=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(metadataBytes)),finite3=p=>Array.isArray(p)&&p.length===3&&p.every(Number.isFinite),
     positive=n=>Number.isFinite(n)&&n>0,integer=n=>Number.isSafeInteger(n)&&n>0;
@@ -73,7 +108,7 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
     if(image?.file!=='recorded.png'||image.mimeType!=='image/png'||!integer(image.bytes)||image.bytes>16*1024*1024||!hash(image.sha256))
       throw new Error('Invalid indexed recorded image descriptor.');
     const r=await fetchResource(base+image.file);if(!r.ok)throw new Error(`Recorded image unavailable (${r.status}).`);
-    const bytes=await boundedBytes(r,image.bytes,true);
+    const bytes=await boundedBytes(r,image.bytes,true,signal,deadline);
     if(await digest(bytes)!==image.sha256)throw new Error('Recorded image checksum mismatch.');
     // Bind PNG's declared dimensions before browser decoding; the app also checks actual decoded size.
     const view=new DataView(bytes),signature=[137,80,78,71,13,10,26,10];
@@ -99,7 +134,7 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
     if(!/^[a-z]+\.bin$/.test(name))throw new Error(`Invalid ${key} artifact path.`);
     const length=target===scene||target===measurement?byteLengths[key]:key==='triangles'?target.triangleCount*3*4:target.pointCount*3*4;
     const r=await fetchResource(base+name);if(!r.ok)throw new Error(`${key} unavailable (${r.status}).`);
-    const buffer=await boundedBytes(r,length,true);
+    const buffer=await boundedBytes(r,length,true,signal,deadline);
     const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),n=>n.toString(16).padStart(2,'0')).join('');
     if(digest!==target.artifactHashes?.[key])throw new Error(`${key} checksum mismatch.`);
     target[key]=new Type(buffer);
@@ -183,6 +218,7 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
       !estimate.positions.every((n,i)=>n>=estimate.bounds.min[i%3]-2e-5&&n<=estimate.bounds.max[i%3]+2e-5)||!matchingBounds(estimate.positions,estimate.bounds))
       throw new Error('Invalid estimated reconstruction buffers.');
   }
+  checkActive(signal,deadline);
   return scene;
 }
 
