@@ -93,7 +93,7 @@ export function App() {
     setPixels(previous=>({...previous,[active]:pixel}));setMessage('');setInput(null);
   }
   function setCursorPoint() {if(cursor.some(v=>!filled(v))){setMessage('Enter both pixel coordinates.');return;}selectPoint(cursor.map(Number));}
-  function compare() {if(setup.scenario){setInput(setup.input);setEditing(false);setMessage('');}}
+  function compare() {if(setup.scenario){if(!scenario)setInput(setup.input);setEditing(false);setMessage('');}}
   function moveVan(value) {setInput(previous=>({...previous,proposedSetback:value}));setMessage('');}
   if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
   if(!scene)return <main className="app"><h1>Sightline</h1><p role="status">Loading measured scene…</p></main>;
