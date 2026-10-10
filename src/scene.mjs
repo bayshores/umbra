@@ -21,6 +21,15 @@ function recordedCpuConfiguration(execution) {
     cpu.intraOpThreads===threads&&cpu.interOpThreads===1&&cpu.provider==='CPUExecutionProvider';
 }
 
+function matchingBounds(positions,bounds) {
+  const min=[Infinity,Infinity,Infinity],max=[-Infinity,-Infinity,-Infinity];
+  for(let i=0;i<positions.length;i++) {
+    const k=i%3;min[k]=Math.min(min[k],positions[i]);max[k]=Math.max(max[k],positions[i]);
+  }
+  // Legacy descriptors retain pre-Float32 extrema; preserve the existing rendering tolerance.
+  return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
+}
+
 export async function loadScene(fetchResource,id,expectedMetadataSha256) {
   if(typeof id!=='string'||!/^[a-zA-Z0-9_-]+$/.test(id))throw new Error('Invalid scene identifier.');
   const hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s),
@@ -45,9 +54,9 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
   if(scene.id!==id||scene.units!=='meters'||!finite3(scene.camera?.eye)||!finite3(scene.camera?.forward)||!finite3(scene.camera?.up)||!finite3(cameraOrigin)||
     !Array.isArray(scene.transform?.worldFromCamera)||scene.transform.worldFromCamera.length!==3||!scene.transform.worldFromCamera.every(finite3)||
     !['fx','fy','near','far'].every(k=>positive(scene.camera[k]))||
-    !['width','height'].every(k=>integer(scene.camera[k]))||!Number.isSafeInteger(scene.camera.width*scene.camera.height)||scene.camera.near>=scene.camera.far||
+    !['width','height'].every(k=>integer(scene.camera[k]))||!Number.isSafeInteger(scene.camera.width*scene.camera.height)||scene.camera.width*scene.camera.height>16_000_000||scene.camera.near>=scene.camera.far||
     !['cx','cy'].every(k=>Number.isFinite(scene.camera[k]))||(!indexed&&(!positive(scene.processing?.depthDivisor)||!positive(scene.processing?.roadToleranceMeters))))throw new Error('Invalid measured calibration.');
-  if(!integer(scene.pointCount)||!Number.isSafeInteger(scene.triangleCount)||scene.triangleCount<0||
+  if(!integer(scene.pointCount)||scene.pointCount>1_000_000||!Number.isSafeInteger(scene.triangleCount)||scene.triangleCount<0||scene.triangleCount>2_000_000||
     !finite3(scene.bounds?.min)||!finite3(scene.bounds?.max)||scene.bounds.max.some((n,i)=>n<scene.bounds.min[i])||
     !positive(Math.hypot(...scene.bounds.max.map((n,i)=>n-scene.bounds.min[i]))))throw new Error('Invalid measured geometry metadata.');
   // cameraPoint uses the transpose as the inverse; accept six-decimal serialization, never repair the rotation.
@@ -83,24 +92,22 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
       typeof measurement.provenance?.logId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(measurement.provenance.logId)||
       !['cameraTimestampNs','lidarTimestampNs','crossingId'].every(k=>typeof measurement.provenance?.[k]==='string'&&/^[0-9]{1,32}$/.test(measurement.provenance[k])))throw new Error('Invalid indexed artifact ownership.');
   }
-  const byteLengths={positions:scene.pointCount*3*4,colors:scene.pointCount*3*4,triangles:scene.triangleCount*3*4,
+  const byteLengths={positions:scene.pointCount*3*4,colors:scene.pointCount*3*4,triangles:scene.triangleCount*3*4,depth:scene.camera.width*scene.camera.height*2,
     sourceIndices:measurement?.count*4,referencePositions:measurement?.count*3*8,referenceCameraPositions:measurement?.count*3*8,referenceUV:measurement?.count*2*8,referenceEligible:measurement?.count};
   const loadBuffers=async(target,types)=>Promise.all(Object.entries(types).map(async([key,Type])=>{
     const name=target.buffers?.[key];
     if(!/^[a-z]+\.bin$/.test(name))throw new Error(`Invalid ${key} artifact path.`);
+    const length=target===scene||target===measurement?byteLengths[key]:key==='triangles'?target.triangleCount*3*4:target.pointCount*3*4;
     const r=await fetchResource(base+name);if(!r.ok)throw new Error(`${key} unavailable (${r.status}).`);
-    let buffer;
-    if(indexed) {
-      const length=target===scene||target===measurement?byteLengths[key]:key==='triangles'?target.triangleCount*3*4:target.pointCount*3*4;
-      buffer=await boundedBytes(r,length,true);
-    }else buffer=await r.arrayBuffer();
+    const buffer=await boundedBytes(r,length,true);
     const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',buffer)),n=>n.toString(16).padStart(2,'0')).join('');
     if(digest!==target.artifactHashes?.[key])throw new Error(`${key} checksum mismatch.`);
     target[key]=new Type(buffer);
   }));
   await loadBuffers(scene,indexed?{positions:Float32Array,colors:Float32Array,triangles:Uint32Array}:{positions:Float32Array,colors:Float32Array,triangles:Uint32Array,depth:Uint16Array});
   if(scene.positions.length!==scene.pointCount*3||scene.colors.length!==scene.positions.length||scene.triangles.length!==scene.triangleCount*3||(!indexed&&scene.depth.length!==scene.camera.width*scene.camera.height)||
-    !scene.positions.every(Number.isFinite)||!scene.colors.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||!scene.triangles.every(n=>n<scene.pointCount))throw new Error('Invalid measured geometry buffers.');
+    !scene.positions.every(Number.isFinite)||!scene.colors.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||!scene.triangles.every(n=>n<scene.pointCount)||
+    (!indexed&&!matchingBounds(scene.positions,scene.bounds)))throw new Error('Invalid measured geometry buffers.');
   if(indexed) {
     await loadBuffers(measurement,nativeTypes);
     const {count,sourceIndices,referencePositions,referenceCameraPositions,referenceUV,referenceEligible}=measurement,c=scene.camera;
@@ -143,8 +150,8 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
       estimate.model?.provider!=='nvidia'||typeof estimate.model?.id!=='string'||!estimate.model.id||
       typeof estimate.model?.revision!=='string'||!estimate.model.revision||!hash(estimate.model?.sha256)||
       !provenanceFields.every(k=>hash(estimate.provenance?.[k]))||
-      !integer(estimate.pointCount)||(indexed&&estimate.pointCount>Math.min(scene.camera.width*scene.camera.height,1_000_000))||
-      !Number.isSafeInteger(estimate.triangleCount)||(indexed?estimate.triangleCount!==0:estimate.triangleCount<=0)||!finite3(estimate.bounds?.min)||!finite3(estimate.bounds?.max)||
+      !integer(estimate.pointCount)||estimate.pointCount>1_000_000||(indexed&&estimate.pointCount>scene.camera.width*scene.camera.height)||
+      !Number.isSafeInteger(estimate.triangleCount)||estimate.triangleCount>2_000_000||(indexed?estimate.triangleCount!==0:estimate.triangleCount<=0)||!finite3(estimate.bounds?.min)||!finite3(estimate.bounds?.max)||
       estimate.bounds.max.some((n,i)=>n<estimate.bounds.min[i])||
       (!indexed&&(estimate.displayDomain?.maxDepthMeters!==scene.processing.maxDepthMeters||
       estimate.displayDomain?.meshEdgeLimitMeters!==scene.processing.meshEdgeLimitMeters)))
@@ -173,7 +180,7 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256) {
     if(estimate.positions.length!==estimate.pointCount*3||estimate.colors.length!==estimate.positions.length||
       estimate.triangles.length!==estimate.triangleCount*3||!estimate.positions.every(Number.isFinite)||
       !estimate.colors.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||!estimate.triangles.every(n=>n<estimate.pointCount)||
-      !estimate.positions.every((n,i)=>n>=estimate.bounds.min[i%3]-2e-5&&n<=estimate.bounds.max[i%3]+2e-5))
+      !estimate.positions.every((n,i)=>n>=estimate.bounds.min[i%3]-2e-5&&n<=estimate.bounds.max[i%3]+2e-5)||!matchingBounds(estimate.positions,estimate.bounds))
       throw new Error('Invalid estimated reconstruction buffers.');
   }
   return scene;

@@ -76,6 +76,9 @@ const malformedMetadata={
   'infinite bounds':s=>{s.bounds.max[0]=Infinity;},
   'reversed bounds':s=>{s.bounds.min[0]=s.bounds.max[0]+1;},
   'zero extent':s=>{s.bounds.max=s.bounds.min.slice();},
+  'excess point allocation':s=>{s.pointCount=1_000_001;},
+  'excess triangle allocation':s=>{s.triangleCount=2_000_001;},
+  'excess depth allocation':s=>{s.camera.width=16_000_001;s.camera.height=1;},
 };
 for(const [name,mutate] of Object.entries(malformedMetadata))test(`${name} is rejected before geometry reads`,async()=>{
   const requests=[];
@@ -84,4 +87,28 @@ for(const [name,mutate] of Object.entries(malformedMetadata))test(`${name} is re
     mutate(metadata);return new Response(JSON.stringify(metadata));
   },scene.id),/Invalid measured (calibration|geometry metadata)/);
   assert.deepEqual(requests,[`/scenes/${scene.id}/scene.json`]);
+});
+
+test('finite measured bounds must describe the actual buffer extrema',async()=>{
+  const fetcher=async path=>{
+    const response=await fetchAsset(path);
+    if(!path.endsWith('/scene.json'))return response;
+    const metadata=await response.json();metadata.bounds.max[0]=1e308;
+    return new Response(JSON.stringify(metadata));
+  };
+  await assert.rejects(loadScene(fetcher,scene.id),/Invalid measured geometry buffers/);
+});
+
+for(const key of ['positions','colors','triangles','depth'])test(`oversized measured ${key} stream stops at its declared bytes`,async()=>{
+  const chunkBytes=65536,limit=key==='depth'?scene.camera.width*scene.camera.height*2:
+    key==='triangles'?scene.triangleCount*12:scene.pointCount*12;
+  let chunks=0,cancelled=false;
+  // Explicit corruption stream; unchanged real scene metadata, no altered runtime data.
+  const fetcher=path=>path.endsWith('/'+scene.buffers[key])?new Response(new ReadableStream({
+    pull(controller){chunks++;controller.enqueue(new Uint8Array(chunkBytes));},
+    cancel(){cancelled=true;},
+  },{highWaterMark:0})):fetchAsset(path);
+  await assert.rejects(loadScene(fetcher,scene.id),/Artifact exceeds declared byte length/);
+  assert.equal(chunks,Math.floor(limit/chunkBytes)+1);
+  assert.equal(cancelled,true);
 });

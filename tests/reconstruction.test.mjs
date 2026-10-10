@@ -65,8 +65,26 @@ for(const [label,mutate] of Object.entries({
   'reversed bounds':g=>g.bounds.min[0]=2,'range mismatch':g=>g.displayDomain.maxDepthMeters=500,
   'measured buffer alias':g=>g.buffers.positions=scene.buffers.positions,
   'duplicate estimated buffers':g=>g.buffers.colors=g.buffers.positions,
+  'excess point allocation':g=>g.pointCount=1_000_001,
+  'excess triangle allocation':g=>g.triangleCount=2_000_001,
 }))test(`invalid estimate ${label} rejects`,async()=>{
   await assert.rejects(loadScene(await source({mutate}),scene.id),/estimated reconstruction|separate measured buffers/i);
+});
+
+test('finite false estimated bounds cannot overflow renderer framing',async()=>{
+  await assert.rejects(loadScene(await source({mutate:g=>g.bounds.max[0]=1e308}),scene.id),/Invalid estimated reconstruction buffers/);
+});
+
+for(const key of Object.keys(arrays))test(`oversized estimated ${key} stream stops at its declared bytes`,async()=>{
+  const original=await source();let chunks=0,cancelled=false;
+  const chunkBytes=16,limit=arrays[key].byteLength;
+  const fetcher=path=>path.endsWith('/'+descriptor().buffers[key])?new Response(new ReadableStream({
+    pull(controller){chunks++;controller.enqueue(new Uint8Array(chunkBytes));},
+    cancel(){cancelled=true;},
+  },{highWaterMark:0})):original(path);
+  await assert.rejects(loadScene(fetcher,scene.id),/Artifact exceeds declared byte length/);
+  assert.equal(chunks,Math.floor(limit/chunkBytes)+1);
+  assert.equal(cancelled,true);
 });
 
 for(const [label,key,alter] of [

@@ -13,6 +13,8 @@ npm run build
 
 The frontend uses React, Vite, Three.js, Geist Mono and Phosphor icons. No model or sponsor API calls run at startup. `npm run build` compiles the frontend without private configuration or datasets. Prepared measurement assets are intentionally untracked; prepare authorized real sources below before the data-dependent tests or comparison. Missing assets fail explicitly.
 
+The local loader supports at most 1,000,000 points and 2,000,000 triangles per measured or estimated geometry, and 16,000,000 calibrated image pixels. These are allocation limits, not validated geographic coverage or performance guarantees. Geometry and depth streams must match their declared byte lengths and checksums; overlong streams are cancelled. Declared bounds must match the loaded geometry extrema within the existing 0.00002 m serialization tolerance, which is not physical measurement accuracy.
+
 For the existing configured Sites adapter, run `npm run build:sites` followed by `npm run test:sites`. Packaging requires the actual local `.openai/hosting.json`; it does not synthesize configuration or publish anything. A frontend-only build does not establish packaged-server verification.
 
 ## Use the workspace
