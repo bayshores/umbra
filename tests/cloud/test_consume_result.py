@@ -219,6 +219,25 @@ class ConsumeResult(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.check(expected_runtime_contract_sha256=evidence.digest(raw))
 
+    def test_retrieval_window_is_bounded_and_bound_to_submitted_arguments(self):
+        runtime = {**self.runtime, 'retrievalWindowSeconds': 600}
+        runtime_raw = evidence.canonical(runtime)
+        self.runtime_path.write_bytes(runtime_raw)
+        # The previous submission has no retention flag and must fail even if rehashed.
+        with self.assertRaises(ValueError):
+            self.check(expected_runtime_contract_sha256=evidence.digest(runtime_raw))
+        expected = {**self.expected,
+                    'args': consumer.expected_arguments(runtime, ID, evidence.digest(self.plan_raw))}
+        expected_raw = evidence.canonical(expected)
+        self.expected_path.write_bytes(expected_raw)
+        with patch.object(evidence, 'collect', side_effect=AssertionError('No provider request')):
+            _, _, context = self.check(expected_runtime_contract_sha256=evidence.digest(runtime_raw),
+                                       expected_job_sha256=evidence.digest(expected_raw))
+        self.assertEqual(context['claim'], 'offline_consistency_only')
+        for window in (True, -1, 601, 1.5, '600'):
+            with self.subTest(window=window), self.assertRaises(ValueError):
+                consumer.runtime_contract(evidence.canonical({**self.runtime, 'retrievalWindowSeconds': window}))
+
     def test_rebound_tensor_environment_model_and_source_path_claims_are_rejected(self):
         original = copy.deepcopy(self.producer)
         candidates = []

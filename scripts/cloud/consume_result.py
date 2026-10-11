@@ -33,8 +33,11 @@ def remote_path(value):
 
 def runtime_contract(raw):
     contract = evidence.parse_json(raw)
-    evidence.require(set(contract) == RUNTIME_FIELDS and type(contract['schemaVersion']) is int
+    evidence.require(set(contract) in (RUNTIME_FIELDS, RUNTIME_FIELDS | {'retrievalWindowSeconds'})
+                     and type(contract['schemaVersion']) is int
                      and contract['schemaVersion'] == 1 and contract['pythonCommand'] == 'python')
+    window = contract.get('retrievalWindowSeconds', 0)
+    evidence.require(type(window) is int and 0 <= window <= 600)
     binding.sha(contract['wrapperSha256'])
     environment = contract['environment']
     evidence.require(type(environment) is dict and set(environment) == ENVIRONMENT_FIELDS
@@ -47,9 +50,13 @@ def runtime_contract(raw):
 
 
 def expected_arguments(contract, submission_id, plan_sha256):
-    return ' '.join(('-B', contract['wrapperPath'], '--submission-id', submission_id,
+    arguments = ' '.join(('-B', contract['wrapperPath'], '--submission-id', submission_id,
                      '--plan-sha256', plan_sha256, '--plan', contract['planPath'],
                      '--model', contract['modelPath'], '--output', contract['outputPath'], '--execute'))
+    window = contract.get('retrievalWindowSeconds', 0)
+    if window:
+        arguments += ' --retrieval-window-seconds ' + str(window)
+    return arguments
 
 
 def resolve_reference(parent, value):

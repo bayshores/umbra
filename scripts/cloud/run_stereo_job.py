@@ -2,8 +2,10 @@
 """Explicit one-job NVIDIA CPU wrapper; output binding is not Nebius proof."""
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
+import time
 
 from job_evidence import RedactedParser, canonical, digest, require
 from result_binding import (bundle_payloads, make_binding, nvidia, open_directory,
@@ -90,6 +92,32 @@ def run_job(submission_id, plan_sha256, plan_path, model_path, output, *, execut
         os.close(parent)
 
 
+def wait_for_retrieval(output, submission_id, seconds):
+    """Keep a successful ephemeral result alive until retrieval is acknowledged."""
+    require(type(seconds) is int and 0 <= seconds <= 600)
+    if seconds == 0:
+        return
+    submission(submission_id)
+    acknowledgement = Path(output).parent / ('.' + submission_id + '-retrieved')
+    require(not os.path.lexists(acknowledgement))
+    expires = time.monotonic() + seconds
+    print('Result ready; awaiting retrieval acknowledgement.', flush=True)
+    while True:
+        remaining = expires - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('Result retrieval window expired')
+        try:
+            info = acknowledgement.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None:
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and info.st_size == 0)
+            if time.monotonic() >= expires:
+                raise TimeoutError('Result retrieval window expired')
+            return
+        time.sleep(min(1.0, remaining))
+
+
 def main(argv=None):
     parser = RedactedParser(description=__doc__)
     parser.add_argument('--submission-id', required=True)
@@ -97,12 +125,20 @@ def main(argv=None):
     for name in ('plan', 'model', 'output'):
         parser.add_argument('--' + name, required=True, type=Path)
     parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--retrieval-window-seconds', type=int, default=0,
+                        help='Optional acknowledgement window, 0–600 seconds; no inference retries.')
     try:
         args = parser.parse_args(argv)
+        require(0 <= args.retrieval_window_seconds <= 600)
+        if args.retrieval_window_seconds:
+            submission(args.submission_id)
+            acknowledgement = args.output.parent / ('.' + args.submission_id + '-retrieved')
+            require(not os.path.lexists(acknowledgement))
         run_job(args.submission_id, args.plan_sha256, args.plan, args.model, args.output,
                 execute=args.execute)
+        wait_for_retrieval(args.output, args.submission_id, args.retrieval_window_seconds)
     except (Exception, KeyboardInterrupt):
-        print('Stereo job failed or refused; details redacted; no successful binding.', file=sys.stderr)
+        print('Stereo job failed or refused; details redacted; no successful delivery.', file=sys.stderr)
         return 1
     print('Saved application output binding; service execution remains unauthenticated.')
     return 0

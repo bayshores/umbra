@@ -117,10 +117,29 @@ and `job-result.json`. The binding records the unique 32-hex submission identifi
 plan/model/cache/code/tensor identities, wrapper source hash and output hashes.
 It claims only `application_output_binding_only`. The CPU producer remains a
 record of the process inside the workload; it is not relabelled as authenticated
-Nebius execution. Failure retains available raw child error bytes and never leaves
-this wrapper's success marker. The script accepts no credentials or billing flags.
+Nebius execution. Inference or binding failure retains available raw child error
+bytes and never leaves this wrapper's success marker. A later retrieval failure
+may retain a valid application-only binding, but establishes neither delivery nor
+a successful provider Job. The script accepts no credentials or billing flags.
 Use `python3 scripts/cloud/run_stereo_job.py --help` to inspect required arguments;
 execution is not a setup check and needs the project's separate authorization.
+
+For an ephemeral Serverless Job, `--retrieval-window-seconds 600` keeps a
+successful result available for at most ten minutes. After a controlled download
+and offline validation, the coordinator creates the empty regular file
+`/output/.<submission-id>-retrieved` outside the result bundle. The wrapper then
+exits normally so the Job can reach `COMPLETED`; cancelling a successful job
+would instead fail the existing Job evidence check. A pre-existing acknowledgement
+is refused before inference. The acknowledgement must be an empty regular
+non-symlink file owned by the wrapper's own user (root in the current image), so
+create it from inside the container as its default user, for example
+`sudo docker exec -i <container> python -B -` with an exclusive `os.open`. The
+wrapper polls about once per second and rejects one it first observes after the
+window ends. No acknowledgement within the window is a failure,
+not a successful delivery. Zero (the default) preserves ordinary local execution.
+The runtime contract's optional `retrievalWindowSeconds` pins this exact flag.
+The provider timeout and coordinator cancellation deadline remain separate
+controls; this acknowledgement window is not a provider billing cutoff.
 
 `result_binding.validate_binding(bundle_root, expected_submission_id,
 expected_plan_sha256, expected_binding_sha256=...)` returns the original producer
