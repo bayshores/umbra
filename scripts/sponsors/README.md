@@ -130,7 +130,9 @@ Endpoint `https://api.tokenfactory.nebius.com/v1/chat/completions`, model
 disposition are already determined by local checks. These helpers are retained
 for contract-regression history and have no dispatch or application consumer.
 The commands below describe that legacy adapter; they are not the current
-integration plan.
+integration. The application's current Nemotron role is the scenario assistant
+(`worker/nemotron.js`, `src/scenario-assistant.mjs`, `src/nemotron-client.mjs`),
+described in the main README.
 Evidence JSON has exact keys `schemaVersion:1`, `observationId`, `evidence`, and
 `requiredMissing`. Each evidence item has unique `id`, `state` (`measured`,
 `predicted`, or `Unknown`), a short source-grounded `summary`, and a pinned external
@@ -198,7 +200,7 @@ be $0.06303744. These are conditional calculations, not an executable budget or 
 authorization. Request byte length is not assumed to bound billed tokens. A separate
 coordinator experiment has reached real Nemotron inference through Token Factory
 with a verified account-specific envelope. Its completion was truncated and
-rejected before scene preparation; no substantive application role is accepted.
+rejected before scene preparation; that legacy role is not accepted.
 That experiment does not validate this legacy audit adapter or close eligibility,
 accuracy or coverage requirements.
 

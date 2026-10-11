@@ -1,6 +1,6 @@
 # Sightline
 
-A local, single-workspace parking visibility comparison using real DrivingStereo images, sparse reference-depth data and an explicitly estimated NVIDIA reconstruction. The runtime contains no procedural street, preset actor coordinates, preset actor dimensions, fabricated unknown volume, or demo response. Missing assets and invalid inputs stop the comparison explicitly.
+A local, single-workspace parking visibility comparison using real DrivingStereo images, sparse reference-depth data and an explicitly estimated NVIDIA reconstruction. The runtime contains no procedural street, preset actor coordinates, built-in actor dimension tables, fabricated unknown volume, or demo response. Dimensions suggested by the optional NVIDIA Nemotron assistant appear as declared, editable what-if values. Missing assets and invalid inputs stop the comparison explicitly.
 
 ## Run and verify
 
@@ -11,7 +11,7 @@ npm test
 npm run build
 ```
 
-The frontend uses React, Vite, Three.js, Geist Mono and Phosphor icons. No model or sponsor API calls run at startup. `npm run build` compiles the frontend without private configuration or datasets. Prepared measurement assets are intentionally untracked; prepare authorized real sources below before the data-dependent tests or comparison. Missing assets fail explicitly.
+The frontend uses React, Vite, Three.js, Geist Mono and Phosphor icons. No model or sponsor API calls run at startup; the optional Nemotron assistant calls Nebius Token Factory only when you press Ask or Check distances. `npm run build` compiles the frontend without private configuration or datasets. Prepared measurement assets are intentionally untracked; prepare authorized real sources below before the data-dependent tests or comparison. Missing assets fail explicitly.
 
 The local loader supports at most 1,000,000 points and 2,000,000 triangles per measured or estimated geometry, and 16,000,000 calibrated image pixels. These are allocation limits, not validated geographic coverage or performance guarantees. Geometry and depth streams must match their declared byte lengths and checksums; overlong streams are cancelled. A scene load has a shared 30-second deadline. Failure or leaving the view aborts its pending requests and body reads; Retry loading starts a new manual attempt. The deadline cannot preempt synchronous CPU validation, but a late result is rejected before exposure. Declared bounds must match the loaded geometry extrema within the existing 0.00002 m serialization tolerance, which is not physical measurement accuracy.
 
@@ -24,6 +24,24 @@ Use Crossing, Vehicle and Person in the header to select the object you are plac
 Enter vehicle width, height and length, and target height in meters. These describe declared what-if actors, not detected objects. Compare positions becomes available when all required inputs are valid. It initializes the proposal at the annotated current position and the driver at the recorded camera, in the same workspace. Drag the circular split grip, or use its keyboard arrows/Home/End, to reveal current and proposed positions through one shared calibrated camera. Move the proposed vehicle with the top-down drag, slider or numeric input. The driver slider moves both scenarios along the annotated parking axis and remains behind the target. Bounds come from the captured geometry and annotation. Edit placements returns to the existing annotations and dimensions. The top-down map identifies current/proposed vehicles, person and driver with object pictograms; the proposed vehicle has a filled sea-glass marker. No sightline ray or letter-marker key is drawn.
 
 Placements retain their selected measured 3D coordinates, including local height, rather than flattening them onto the estimated road plane. The vehicle's front midpoint and person's foot therefore remain registered to their selected pixels at the recorded camera. Parking distances and movement use a horizontal axis; the proposed vehicle keeps the measured starting height. This is a declared pose, not validated contact across the vehicle footprint or tracking of terrain at its proposed position. Pixel registration does not establish physical depth accuracy.
+
+## NVIDIA Nemotron assistant (Nebius Token Factory)
+
+After you place the crossing, vehicle and person, the assistant row under the header accepts a plain-English what-if, such as "box truck 10 ft back, child". NVIDIA Nemotron 3.5 Lightning, called at runtime through the Nebius Token Factory chat API with tool calling, declares the vehicle size, person height and distance. Sightline applies them to the normal fields and computes Blocked or Unknown with its own geometry. Nemotron then writes a short answer from those computed results.
+
+Check distances asks Nemotron to pick your vehicle plus up to three common parked vehicle types. Sightline tests each one locally at every 0.25 m of setback and shows where the declared vehicle stops blocking the line from the driver eye to the person's height point. The 15 ft and 20 ft marks are shown as reference. California Vehicle Code §22500(n) uses 20 ft for parking near crosswalks. Sightline does not decide legal compliance. Click a row to apply that vehicle and distance.
+
+Nemotron never chooses image points or coordinates and never decides visibility. Every value it declares stays visible and editable. Answers that use unsupported wording or numbers absent from the computed results are replaced by the app's own computed line. Dragging, sliders and comparisons never call the model.
+
+To enable it locally, export these before `npm run dev` (see `.env.example`):
+
+```sh
+export NEMOTRON_ENABLED=1
+export NEMOTRON_BUDGET_USD=0.05
+export TOKEN_FACTORY_KEY_FILE=/path/to/token-factory.key
+```
+
+The key file must hold only your Token Factory API key, end in `.key`, be owned by you with mode 600, and be neither a symlink nor a hard link. The local server reads it only for a request and never sends it to the browser. The assistant route answers only loopback requests from this machine. The local server fixes the model, prompts, tools and a 600-token output cap. It allows one call at a time with no retries. It records each reservation and settled cost in `nemotron-usage.jsonl` next to the key file, so every checkout using that key shares one spending cap that survives restarts. The hosted Sites worker keeps the assistant off until a durable shared spending limit exists.
 
 The current scope is local placement and visibility comparison. Packet/export controls and their download endpoint were removed at Sean's request. Scene assets retain provenance and integrity checks for the measured pipeline. Unknown routes, including the former download endpoint, stay 404.
 
@@ -41,7 +59,7 @@ The low-level `triangleHit` helper takes ordinary arrays of three finite numbers
 
 The current sparse-depth pipeline does not produce Clear. Its previous pixel-cone rule could infer empty space around a sampled ray without observing that space. The angular-depth coverage calculation is retained as a diagnostic, and any remaining sightline is Unknown until a sensor-specific free-space footprint and operating resolution are independently validated. Missing depth, out-of-frame regions and beyond-observed-surface space remain unknown. Useful validated clear-space coverage is unfinished; returning Unknown everywhere is not the project's completion criterion.
 
-This compares one target point under geometric assumptions. It does not assess safety, crash risk, recognition, reaction time or regulatory compliance. Parking-ranking robustness, uncertainty sensitivity, independent scenes, physical reconstruction accuracy and actual Nebius runtime integration remain pending.
+This compares one target point under geometric assumptions. It does not assess safety, crash risk, recognition, reaction time or regulatory compliance. Parking-ranking robustness, uncertainty sensitivity, independent scenes and physical reconstruction accuracy remain pending.
 
 ## Development evaluation
 
@@ -82,7 +100,7 @@ Use the existing preparation environment and the registered producer/source arti
 
 The current development scene renders 159,495 estimated points and 257,733 triangles from the genuine C-FoundationStereo-S output. Display support uses the existing 80 m range, nominal right-pixel bounds within the original crop and the existing 0.4 m adjacency edge limit. These are visualization limits, not model confidence, observed correspondence or validated physical surfaces. Raw predictions and full-reference diagnostics retain their outliers. Moving the camera reveals holes and stretched surfaces; no hidden filling is applied.
 
-Measured depth, measured geometry, actor anchors, movement limits and visibility queries remain unchanged. The frontend labels the estimate separately from measured anchor support. Missing or corrupted declared estimate assets stop scene loading; measured geometry is not silently substituted after a failure. Vehicle dragging, driver movement and ordinary comparisons only use local assets and calculations. This single cached local NVIDIA role does not establish Nebius execution, selected-track hackathon eligibility, independent accuracy or California coverage.
+Measured depth, measured geometry, actor anchors, movement limits and visibility queries remain unchanged. The frontend labels the estimate separately from measured anchor support. Missing or corrupted declared estimate assets stop scene loading; measured geometry is not silently substituted after a failure. Vehicle dragging, driver movement and ordinary comparisons only use local assets and calculations. On October 10, 2026 the same pinned C-FoundationStereo-S model also ran once as a Nebius AI Cloud Serverless Job on CPU for one development crop. Its output was retrieved, checked and attached through `scripts/california/attach_av2_prediction.py --direct-native` with the Job's control record. Neither run establishes independent accuracy or California coverage.
 
 ## Reproduce scene preparation
 
