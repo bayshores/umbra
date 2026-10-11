@@ -65,8 +65,8 @@ function addVehicle(center, dimensions, axis, group, baseline = false) {
   const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
   const yaw = Math.atan2(axis[0], axis[2]);
   const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
-    color: baseline ? 0x9aa5a2 : 0x9dc8ba, transparent: true,
-    opacity: baseline ? 0.08 : 0.12, depthWrite: false, side: THREE.DoubleSide,
+    color: baseline ? 0x9aa5a2 : 0x9dc8ba, transparent: baseline,
+    opacity: baseline ? 0.08 : 1, depthWrite: !baseline, side: THREE.DoubleSide,
   }));
   fill.position.set(...center);
   fill.rotation.y = yaw;
