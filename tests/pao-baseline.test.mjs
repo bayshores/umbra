@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {suggestedSetup} from '../src/suggestions.mjs';
 import {devDataPresent,loadDevelopmentScene,signedClearance,appIntersects,boxesOverlap,percentile,clickToGround,suggestionConsistency,
-  setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters} from '../scripts/evaluation/pao-baseline.mjs';
+  setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters,GROUNDED_DIR} from '../scripts/evaluation/pao-baseline.mjs';
 
 const near=(a,b,tolerance,what)=>assert.ok(Math.abs(a-b)<=tolerance,`${what??''} ${a} differs from ${b}`);
 
@@ -38,11 +38,12 @@ test('baseline helpers: upright box overlap and nearest-rank percentile',()=>{
 
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
 const skip=devDataPresent()?false:'AV2 8c development data is local-only and not present';
-// The reproduced numbers belong to these data pins; other pins run the invariant checks only.
-const PINS={ground:'6dc1a733c9ea37c89c50e58839b0ca41b6625848fec57134426c36bfe183acd7',suggestions:'94b294f3b7f7abd1e9fc58994e8e0a72f277b59c5e6490e3596157d05533d248'};
+// The expected numbers belong to these data pins (grounded-v3.1, protocol v3.1); other pins run the invariant checks only.
+const PINS={ground:'b92ddab7f6323aec16044f9b34ef4b097437776b76cb12535072e8e1c938a305',suggestions:'b0bed508f0c6a6a85b7ce9d851227b338450741e1e2e24f1417109e0949357b9'};
 
-test('baseline on AV2 8c: reproduces the planning lanes and keeps its own invariants',{skip},async()=>{
+test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked-end range and its own invariants',{skip},async()=>{
   const {scene,entry}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions);
+  assert.equal(GROUNDED_DIR,'grounded-v3.1/');
   const pinned=entry.ground.sha256===PINS.ground&&entry.suggestions.sha256===PINS.suggestions;
   const first=firstLoad(scene,setup),click=clickToGround(scene),consistency=suggestionConsistency(scene),sweep=setbackSweepBaseline(scene,setup),end=blockedEndRange(scene,setup);
   for(const k of ['child','adult']) {
@@ -57,27 +58,37 @@ test('baseline on AV2 8c: reproduces the planning lanes and keeps its own invari
   assert.equal(honesty.clearanceStateMismatches,0);assert.equal(honesty.borderline.blockedCutInLessThan,0);
   assert.equal(honesty.startValues.conflictReportedBlocked,0);
   for(const who of ['person','driver'])assert.equal(honesty[`sweepRowsWith${who[0].toUpperCase()+who.slice(1)}InsideBox`].blocked??0,0,who);
+  // Every click band keeps its integer (M0) and fractional columns; nothing is placed beyond 30 m.
+  assert.deepEqual(click.fractionalClickBands.map(x=>x.band),click.bands.map(x=>x.band));
   assert.doesNotMatch(JSON.stringify([first,click,consistency,sweep,end,honesty]),/park/i);
   if(!pinned)return;
-  assert.deepEqual([first.current,first.proposed],['unknown','unknown']);near(first.clearanceM,.0251,.001,'first-load clearance');
-  const lane=click.laneBandsForReproduction;
-  for(const [i,p95,coverage] of [[0,.144,1],[1,.881,.954],[2,.713,.98],[3,1.417,1],[4,5.755,.842]]) {
-    near(lane[i].horizontalErrorM.p95,p95,.01,lane[i].band);near(lane[i].shownUncertaintyCoverage,coverage,.002,lane[i].band);
-  }
-  for(const [k,v] of [['crossing',.1437],['vehicleFront',.1767],['person',.2096]])near(consistency.roles[k].horizontalM,v,.0005,k);
-  // M1: of the 41 rows whose line touches the box, 0.85, 1.10 and 10.35 m are too close to call (child); for the adult
-  // all 41 are. The stop distance is unchanged; the stationary vehicle's own result is Blocked at 346 driver positions
-  // and too close to call at 39 (385 touched the line before M1).
-  assert.deepEqual([sweep.child.lineTouchesBoxRows,sweep.child.blockedRows,sweep.child.tooCloseToCallRows],[41,38,[.8531,1.1031,10.3531]]);
-  assert.deepEqual([sweep.adult.lineTouchesBoxRows,sweep.adult.blockedRows,sweep.adult.tooCloseToCallRows.length],[41,0,41]);
-  near(sweep.child.stopsBlockingAtRowM,10.603,.001);
-  assert.deepEqual(sweep.child.whatIfOverlapsAnnotatedSetbacksM,{'REGULAR_VEHICLE:cf467f3d':[12.02,13.52]});
-  assert.deepEqual(sweep.child.rows.filter(x=>x.reason==='overlaps-real-object').map(x=>x.setbackM),sweep.child.rows.filter(x=>x.overlapsAnnotated).map(x=>x.setbackM));
-  // Where the line stops touching the box (the lanes' 10.53 m and the app's stopsBlockingAt meaning) and where the app's
-  // Blocked (a cut of at least 0.10 m, metric H) ends are different numbers: 10.53 m and 10.12 m for the child; the
-  // adult has no Blocked interval at all.
-  near(end.atNamedEye.lineTouchesUntilM,10.5338,.0005);near(end.atNamedEye.appBlockedFromM,1.2027,.0005);near(end.atNamedEye.appBlockedUntilM,10.1214,.0005);
-  assert.deepEqual([sweep.child.lineTouchesIntervalsM,sweep.child.appBlockedIntervalsM,sweep.adult.appBlockedIntervalsM],[[[.7903,10.5338]],[[1.2027,10.1214]],[]]);
+  // Contract A6: first load Unknown / Unknown, the averaged box misses the line by 0.0624 m at a 0.4198 m setback.
+  assert.deepEqual([first.current,first.proposed],['unknown','unknown']);near(first.clearanceM,.06241,1e-4,'first-load clearance');near(first.baselineSetbackM,.41981,1e-4);
+  // Metric C: the points the app uses lie on their mapped points; the stored vehicle-front pixelUV ray hit does not (raster
+  // shadow, 1.0285 m: target <= 0.05 m NOT met there), and no result uses it (protocol v3.1 declaredReplacement).
+  for(const k of ['crossing','vehicleFront','person'])near(consistency.roles[k].pointUsed.horizontalM,0,1e-6,k);
+  assert.equal(consistency.roles.vehicleFront.pointUsed.source,'averaged front point');
+  near(consistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1.028483,1e-6);
+  assert.deepEqual(Object.values(consistency.roles).map(x=>[x.metricC.pointUsedMet,x.metricC.pixelUVRayHitMet]),[[true,true],[true,false],[true,true]]);
+  for(const [k,v] of [['crossing',.976368],['vehicleFront',1.065777],['person',.306051]])near(consistency.roles[k].integerAnchorAlone.horizontalM,v,1e-6,k);
+  // Metric B (M0 integer click): 12-25 m coverage 0.962; 516 of 562 returns at 30-60 m refused as too far.
+  const band=x=>click.bands.find(b=>b.band===x);
+  near(band('12-25 m').shownUncertaintyCoverage,.962,1e-3);assert.equal(band('30-60 m').unknown['Too far to place (over 30 m).'],516);
+  // Contract A6 intervals (bisected; A6 lists a 0.005 m grid).
+  assert.deepEqual([sweep.child.lineTouchesIntervalsM,sweep.child.appBlockedIntervalsM,sweep.adult.appBlockedIntervalsM],[[[.6784,10.4562]],[[1.0928,10.0419]],[[6.0274,10.0419]]]);
+  assert.deepEqual([sweep.child.lineTouchesBoxRows,sweep.child.blockedRows,sweep.child.tooCloseToCallRows],[41,38,[.8532,10.1032,10.3532]]);
+  near(sweep.child.stopsBlockingAtRowM,10.6032,1e-3);
+  assert.deepEqual(sweep.child.whatIfOverlapsAnnotatedSetbacksM,{'REGULAR_VEHICLE:cf467f3d':[11.88,13.38]});
+  // Plan M4: of the five rows metric F marked likely false on protocol v2, 1.10 and 9.85 m are still plain Blocked; 0.85,
+  // 10.10 and 10.35 m are Unknown (too close to call). The margin was not tuned to remove them.
+  assert.deepEqual(sweep.likelyFalseRowsV2.map(x=>[x.v2SetbackM,x.state,x.plainBlocked]),
+    [[.85,'unknown',false],[1.1,'blocked',true],[9.85,'blocked',true],[10.1,'unknown',false],[10.35,'unknown',false]]);
+  // Protocol v3.1 evaluation.stopsBlockingRange: 81 combinations, the 27 with the driver 0.40 m beyond the recording
+  // camera skipped; the child's line-touch end 10.46 m ranges 9.97-10.71 m and the app's Blocked end 10.04 m 9.56-10.30 m.
+  const range=end.stopsBlockingRange.child;
+  assert.deepEqual([range.combinations,range.skippedDriverPositions,range.lineTouchEndM.withoutInterval,range.blockedEndM.withoutInterval],[81,27,0,0]);
+  near(range.lineTouchEndM.nominal,10.4562,1e-4);near(range.blockedEndM.nominal,10.0419,1e-4);
+  assert.deepEqual([range.lineTouchEndM.range,range.blockedEndM.range],[[9.9651,10.7128],[9.558,10.2984]]);
   assert.match(end.laneReconciliation.find(x=>x.value==='11.37 m').explanation,/^withdrawn/);
-  assert.deepEqual([end.currentResultAcrossDriverPositions.blocked,end.currentResultAcrossDriverPositions.tooCloseToCall],[346,39]);
+  assert.deepEqual([end.currentResultAcrossDriverPositions.blocked,end.currentResultAcrossDriverPositions.tooCloseToCall],[332,37]);
 });

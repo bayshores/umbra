@@ -93,15 +93,6 @@ function terrainCuts(g,start,direction,limit,cuts) {
   }
   return cuts;
 }
-function halfUlpFloat16(value) {
-  const a=Math.abs(value);
-  if(a<2**-14)return 2**-25;
-  let e=Math.floor(Math.log2(a));
-  if(2**e>a)e--;
-  if(2**(e+1)<=a)e++;
-  if(Math.round(a/2**(e-10))*2**(e-10)>=2**(e+1))e++;
-  return 2**(e-10)/2;
-}
 // Closed segment camera origin -> point against every annotated cuboid (box-local inclusive slab test); null when the
 // annotations are unavailable (not evaluated), never false.
 function hiddenByCuboids(g,point) {
@@ -112,11 +103,37 @@ function hiddenByCuboids(g,point) {
     return segmentIntersectsBox(local([0,0,0]),local(point),half.map(n=>-n),half);
   });
 }
-// The runtime pixel -> mapped ground rule (same as scripts/california/prepare_av2_ground.py). Throws the Unknown reason.
-export function mappedGroundHit(scene,pixel) {
-  const [u,v]=pixel??[],c=scene.camera,g=scene.ground;
-  if(!Number.isInteger(u)||!Number.isInteger(v)||u<0||u>=c.width||v<0||v>=c.height)throw new Error('Select a pixel inside the recorded image.');
-  const q=[(u-c.cx)/c.fx,(v-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>row[0]*q[0]+row[1]*q[1]+row[2]*q[2]);
+// Support class and hidden flag of a mapped ground point (protocol supportClasses, hidden): observed nearby when a pinned
+// support return lies within the support radius (horizontal), else mapped, not observed.
+function groundEvidence(scene,point) {
+  const support=scene.groundSupportXZ,radius=scene.ground.supportRadiusMeters;
+  let observed=false;
+  for(let k=0;k<support.length&&!observed;k+=2){const dx=support[k]-point[0],dz=support[k+1]-point[2];observed=Math.sqrt(dx*dx+dz*dz)<=radius;}
+  const supportClass=observed?'observed-nearby':'map-only';
+  return {supportClass,supportLabel:SUPPORT_LABELS[supportClass],hidden:hiddenByCuboids(scene.ground,point)};
+}
+// A crop position (protocol v3 pixelRay.pixelCenter): finite [u, v] with 0 <= u <= width-1 and 0 <= v <= height-1;
+// integers are pixel centres and fractional values are allowed.
+const cropPosition=(c,p)=>Array.isArray(p)&&p.length===2&&p.every(Number.isFinite)&&p[0]>=0&&p[0]<=c.width-1&&p[1]>=0&&p[1]<=c.height-1;
+// A user position (a click, typed pixel fields, a Nemotron declaration or a suggestion's integer anchor) is a whole pixel
+// inside the crop, as before protocol v3 and as protocol v3.1 currentVehicle.declaredReplacement says ("an integer
+// pixel"). A fractional position reaches mappedGroundHit only as an untouched suggestion's pixelUV (evaluatedPosition),
+// in the suggestion loader and in the evaluation harness. Why (v3.1 review): namesAnnotatedFront takes whole pixels
+// only, so a typed fractional front next to the anchor (e.g. [374.5, 191] on AV2 8c) became a declared box at its own
+// raster-shadowed ray hit, 1.47 m from the crossing and Blocked, instead of naming the stationary vehicle.
+function userPixel(scene,pixel) {
+  const c=scene.camera;
+  if(!Array.isArray(pixel)||pixel.length!==2||!pixel.every(Number.isInteger)||pixel[0]<0||pixel[0]>=c.width||pixel[1]<0||pixel[1]>=c.height)
+    throw new Error('Select a pixel inside the recorded image.');
+  return pixel;
+}
+// The runtime crop position -> mapped ground rule (same as scripts/california/prepare_av2_ground.py pixel_ground_hit, protocol
+// v3): first hit of the camera ray with the raster, then the placement range limit, then the drivable test. Throws the
+// Unknown reason. alongRayUncertaintyM = the ground layer's fitted height band / sin(depression).
+export function mappedGroundHit(scene,position) {
+  const c=scene.camera,g=scene.ground;
+  if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
+  const [u,v]=position,q=[(u-c.cx)/c.fx,(v-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>row[0]*q[0]+row[1]*q[1]+row[2]*q[2]);
   const norm=Math.sqrt(raw[0]*raw[0]+raw[1]*raw[1]+raw[2]*raw[2]),d=raw.map(n=>n/norm),max=g.maxRangeMeters;
   if(!(d[1]<0))throw new Error('Pixel ray does not descend toward the ground.');
   const cuts=terrainCuts(g,[0,0],[d[0],d[2]],max,[0,max]).sort((x,y)=>x-y);
@@ -131,37 +148,40 @@ export function mappedGroundHit(scene,pixel) {
     else if(ground/d[1]<=tb){t=ground/d[1];hitKind='top';}
     else continue;
     if(t<=0)throw new Error('Camera origin is not above the mapped ground.');
-    const point=[t*d[0],t*d[1],t*d[2]];
+    const point=[t*d[0],t*d[1],t*d[2]],limit=g.placementRangeLimitMeters;
+    // Sean (October 12): placement beyond 30 m is refused (the along-ray uncertainty there would be useless).
+    if(Math.hypot(point[0],point[2])>limit)throw new Error(`Too far to place (over ${limit} m).`);
     if(!insideDrivable(g.drivableAreas,point[0],point[2]))throw new Error('First mapped-ground hit is outside the mapped drivable area.');
-    const support=scene.groundSupportXZ,radius=g.supportRadiusMeters;
-    let observed=false;
-    for(let k=0;k<support.length&&!observed;k+=2){const dx=support[k]-point[0],dz=support[k+1]-point[2];observed=Math.sqrt(dx*dx+dz*dz)<=radius;}
-    const supportClass=observed?'observed-nearby':'map-only';
-    return {point,supportClass,supportLabel:SUPPORT_LABELS[supportClass],hidden:hiddenByCuboids(g,point),
-      alongRayUncertaintyM:(g.roadToleranceMeters+halfUlpFloat16(cell.cityZ))/-d[1],rangeM:t,hitKind,terrainCityZ:cell.cityZ,terrainCell:cell.cell};
+    return {point,...groundEvidence(scene,point),alongRayUncertaintyM:g.alongRayUncertainty.heightBandMeters/-d[1],
+      rangeM:t,hitKind,terrainCityZ:cell.cityZ,terrainCell:cell.cell};
   }
   throw new Error(`No mapped ground within ${max} m along the pixel ray.`);
 }
 // How far (pixels, each image axis) the vehicle front may be nudged from the suggested annotated front and still name the
-// annotated stationary vehicle (protocol v3 candidate, October 12, 2026; reason: plan M1(d)). A 1-2 px nudge corrects
-// a click; it does not name a different vehicle. Near the horizon one pixel row moves a ground point by up to about a
-// metre (AV2 8c: a nudge of up to 2 px moves the front's ground hit by 0.02-1.22 m, about its shown +/-1.21 m along-ray
-// uncertainty), so before this rule a 1 px nudge swapped the real car for a declared box or was refused. The suggested
-// pixel itself sits 3.3 px from the projection of the annotated front.
+// annotated stationary vehicle (protocol v3 currentVehicle.frontNudgePx; reason: plan M1(d)). A 1-2 px nudge corrects a
+// click; it does not name a different vehicle. Near the horizon one pixel row moves a ground point by up to about a metre
+// (AV2 8c: about its shown +/-0.99 m along-ray uncertainty), so before this rule a 1 px nudge swapped the real car for a
+// declared box or was refused. The suggested pixel is the one containing the exact projection of the averaged front.
 export const ANNOTATED_FRONT_NUDGE_PX=2;
 export const namesAnnotatedFront=(suggested,pixel)=>Array.isArray(pixel)&&pixel.length===2&&Number.isInteger(pixel[0])&&Number.isInteger(pixel[1])&&
   Array.isArray(suggested)&&Math.abs(pixel[0]-suggested[0])<=ANNOTATED_FRONT_NUDGE_PX&&Math.abs(pixel[1]-suggested[1])<=ANNOTATED_FRONT_NUDGE_PX;
-// The annotated stationary vehicle of a mapped-ground scene: suggestions.json names it (vehicle status "annotated", its
-// track) and ground.json holds its cuboid. While the vehicle front pixel stays within ANNOTATED_FRONT_NUDGE_PX of that
-// suggestion and the three size fields still hold it, the current vehicle is this cuboid's exact annotated centre,
-// heading and dimensions; it is never re-derived from the road axis or the front pixel (a nudged front pixel changes
-// nothing about the box). Returns null for any other vehicle (moved further, resized, or not annotated): that one is a
-// declared box. classifySightline takes a horizontal axis, so the heading is the box's horizontal forward direction
-// (its sub-degree pitch and roll are not used). The axis points toward the camera, like the lane axis.
-export function annotatedVehicle(scene,pixels,vehicle) {
-  const v=isMappedGround(scene)?scene.suggestions?.vehicle:null;
-  // Sizes as createScenario reads them (plain decimals), so a value it would refuse never names the annotated vehicle.
-  if(v?.status!=='annotated'||!namesAnnotatedFront(v.pixel,pixels?.parking)||['width','height','length'].some(k=>decimal(vehicle?.[k])!==v.dimensions[k]))return null;
+// The suggestion record of an anchor key (crossing, parking = vehicle front, target = person).
+const ROLE={crossing:'crossing',parking:'vehicle',target:'person'};
+// The position the app evaluates for an anchor (protocol v3 pixelSelection.app): a placed suggestion's exact sub-pixel
+// position (pixelUV) while its integer pixel is still the suggested anchor, otherwise the position as given. An unknown
+// suggestion (e.g. refused as too far) may still carry pixel and pixelUV; it was never placed, so a click on its pixel is
+// evaluated as given. On AV2 8c the integer anchors alone land 0.98 m (crossing) and 0.31 m (person) from their mapped
+// points.
+export function evaluatedPosition(scene,key,pixel) {
+  const e=isMappedGround(scene)?scene.suggestions?.[ROLE[key]]:null;
+  return e&&e.status!=='unknown'&&Array.isArray(e.pixelUV)&&Array.isArray(pixel)&&Array.isArray(e.pixel)&&pixel[0]===e.pixel[0]&&pixel[1]===e.pixel[1]
+    ?[...e.pixelUV]:pixel;
+}
+// The annotated stationary vehicle's averaged box from ground.json (suggestions.json names its track): exact annotated
+// centre, horizontal heading and dimensions, never re-derived from the road axis or the front pixel. classifySightline
+// takes a horizontal axis, so the heading is the box's horizontal forward direction (its sub-degree pitch and roll are
+// not used). The axis points toward the camera, like the lane axis.
+function annotatedBox(scene,v) {
   const boxes=scene.ground.cuboids.items.filter(box=>box.track===v.track);
   if(boxes.length!==1)throw new Error('The annotated vehicle is missing from the mapped ground annotations.');
   const [box]=boxes,M=box.worldFromBox,n=Math.hypot(M[0][0],M[2][0]),axis=[-M[0][0]/n,0,-M[2][0]/n],travel=mappedTravel(scene);
@@ -170,8 +190,40 @@ export function annotatedVehicle(scene,pixels,vehicle) {
   if(-(axis[0]*travel[0]+axis[2]*travel[2])<Math.cos(15*Math.PI/180))throw new Error('The annotated vehicle does not face the direction of travel.');
   return {track:box.track,center:[...box.center],axis,dimensions:{width:box.width,height:box.height,length:box.length}};
 }
+// The annotated stationary vehicle of a mapped-ground scene. While the vehicle front pixel stays within
+// ANNOTATED_FRONT_NUDGE_PX of the suggestion and the three size fields still hold it, the current vehicle is its averaged
+// box exactly (a nudged front pixel changes nothing about the box). Returns null for any other vehicle (moved further,
+// resized, or not annotated): that one is a declared box.
+export function annotatedVehicle(scene,pixels,vehicle) {
+  const v=isMappedGround(scene)?scene.suggestions?.vehicle:null;
+  // Sizes as createScenario reads them (plain decimals), so a value it would refuse never names the annotated vehicle.
+  if(v?.status!=='annotated'||!namesAnnotatedFront(v.pixel,pixels?.parking)||['width','height','length'].some(k=>decimal(vehicle?.[k])!==v.dimensions[k]))return null;
+  return annotatedBox(scene,v);
+}
 // Horizontal centre of an annotated pose's front face (the end its heading points to, away from the camera).
 const annotatedFront=pose=>{const half=pose.dimensions.length/2;return [pose.center[0]-pose.axis[0]*half,0,pose.center[2]-pose.axis[2]*half];};
+// Protocol v3.1 currentVehicle.declaredReplacement: while the front pixel names the annotated stationary vehicle (within
+// the nudge), the vehicle front point is that vehicle's averaged front point at the mapped ground height of its cell (the
+// suggestion's mappedPoint), for the annotated box and for a declared or resized vehicle in its place. The front pixel's
+// own ray hit is never used then: on AV2 8c the raster blocks it 1.03 m short of the front, where a same-size declared box
+// turned Unknown into Blocked. Null when the pixel names no annotated vehicle.
+function namedFront(scene,pixel) {
+  const v=isMappedGround(scene)?scene.suggestions?.vehicle:null;
+  if(v?.status!=='annotated'||!namesAnnotatedFront(v.pixel,pixel))return null;
+  const f=annotatedFront(annotatedBox(scene,v)),y=mappedGroundHeight(scene,f[0],f[2]);
+  if(y===null)throw new Error('No mapped ground height at the stationary vehicle front.');
+  return [f[0],y,f[2]];
+}
+// The ground point and its evidence for an anchor key on a mapped-ground scene: the named stationary vehicle front
+// (namedFront; it is not placed by a ray, so alongRayUncertaintyM is null), else the mapped ground hit at the evaluated
+// position. The anchor's own position must reach mapped ground either way (a nudged front pixel is still placed). The
+// pixel must be a whole pixel (userPixel); only an untouched suggestion is evaluated at its fractional pixelUV.
+export function anchorPoint(scene,key,pixel) {
+  userPixel(scene,pixel);
+  const hit=mappedGroundHit(scene,evaluatedPosition(scene,key,pixel)),front=key==='parking'?namedFront(scene,pixel):null;
+  if(front)return {point:front,...groundEvidence(scene,front),alongRayUncertaintyM:null};
+  return {point:hit.point,supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM};
+}
 // Setback of an annotated pose: the distance along the mapped lane axis from the app's crossing point to the centre of
 // the front face of the box the app tests (the annotated cuboid, sub-degree tilt removed). Current and proposed
 // setbacks, the distance check and Nemotron's facts all use this definition for an annotated vehicle.
@@ -203,16 +255,17 @@ export function mappedTravel(scene) {
 // or an annotated box's nearest front corner).
 const cameraSide=(part,past)=>`Place the current vehicle on the camera side of the crossing (its ${part} is ${fmt2(past)} m past the crossing along the lane).`;
 const separated=(part,gap,tolerance)=>`Current vehicle front must be separated from the crossing (its ${part} is ${fmt2(Math.max(gap,0))} m from it along the lane; more than ${fmt2(tolerance)} m is needed).`;
-// The declared vehicle runs along the mapped lane axis (toward the camera) through its own front. The crossing and front
-// are less than a metre apart, so the axis never comes from those two points. vehicleOrigin is the vehicle's line at
-// the crossing's distance along the axis. check false: the front pixel names the annotated vehicle, whose own box gets
-// the same rules in createScenario (its nearest front corner), so the front pixel's ground hit is not refused here.
+// The declared vehicle runs along the mapped lane axis (toward the camera) through its own front (a declared vehicle in
+// place of the stationary one: that vehicle's front point, anchorPoint). The crossing and front are less than a metre
+// apart, so the axis never comes from those two points. vehicleOrigin is the vehicle's line at the crossing's distance
+// along the axis. check false: the front names the annotated vehicle, whose own box gets the same rules in createScenario
+// (its nearest front corner), so the front point is not refused here.
 function mappedVehicleLine(scene,crossing,parking,check=true) {
   const travel=mappedTravel(scene),axis=[-travel[0],0,-travel[2]];
   const baselineSetback=(parking[0]-crossing[0])*axis[0]+(parking[2]-crossing[2])*axis[2],tolerance=scene.ground.roadToleranceMeters;
   // A front beyond the crossing (negative gap along the axis) needs moving, not separating. Near the horizon one image
-  // pixel can move a ground point by a metre (AV2 8c suggestion: crossing and front 4 px and 0.86 m apart), so a
-  // one-pixel edit of a declared front can land here; the refusal names the measured gap.
+  // pixel can move a ground point by a metre (AV2 8c: the suggested crossing and front pixels are 3 px apart), so a
+  // small edit of a declared front can land here; the refusal names the measured gap.
   if(check&&baselineSetback<-tolerance)throw new Error(cameraSide('front',-baselineSetback));
   if(check&&baselineSetback<=tolerance)throw new Error(separated('front',baselineSetback,tolerance));
   return {axis,baselineSetback,vehicleOrigin:[parking[0]-axis[0]*baselineSetback,parking[1],parking[2]-axis[2]*baselineSetback]};
@@ -241,8 +294,8 @@ function mappedRunEnd(scene,origin,axis,limit) {
 function mappedPlacement(scene,pixels,annotated) {
   const points={},support={};
   for (const key of ['crossing','parking','target']) {
-    const hit=mappedGroundHit(scene,pixels?.[key]);
-    points[key]=hit.point;support[key]={supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM};
+    const {point,...evidence}=anchorPoint(scene,key,pixels?.[key]);
+    points[key]=point;support[key]=evidence;
   }
   const {axis,baselineSetback,vehicleOrigin}=mappedVehicleLine(scene,points.crossing,points.parking,!annotated);
   const captureDistance=dot(sub(scene.camera.eye,points.crossing),axis);
@@ -251,8 +304,9 @@ function mappedPlacement(scene,pixels,annotated) {
   const availableSetback=mappedRunEnd(scene,vehicleOrigin,axis,captureDistance);
   return {...points,axis,baselineSetback,captureDistance,availableSetback,vehicleOrigin,support};
 }
+// A user-selected point: whole pixels only on every scene (mapped ground: userPixel; measured depth: measuredPoint).
 export function roadPoint(scene,pixel,label) {
-  if(isMappedGround(scene))return mappedGroundHit(scene,pixel).point;
+  if(isMappedGround(scene))return mappedGroundHit(scene,userPixel(scene,pixel)).point;
   if(scene.measurements?.kind==='indexedSparse')throw new Error('Ground placement has no validated support in this observation.');
   const point=measuredPoint(scene,pixel);
   if (Math.abs(point[1])>scene.processing.roadToleranceMeters*2) throw new Error(`Choose ${label} on the measured road surface.`);
@@ -268,7 +322,8 @@ export function placementPreview(scene,pixels,vehicle,targetHeight,vehicleDeclar
   const span=Math.hypot(...sub(scene.bounds.max,scene.bounds.min));
   if(isMappedGround(scene)) {
     if(pixels?.crossing&&pixels?.parking&&['width','height','length'].every(k=>vehicle?.[k]!==''&&vehicle?.[k]!=null)) {
-      const crossing=roadPoint(scene,pixels.crossing,'crossing'),parking=roadPoint(scene,pixels.parking,'vehicle');
+      // The same anchor points as the comparison (suggested sub-pixel positions, the named stationary vehicle front).
+      const crossing=anchorPoint(scene,'crossing',pixels.crossing).point,parking=anchorPoint(scene,'parking',pixels.parking).point;
       // The annotated stationary vehicle is drawn in its annotated pose, like the comparison's current vehicle.
       const pose=vehicleDeclared?null:annotatedVehicle(scene,pixels,vehicle);
       const line=mappedVehicleLine(scene,crossing,parking,!pose);
@@ -280,7 +335,7 @@ export function placementPreview(scene,pixels,vehicle,targetHeight,vehicleDeclar
     if(pixels?.target&&targetHeight!==''&&targetHeight!=null) {
       const height=sized(targetHeight,'Target height',SIZE_LIMITS.targetHeight);
       if(height>span)throw new Error('Actor dimensions exceed the measured scene extent.');
-      const hit=mappedGroundHit(scene,pixels.target);
+      const hit=anchorPoint(scene,'target',pixels.target);
       preview.targetGround=hit.point;preview.targetHidden=hit.hidden;
       preview.target=add(preview.targetGround,[0,height,0]);
     }

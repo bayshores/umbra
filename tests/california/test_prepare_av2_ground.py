@@ -46,6 +46,24 @@ PROTOCOL = {
 RETURNS = np.array([[1.0, GROUND_Y, 10.0], [1.2, GROUND_Y + .6, 10.0], [-4.0, GROUND_Y, 21.0],
                     [-1.0, GROUND_Y, 12.0], [np.nan, np.nan, np.nan], [0.0, GROUND_Y + .05, 30.0]])
 ELIGIBLE = np.array([1, 1, 1, 0, 0, 1], np.uint8)
+# Protocol v3 fixture: the v2 fields plus exactProjection, the averaged pose, the fitted band, the 30 m limit and the
+# crossing-error slot (the same keys as .local/evaluation/av2-map-first-2026-10-11/protocol-v3.json).
+PROTOCOL_V3 = {**PROTOCOL, 'protocolVersion': 3, 'pixelSelection': {'rule': 'exactProjection'},
+               'placementRange': {'limitMeters': 30.0},
+               'currentVehicle': {'trackPrefix': 'aaaaaaaa', 'pose': {'rule': 'averageAllAnnotations'}},
+               'alongRayUncertainty': {'rule': 'heightBandMeters / sin(depression)',
+                                       'heightBand': {'method': 'fitThisDevelopmentScene', 'fitSet': 'fixture', 'groundGateMeters': 0.25,
+                                                      'statistic': 'nearest-rank q95 of |dz|, rounded up to 1 mm', 'minimumCount': 50},
+                                       'coverageReport': {'bandsMeters': [[0, 10], [10, 12], [12, 25], [25, 30]], 'definition': 'fixture'}},
+               'crossingError': {'perCrossing': {'77': {'status': 'pending-measurement'}}}}
+RASTER_Y = float(np.float16(GROUND_Y + ORIGIN[2])) - ORIGIN[2]  # the float16 raster's world height (-1.6015625)
+# 100 extra ground returns for the v3 band fit: x = -1.5 (clear of the car, the NaN block and every point the suggestion
+# tests evaluate), z 6.5-29.5, dz = -0.100 ... +0.098 m from the raster (|dz| nearest-rank q95 = 0.094 m), plus five that
+# the fit set must exclude: outside the drivable area, beyond 30 m, above the ground gate, behind the car, not camera-eligible.
+GRID_DZ = (np.arange(100) - 50) * .002
+V3_RETURNS = np.vstack([RETURNS, np.column_stack([np.full(100, -1.5), RASTER_Y + GRID_DZ, np.linspace(6.5, 29.5, 100)]),
+                        [[7.0, RASTER_Y, 20.0], [0.0, RASTER_Y, 40.0], [2.5, RASTER_Y + .3, 20.0], [-4.0, RASTER_Y, 21.5], [2.5, RASTER_Y, 15.0]]])
+V3_ELIGIBLE = np.concatenate([ELIGIBLE, np.ones(104, np.uint8), [0]]).astype(np.uint8)
 
 
 def sha(data):
@@ -108,18 +126,31 @@ def pose_table():
                                  for t in stamps])
 
 
-def write_fixture(root, split=False, moving=False):
-    """Analytic stand-ins for an assembled scene, its preparation and AV2 sources. Returns build() keyword arguments."""
+def uv_of(world):
+    """Floating crop projection of world points with the fixture camera (NaN behind the camera or for NaN rows)."""
+    s = camera_scene(); c = s['camera']; q = np.asarray(world, float) @ np.asarray(s['transform']['worldFromCamera'], float)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        uv = np.column_stack([c['fx'] * q[:, 0] / q[:, 2] + c['cx'], c['fy'] * q[:, 1] / q[:, 2] + c['cy']])
+    uv[~(q[:, 2] > 0)] = np.nan
+    return uv
+
+
+def write_fixture(root, split=False, moving=False, protocol=None, returns=None, eligible=None, annotations=None):
+    """Analytic stand-ins for an assembled scene, its preparation and AV2 sources. Returns build() keyword arguments.
+    protocol/returns/eligible/annotations replace PROTOCOL, RETURNS, ELIGIBLE and the annotation table (v3 tests)."""
+    protocol = PROTOCOL if protocol is None else protocol
+    returns = RETURNS if returns is None else np.asarray(returns, float)
+    eligible = ELIGIBLE if eligible is None else np.asarray(eligible, np.uint8)
     root = Path(root); prepared = root / 'prepared'; assembled = root / 'assembled'; sources = root / 'sources'
     for d in (prepared, assembled, sources):
         d.mkdir(parents=True)
     files = {'map.json': json.dumps(vector_map(split)).encode(), 'sim2.json': json.dumps(SIM2).encode()}
     stream = BytesIO(); np.save(stream, raster()); files['ground.npy'] = stream.getvalue()
-    for name, table in (('poses.feather', pose_table()), ('annotations.feather', annotation_table(moving))):
+    for name, table in (('poses.feather', pose_table()), ('annotations.feather', annotation_table(moving) if annotations is None else annotations)):
         feather.write_feather(table, sources / name); files[name] = (sources / name).read_bytes()
     for name in ('map.json', 'sim2.json', 'ground.npy'):
         (sources / name).write_bytes(files[name])
-    heights = prepare_av2.ground_sample(city(RETURNS), raster(), SIM2)['nominalGroundHeights']
+    heights = prepare_av2.ground_sample(city(returns), raster(), SIM2)['nominalGroundHeights']
     stream = BytesIO(); np.savez_compressed(stream, nominalGroundHeights=heights)
     references = stream.getvalue(); (prepared / 'references.npz').write_bytes(references)
     manifest = {'logId': LOG, 'crossingId': '77', 'outputs': {'references.npz': {'sha256': sha(references), 'bytes': len(references)}},
@@ -127,20 +158,22 @@ def write_fixture(root, split=False, moving=False):
                             for role, name in (('map', 'map.json'), ('groundRaster', 'ground.npy'), ('groundTransform', 'sim2.json'),
                                                ('poses', 'poses.feather'))}}
     manifest_raw = json.dumps(manifest).encode(); (prepared / 'manifest.json').write_bytes(manifest_raw)
-    positions = RETURNS.astype('<f8').tobytes(); eligible = ELIGIBLE.tobytes()
+    positions = returns.astype('<f8').tobytes(); uv = uv_of(returns).astype('<f8').tobytes(); eligible = eligible.tobytes()
     (assembled / 'referencepositions.bin').write_bytes(positions); (assembled / 'referenceeligible.bin').write_bytes(eligible)
+    (assembled / 'referenceuv.bin').write_bytes(uv)
     scene = {'id': 'fixture-scene', 'sourceClass': 'Argoverse2Sensor', **camera_scene(),
              'recordedImage': {'file': 'recorded.png', 'sha256': 'c' * 64},
-             'measurements': {'kind': 'indexedSparse', 'groundPolicy': 'unvalidated', 'count': len(RETURNS),
-                              'buffers': {'referencePositions': 'referencepositions.bin', 'referenceEligible': 'referenceeligible.bin'},
-                              'artifactHashes': {'referencePositions': sha(positions), 'referenceEligible': sha(eligible)},
+             'measurements': {'kind': 'indexedSparse', 'groundPolicy': 'unvalidated', 'count': len(returns),
+                              'buffers': {'referencePositions': 'referencepositions.bin', 'referenceEligible': 'referenceeligible.bin',
+                                          'referenceUV': 'referenceuv.bin'},
+                              'artifactHashes': {'referencePositions': sha(positions), 'referenceEligible': sha(eligible), 'referenceUV': sha(uv)},
                               'provenance': {'preparedManifestSha256': sha(manifest_raw), 'referencesSha256': sha(references),
-                                             'originalSourceRecordBase': '/analytic/prepared', **{k: PROTOCOL['scene'][k] for k in
+                                             'originalSourceRecordBase': '/analytic/prepared', **{k: protocol['scene'][k] for k in
                                                                                          ('logId', 'cameraTimestampNs', 'lidarTimestampNs', 'crossingId')}}},
              'processing': {'groundPolicy': 'unvalidated; nominal terrain is not observed ground'},
              'limitations': ['Native grounding/movement is unvalidated; nominal terrain is not promoted to observed road.', 'Other.']}
     scene_raw = json.dumps(scene).encode(); (assembled / 'scene.json').write_bytes(scene_raw)
-    protocol_raw = json.dumps(PROTOCOL).encode(); (root / 'protocol.json').write_bytes(protocol_raw)
+    protocol_raw = json.dumps(protocol).encode(); (root / 'protocol.json').write_bytes(protocol_raw)
     return dict(scene_path=assembled / 'scene.json', scene_sha256=sha(scene_raw), prepared_path=prepared / 'manifest.json',
                 prepared_sha256=sha(manifest_raw), protocol_path=root / 'protocol.json', protocol_sha256=sha(protocol_raw),
                 annotations_path=sources / 'annotations.feather', annotations_sha256=sha(files['annotations.feather']),
@@ -271,15 +304,179 @@ class GroundBuildTests(unittest.TestCase):
         self.assertFalse(args['output'].exists())
 
 
+class ProtocolV3GroundTests(unittest.TestCase):
+    """Protocol v3: averaged stationary pose, fitted along-ray height band, 30 m placement limit (ground.json schemaVersion 2)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @staticmethod
+    def rows(yaws_deg, centres, dims=None, start=0):
+        """Synthetic annotation rows of one track with identity ego poses (ego frame = city frame)."""
+        out = []
+        for k, (yaw, c) in enumerate(zip(yaws_deg, centres)):
+            half = math.radians(yaw) / 2; d = dims[k] if dims else (4.0, 1.8, 1.5)
+            out.append(dict(timestamp_ns=start + k * 100_000_000, track_uuid=TRACK, category='REGULAR_VEHICLE', length_m=d[0], width_m=d[1],
+                            height_m=d[2], qw=math.cos(half), qx=0., qy=0., qz=math.sin(half), tx_m=c[0], ty_m=c[1], tz_m=c[2], num_interior_pts=9))
+        return out, {r['timestamp_ns']: np.eye(4) for r in out}
+
+    def test_circular_mean_wraps_and_refuses_cancelling_headings(self):
+        self.assertAlmostEqual(abs(math.degrees(tool.circular_mean(np.radians([179., -179., 180.])))), 180., places=9)
+        self.assertAlmostEqual(math.degrees(tool.circular_mean(np.radians([-1., 1., 3.]))), 1., places=6)
+        self.assertAlmostEqual(math.degrees(tool.wrap_angle(math.radians(359.))), -1., places=9)
+        with self.assertRaisesRegex(ValueError, 'cancel'):
+            tool.circular_mean(np.radians([0., 180.]))
+
+    def test_averaged_pose_math(self):
+        # Headings straddle +/-180 degrees: an arithmetic mean would give about 0; the circular mean gives 180.
+        yaws = [178., -178., 179., -179., 180.]
+        centres = [(10.0, 5.0, 1.0), (10.2, 5.1, 1.1), (9.8, 4.9, .9), (10.1, 5.0, 1.0), (9.9, 5.0, 1.0)]
+        dims = [(4.0, 1.8, 1.5), (4.2, 1.9, 1.4), (4.1, 1.85, 1.6), (4.1, 1.8, 1.5), (3.9, 1.8, 1.5)]
+        rows, poses = self.rows(yaws, centres, dims)
+        centre, yaw, median, record = tool.average_track_pose(rows, poses, rows[2]['timestamp_ns'])
+        np.testing.assert_allclose(centre, np.mean(centres, 0), atol=1e-12)
+        self.assertAlmostEqual(abs(math.degrees(yaw)), 180., places=9)
+        np.testing.assert_allclose(median, np.median(dims, 0), atol=0)
+        # Offsets: heading -X (yaw 180), so along = -(x - mean x) and left (+lateral) = -(y - mean y).
+        mean = np.mean(centres, 0); along = -(np.array(centres)[:, 0] - mean[0]); lateral = -(np.array(centres)[:, 1] - mean[1])
+        spread = record['centreSpreadM']
+        self.assertAlmostEqual(spread['alongStd'], float(np.std(along)), places=12); self.assertAlmostEqual(spread['lateralStd'], float(np.std(lateral)), places=12)
+        self.assertAlmostEqual(spread['verticalStd'], float(np.std(np.array(centres)[:, 2])), places=12)
+        self.assertAlmostEqual(spread['maxHorizontalFromMean'], float(np.hypot(along, lateral).max()), places=12)
+        self.assertAlmostEqual(record['yawSpreadDeg']['maxAbs'], 2.0, places=9)
+        sweep = record['sweepRow']
+        self.assertAlmostEqual(sweep['alongM'], along[2], places=12); self.assertAlmostEqual(sweep['lateralM'], lateral[2], places=12)
+        self.assertAlmostEqual(sweep['yawDeg'], -1.0, places=9)
+        self.assertEqual((record['rows'], record['rule']), (5, 'averageAllAnnotations')); self.assertAlmostEqual(record['spanSeconds'], .4)
+        self.assertEqual(record['dimensionRangeM']['length'], [3.9, 4.2])
+        # Input order does not matter, and the upright box points along the averaged yaw.
+        again = tool.average_track_pose(list(reversed(rows)), poses, rows[2]['timestamp_ns'])
+        np.testing.assert_array_equal(again[0], centre); self.assertEqual(again[1:], (yaw, median, record))
+        m = np.asarray(tool.upright_world_from_box(yaw))
+        np.testing.assert_allclose(m @ m.T, np.eye(3), atol=1e-12); self.assertAlmostEqual(np.linalg.det(m), 1., places=12)
+        np.testing.assert_allclose(m[:, 0], [-1, 0, 0], atol=1e-9); np.testing.assert_allclose(m[:, 2], [0, 1, 0], atol=1e-12)
+        with self.assertRaisesRegex(ValueError, 'exactly one row'):
+            tool.average_track_pose(rows, poses, 123)
+        missing = dict(poses); missing.pop(rows[0]['timestamp_ns'])
+        with self.assertRaisesRegex(ValueError, 'pose missing'):
+            tool.average_track_pose(rows, missing, rows[2]['timestamp_ns'])
+
+    def test_fit_height_band_is_order_free_and_rounds_up(self):
+        rng = np.random.default_rng(7); dz = rng.normal(-.008, .03, 2000)
+        band, stats = tool.fit_height_band(dz, 200)
+        q = float(np.percentile(np.abs(dz), 95, method='inverted_cdf'))  # independent nearest-rank definition
+        self.assertEqual(stats['q95AbsM'], q); self.assertEqual(band, math.ceil(q * 1000) / 1000); self.assertGreaterEqual(band, q)
+        self.assertAlmostEqual(stats['medianM'], float(np.median(dz)), places=15); self.assertEqual(stats['count'], 2000)
+        self.assertAlmostEqual(stats['sigmaRobustM'], 1.4826 * float(np.median(np.abs(dz - np.median(dz)))), places=15)
+        self.assertGreaterEqual(stats['withinBandFraction'], .95)
+        for order in (rng.permutation(len(dz)), np.argsort(dz), np.argsort(-np.abs(dz))):
+            self.assertEqual(tool.fit_height_band(dz[order], 200), (band, stats))  # bit-identical in any order
+        self.assertEqual(tool.fit_height_band([.074] * 300, 200)[0], .074)  # an exact millimetre is not bumped up
+        with self.assertRaisesRegex(ValueError, 'at least 200'):
+            tool.fit_height_band(dz[:199], 200)
+        with self.assertRaisesRegex(ValueError, 'at least'):
+            tool.fit_height_band([np.nan] * 300, 200)
+
+    def test_band_fit_refuses_held_out_and_reserve_logs(self):
+        for prefix in ('88f47a10', '3153b5b3', 'd33f667d', 'fd5c6932', '25e5c600', 'e1d68dde', 'a91d4c7b', '4a60c567', 'b6c4361a'):
+            protocol = copy.deepcopy(PROTOCOL_V3); protocol['scene']['logId'] = prefix + '-0000-0000-0000-000000000000'
+            with self.assertRaisesRegex(ValueError, 'Held-out'):
+                tool.along_ray_uncertainty(None, None, None, None, None, None, None, protocol, 60.)
+
+    def build_v3(self, name='a', **options):
+        args = write_fixture(self.root / name, protocol=PROTOCOL_V3, returns=V3_RETURNS, eligible=V3_ELIGIBLE, **options)
+        result = tool.build(**args)
+        return args, result, json.loads((args['output'] / 'ground.json').read_bytes())
+
+    def test_v3_layer_averages_the_current_vehicle_fits_the_band_and_limits_range(self):
+        args, result, ground = self.build_v3()
+        self.assertEqual((ground['schemaVersion'], ground['placementRangeLimitMeters'], ground['roadToleranceMeters']), (2, 30.0, .08))
+        # Averaged pose: the fixture rows jitter in ego x (world X) by 0.004 * ((49 - k) % 3), mean 0.00392 m; the sweep row has 0.
+        car = next(c for c in ground['cuboids']['items'] if c['track'] == TRACK); other = next(c for c in ground['cuboids']['items'] if c['track'] != TRACK)
+        np.testing.assert_allclose(car['center'], [-4. + .00392, -.85, 17.5], atol=1e-9)
+        np.testing.assert_allclose(np.asarray(car['worldFromBox']), [[0, 1, 0], [0, 0, 1], [1, 0, 0]], atol=1e-12)
+        pa = car['poseAverage']; self.assertEqual((pa['rows'], pa['sweepRow']['timestampNs']), (50, str(SWEEP)))
+        self.assertAlmostEqual(pa['sweepRow']['lateralM'], -.00392, places=9); self.assertAlmostEqual(pa['sweepRow']['alongM'], 0, places=9)
+        self.assertNotIn('poseAverage', other); self.assertEqual(result['averagedTracks'], [TRACK])
+        # Band: the fit set is the 100 grid returns plus fixture rows 0 and 5 (dz 0.0015625 and 0.0515625).
+        a = ground['alongRayUncertainty']; fit = a['fit']
+        expected = np.concatenate([GRID_DZ, [GROUND_Y - RASTER_Y, GROUND_Y + .05 - RASTER_Y]])
+        q = float(np.percentile(np.abs(expected), 95, method='inverted_cdf'))
+        self.assertEqual((fit['count'], fit['removedByGroundGate']), (102, 2)); self.assertAlmostEqual(fit['q95AbsM'], q, places=12)
+        self.assertEqual(a['heightBandMeters'], math.ceil(q * 1000 - 1e-9) / 1000); self.assertEqual(result['heightBandMeters'], a['heightBandMeters'])
+        self.assertEqual(a['method'], 'fitThisDevelopmentScene')
+        bands = [b['band'] for b in a['coverage']['fractionalClick']]; self.assertEqual(bands, ['0-10 m', '10-12 m', '12-25 m', '25-30 m'])
+        # Overshooting rays near 30 m are refused by the limit, never placed beyond it.
+        self.assertIn('Too far to place (over 30 m).', a['coverage']['fractionalClick'][-1]['unknown'])
+        self.assertEqual(set(a['coverage']['splitHalf']), {'fitEvenTestOdd', 'fitOddTestEven'})
+        self.assertTrue(any('average of all its annotations' in t for t in ground['limitations']))
+
+    def test_v3_click_errors_match_the_flat_raster_analytically(self):
+        args, _, ground = self.build_v3()
+        scene = json.loads(Path(args['scene_path']).read_bytes()); t = ground['terrain']
+        window = np.frombuffer((args['output'] / 'terrain.bin').read_bytes(), '<f4').reshape(t['rows'], t['columns'])
+        terrain = tool.Terrain(window, t['column0'], t['row0'], t['rasterShape'], t['sim2'], ground['frame']['cityOrigin'])
+        polygons = [np.asarray(x['outline']) for x in ground['drivableAreas']]
+        rows = np.arange(6, 106); positions = V3_RETURNS; uv = uv_of(V3_RETURNS)
+        errors = tool.click_errors(scene, terrain, polygons, positions, uv, rows, 60., 30.)['fractional']
+        placed = np.isfinite(errors['error']); self.assertGreater(placed.sum(), 90)
+        p = positions[rows]; dep = np.arctan2(-p[:, 1], np.hypot(p[:, 0], p[:, 2]))
+        # The ray through a return dz above (below) the flat raster lands |dz| / tan(depression) beyond (before) it.
+        np.testing.assert_allclose(errors['error'][placed], np.abs(GRID_DZ[placed]) / np.tan(dep[placed]), rtol=0, atol=1e-9)
+        np.testing.assert_allclose(errors['sinDepression'][placed], np.sin(dep[placed]), atol=1e-12)
+        band = ground['alongRayUncertainty']['heightBandMeters']
+        table = tool.coverage_table(errors, np.hypot(p[:, 0], p[:, 2]), band, [(0, 30)])[0]
+        self.assertEqual(table['covered'], int((errors['error'][placed] <= band / errors['sinDepression'][placed]).sum()))
+
+    def test_v3_build_is_deterministic_and_v2_protocol_keeps_schema_1(self):
+        first, _, _ = self.build_v3('a'); second, _, _ = self.build_v3('b')
+        for name in ('ground.json', 'terrain.bin', 'scene.json'):
+            self.assertEqual((first['output'] / name).read_bytes(), (second['output'] / name).read_bytes())
+        old = write_fixture(self.root / 'c', returns=V3_RETURNS, eligible=V3_ELIGIBLE); tool.build(**old)
+        ground = json.loads((old['output'] / 'ground.json').read_bytes())
+        self.assertEqual(ground['schemaVersion'], 1)
+        self.assertFalse({'placementRangeLimitMeters', 'alongRayUncertainty'} & set(ground))
+        self.assertFalse(any('poseAverage' in c for c in ground['cuboids']['items']))
+
+    def test_v3_fixed_band_records_held_out_residuals_as_a_test_not_a_fit(self):
+        # Protocol v3.1 held-out mode: the band is the fixed development value; this scene's residuals are only a test of it.
+        # The default fixture has 2 fit-set returns, far below minimumCount (50), which applies to fits only.
+        protocol = copy.deepcopy(PROTOCOL_V3); band = protocol['alongRayUncertainty']['heightBand']
+        band.update(method='fixed', heightBandMeters=.075, fittedOn='fixture development scenes')
+        args = write_fixture(self.root / 'fixed', protocol=protocol); tool.build(**args)
+        ground = json.loads((args['output'] / 'ground.json').read_bytes()); a = ground['alongRayUncertainty']
+        self.assertEqual((a['heightBandMeters'], a['method'], a['fittedOn']), (.075, 'fixed', 'fixture development scenes'))
+        self.assertNotIn('fit', a); self.assertNotIn('splitHalf', a['coverage'])
+        held = a['heldOutResiduals']; dz = np.array([GROUND_Y - RASTER_Y, GROUND_Y + .05 - RASTER_Y])
+        self.assertEqual(held['count'], 2); self.assertAlmostEqual(held['maxAbsM'], float(np.abs(dz).max()), places=12)
+        self.assertEqual(held['withinBandFraction'], 1.0); self.assertTrue(held['scope'].startswith('test:'))
+        self.assertEqual({'fractionalClick', 'integerClick', 'definition'}, set(a['coverage']))
+        self.assertTrue(any('fixed height band' in t and 'fixture development scenes' in t for t in ground['limitations']))
+        self.assertFalse(any('fitted on this development scene' in t for t in ground['limitations']))
+        # An empty test set is recorded as empty, never as a failed fit.
+        self.assertEqual(tool.residual_stats([], .075)['count'], 0)
+        with self.assertRaisesRegex(ValueError, 'fixed height band needs'):
+            broken = copy.deepcopy(protocol); del broken['alongRayUncertainty']['heightBand']['fittedOn']
+            tool.build(**write_fixture(self.root / 'broken', protocol=broken))
+
+    def test_v3_moving_track_is_not_averaged(self):
+        _, result, ground = self.build_v3(moving=True)
+        self.assertEqual(result['averagedTracks'], []); self.assertFalse(any('poseAverage' in c for c in ground['cuboids']['items']))
+
+
 REAL = ROOT / '.local/evaluation/av2-map-first-2026-10-11'
 
 
 @unittest.skipUnless((REAL / 'grounded-v2/ground.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c files absent')
 class RealGroundTests(unittest.TestCase):
-    """grounded-v2 (protocol v2, current) and grounded/ (protocol v1, historical) come from the same unchanged ground script."""
+    """grounded-v3.1 (protocol v3.1) is current and rebuilds byte for byte; grounded-v3, grounded-v2 and grounded/ are pinned history."""
 
     def test_real_layers_are_pinned_and_reproducible(self):
-        for folder, freeze in (('grounded-v2', 'protocol-v2-freeze.json'), ('grounded', 'protocol-freeze.json')):
+        for folder, freeze in (('grounded-v3.1', 'protocol-v3.1-freeze.json'), ('grounded-v3', 'protocol-v3-freeze.json'),
+                               ('grounded-v2', 'protocol-v2-freeze.json'), ('grounded', 'protocol-freeze.json')):
             if (REAL / folder / 'ground.json').exists():
                 with self.subTest(folder=folder):
                     self.check_layer(REAL / folder, freeze)
@@ -293,6 +490,60 @@ class RealGroundTests(unittest.TestCase):
         self.assertEqual((REAL / 'grounded/terrain.bin').read_bytes(), (REAL / 'grounded-v2/terrain.bin').read_bytes())
         for name in ('ground.json', 'scene.json'):
             self.assertNotIn(b'park', (REAL / 'grounded-v2' / name).read_bytes().lower())
+
+    @unittest.skipUnless((REAL / 'grounded-v3.1/ground.json').exists() and (REAL / 'grounded-v3/ground.json').exists(), 'v3.1 layer absent')
+    def test_v3_1_layer_differs_from_v3_only_in_its_protocol_and_code_record(self):
+        v3 = json.loads((REAL / 'grounded-v3/ground.json').read_bytes()); v31 = json.loads((REAL / 'grounded-v3.1/ground.json').read_bytes())
+        self.assertEqual({k for k in v3.keys() | v31.keys() if v3.get(k) != v31.get(k)}, {'protocol', 'processingCodeHashes'})
+        self.assertEqual((v31['protocol']['path'], v31['protocol']['sha256']), ('../protocol-v3.1.json', '6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92'))
+        self.assertEqual((REAL / 'grounded-v3/terrain.bin').read_bytes(), (REAL / 'grounded-v3.1/terrain.bin').read_bytes())
+
+    @unittest.skipUnless((REAL / 'grounded-v3.1/ground.json').exists(), 'v3.1 layer absent')
+    def test_v3_layer_differs_from_v2_only_where_protocol_v3_says_and_v3_1_rebuilds_byte_for_byte(self):
+        v2 = json.loads((REAL / 'grounded-v2/ground.json').read_bytes()); v3_raw = (REAL / 'grounded-v3/ground.json').read_bytes(); v3 = json.loads(v3_raw)
+        self.assertEqual({k for k in v2.keys() | v3.keys() if v2.get(k) != v3.get(k)},
+                         {'schemaVersion', 'protocol', 'cuboids', 'support', 'alongRayUncertainty', 'placementRangeLimitMeters', 'limitations',
+                          'processingCodeHashes'})
+        self.assertEqual((v3['schemaVersion'], v3['placementRangeLimitMeters'], v3['protocol']['path']), (2, 30.0, '../protocol-v3.json'))
+        self.assertEqual((REAL / 'grounded-v2/terrain.bin').read_bytes(), (REAL / 'grounded-v3/terrain.bin').read_bytes())
+        old = {c['track']: c for c in v2['cuboids']['items']}; new = {c['track']: c for c in v3['cuboids']['items']}
+        self.assertEqual(old.keys(), new.keys()); changed = [t for t in new if new[t] != old[t]]
+        self.assertEqual([t[:8] for t in changed], ['396f15b5'])
+        car = new[changed[0]]; pa = car['poseAverage']
+        self.assertEqual((pa['rows'], pa['firstTimestampNs'], pa['lastTimestampNs']), (114, '315969943360434000', '315969954660010000'))
+        self.assertAlmostEqual(pa['sweepRow']['horizontalM'], .1320, places=4); self.assertAlmostEqual(pa['sweepRow']['alongM'], -.1269, places=4)
+        self.assertAlmostEqual(pa['centreSpreadM']['alongStd'], .1044, places=4); self.assertAlmostEqual(pa['centreSpreadM']['lateralStd'], .0495, places=4)
+        self.assertAlmostEqual(pa['yawSpreadDeg']['std'], .0109, places=4)
+        self.assertEqual((car['length'], car['width'], car['height']), (old[changed[0]]['length'], old[changed[0]]['width'], old[changed[0]]['height']))
+        self.assertEqual(car['motion'], old[changed[0]]['motion'])
+        a = v3['alongRayUncertainty']; fit = a['fit']
+        self.assertEqual((a['heightBandMeters'], a['method'], fit['count'], fit['removedByGroundGate']), (.075, 'fitThisDevelopmentScene', 2426, 65))
+        self.assertAlmostEqual(fit['medianM'], -.0081, places=4); self.assertAlmostEqual(fit['sigmaRobustM'], .0296, places=4)
+        self.assertAlmostEqual(fit['q95AbsM'], .0745, places=4)
+        self.assertEqual([b['coverage'] >= .95 for b in a['coverage']['fractionalClick'] + a['coverage']['integerClick']], [True] * 8)
+        self.assertEqual(v3['support']['count'], 3055)
+        # Same inputs, same bytes: rebuild into a temporary folder with the recorded command's inputs.
+        manifest = REAL / 'prepared/manifest.json'; ann = ROOT / '.local/data/av2/train/8c52d911-fe34-3424-9864-d3fdfac38064/annotations.feather'
+        if not ann.exists():
+            self.skipTest('8c annotations absent')
+        with tempfile.TemporaryDirectory() as temp:
+            out = Path(temp) / 'grounded'
+            tool.build(REAL / 'assembled/scene.json', sha((REAL / 'assembled/scene.json').read_bytes()), manifest, sha(manifest.read_bytes()),
+                       REAL / 'protocol-v3.1.json', json.loads((REAL / 'protocol-v3.1-freeze.json').read_bytes())['sha256'], ann, sha(ann.read_bytes()), out)
+            self.assertEqual((out / 'terrain.bin').read_bytes(), (REAL / 'grounded-v3.1/terrain.bin').read_bytes())
+            v3 = json.loads((REAL / 'grounded-v3.1/ground.json').read_bytes())
+            # Source records are relative to the output folder, so compare them as the files they resolve to.
+            def resolved(value, base):
+                if isinstance(value, dict):
+                    return {k: str((base / v).resolve()) if k == 'path' else resolved(v, base) for k, v in value.items()}
+                return [resolved(v, base) for v in value] if isinstance(value, list) else value
+            rebuilt = json.loads((out / 'ground.json').read_bytes())
+            self.assertEqual(resolved(rebuilt, out), resolved(v3, REAL / 'grounded-v3.1'))
+            # scene.json pins ground.json's bytes and hash, which differ only by those relative path strings.
+            scenes = [json.loads((base / 'scene.json').read_bytes()) for base in (out, REAL / 'grounded-v3.1')]
+            for scene in scenes:
+                del scene['measurements']['ground']
+            self.assertEqual(scenes[0], scenes[1])
 
     def check_layer(self, grounded, freeze):
         ground_raw = (grounded / 'ground.json').read_bytes(); ground = json.loads(ground_raw)

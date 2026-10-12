@@ -1,4 +1,4 @@
-"""Map-first placement suggestions (schema v2) for one grounded AV2 scene; never Clear, never invented.
+"""Map-first placement suggestions (schema v3) for one grounded AV2 scene; never Clear, never invented.
 
 Usage:
   SOURCE_DATE_EPOCH=<int> python3 -I -B scripts/california/suggest_av2_placements.py \
@@ -9,8 +9,9 @@ Writes <grounded>/suggestions.json and <grounded>/catalog-entry.json; refuses to
 object is a crop pixel plus the ground point its camera ray reaches on the mapped ground raster inside the
 mapped drivable area (the same rule the app applies), with a support class (observed-nearby / map-only /
 unknown) and a hidden flag (ray passes through an annotated cuboid). Missing evidence stays unknown.
-The pixel follows the protocol v2 pixelSelection rule: within +/-windowPx of the rounded projection, the
-pixel whose ground hit is horizontally nearest the mapped point; its residual and offset are recorded.
+Protocol v3 only (exactProjection): each object stores the exact floating projection of its mapped point
+(pixelUV, the position the app evaluates) and the integer pixel containing it (the display and nudge anchor).
+Protocols v1/v2 are refused: their outputs are historical and were written by earlier versions of this script.
 """
 import argparse
 from datetime import datetime, timezone
@@ -29,17 +30,26 @@ ground_tool = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(g
 from common import canonical, digest, parse, require, snapshot  # noqa: E402  (path set by prepare_av2_ground)
 
 Terrain, ray_hit, ray_direction, project = ground_tool.Terrain, ground_tool.ray_hit, ground_tool.ray_direction, ground_tool.project
+pixel_ground_hit = ground_tool.pixel_ground_hit
 inside_polygons, segment_hits_boxes, curb_scan = ground_tool.inside_polygons, ground_tool.segment_hits_boxes, ground_tool.curb_scan
 EPS = 1e-9
 VEHICLES = {'REGULAR_VEHICLE', 'LARGE_VEHICLE', 'BUS', 'SCHOOL_BUS', 'ARTICULATED_BUS', 'BOX_TRUCK', 'TRUCK', 'TRUCK_CAB', 'VEHICULAR_TRAILER'}
 STATIONARY_LABEL = 'stationary vehicle'
 STATIONARY_REASON = 'stationary vehicle (AV2 annotation); reason for stopping unknown'
-APP_MODEL = 'declared box: front at the pixel ground point, annotated dimensions, axis along the road axis'
+APP_MODEL = ('annotated pose: the averaged annotated box from ground.json (centre, horizontal heading, dimensions); '
+             'the front pixel only names it')
+# protocol v3.1 currentVehicle.declaredReplacement: a declared or resized vehicle that replaces the stationary vehicle while
+# the front pixel still names it keeps the averaged front point (mappedPoint), never the front pixel's own ray hit.
+APP_MODEL_REPLACEMENT = APP_MODEL + ('; a declared or resized vehicle in its place keeps this front point (mappedPoint) and runs '
+                                     'along the lane axis from it')
+REPLACEMENT_LIMITATION = ('A declared or resized vehicle that replaces the stationary vehicle while the front pixel still names it keeps the '
+                          'stationary vehicle front (vehicle mappedPoint) on the lane axis; the front pixel ray hit '
+                          '(pixelOffsetFromMappedM) is display only.')
 # Outputs never use any form of the word 'park' for this scene (Sean, Oct 11; coordinator, Oct 12).
 BANNED = b'park'
 SUPPORT_LABEL = {'observed-nearby': 'observed nearby', 'map-only': 'mapped, not observed', 'unknown': 'unknown'}
-PAINT_OFFSET = {'2069452': {'status': 'label', 'label': '±2 m', 'meters': 2.0}}
-UNMEASURED = {'status': 'unmeasured', 'label': 'paint offset unmeasured'}
+CROSSING_ERROR_LABELS = {'unmeasured': 'paint offset unmeasured', 'pending-measurement': 'paint offset pending measurement',
+                         'unresolved': 'paint offset unresolved'}
 
 
 def generated_utc():
@@ -92,34 +102,33 @@ class Context:
         self.a = unit((left[-1, [0, 2]] + right[-1, [0, 2]]) / 2 - self.m0); self.r = np.array([-self.a[1], self.a[0]])
         self.lane_polygon = np.vstack([left[:, [0, 2]], right[::-1][:, [0, 2]]])
         sel = protocol.get('pixelSelection')
-        require(isinstance(sel, dict) and sel.get('rule') == 'nearestHitWindow' and type(sel.get('windowPx')) is int and
-                0 <= sel['windowPx'] <= 10, 'Protocol v2 pixelSelection (nearestHitWindow) required; protocol v1 outputs are historical')
-        self.window = sel['windowPx']
+        require(protocol.get('protocolVersion') == 3 and isinstance(sel, dict) and sel.get('rule') == 'exactProjection',
+                'Protocol v3 pixelSelection (exactProjection) required; protocol v1/v2 outputs are historical')
+        band = ground.get('alongRayUncertainty', {}).get('heightBandMeters'); limit = ground.get('placementRangeLimitMeters')
+        require(ground.get('schemaVersion') == 2 and type(band) is float and 0 < band <= 1 and type(limit) is float and
+                limit == protocol['placementRange']['limitMeters'], 'Protocol v3 ground layer (schemaVersion 2) required')
+        self.band, self.limit = band, limit
 
     def height(self, xz):
         h = self.terrain.sample([xz])[0][0]
         return None if not np.isfinite(h) else float(h) - self.oz
 
-    def ground_hit(self, pixel):
-        """Runtime ray rule only: (ray direction, first mapped-ground hit inside the drivable area or None, Unknown reason)."""
-        d = ray_direction(self.scene, pixel); hit = ray_hit(d, self.terrain, self.ground['maxRangeMeters'])
-        if not hit['hit']:
-            return d, None, hit['reason']
-        if not inside_polygons(np.asarray(hit['point'])[[0, 2]], self.polygons)[0]:
-            return d, None, 'First mapped-ground hit is outside the mapped drivable area.'
-        return d, hit, None
+    def ground_hit(self, uv):
+        """Runtime ray rule only: (ray direction, first mapped-ground hit within the range limit inside the drivable area
+        or None, Unknown reason). uv is an integer pixel centre or a fractional crop position."""
+        return pixel_ground_hit(self.scene, uv, self.terrain, self.polygons, self.ground['maxRangeMeters'], self.limit)
 
-    def evaluate_pixel(self, pixel):
-        """The runtime rule: pixel -> first mapped-ground hit inside the drivable area, hidden flag, support class."""
+    def evaluate_pixel(self, uv):
+        """The runtime rule: crop position -> first mapped-ground hit inside the drivable area, hidden flag, support class."""
         g, tol = self.ground, self.protocol['tolerances']
-        d, hit, reason = self.ground_hit(pixel)
+        d, hit, reason = self.ground_hit(uv)
         if hit is None:
             return {'supportClass': 'unknown', 'reason': reason}
         p = np.asarray(hit['point'])
         hidden = None if self.cuboids is None else bool(segment_hits_boxes([p], self.cuboids)[0])
         distances = np.linalg.norm(self.support - p[[0, 2]], axis=1) if len(self.support) else np.zeros(0)
         observed = bool((distances <= g['supportRadiusMeters']).any())
-        uncertainty = (g['roadToleranceMeters'] + ground_tool.half_ulp16(hit['cellCityZ'])) / -d[1]
+        uncertainty = self.band / -d[1]  # protocol v3 alongRayUncertainty (fitted height band, no half-ulp term)
         # Diagnostics on ALL returns within the radius (no height pre-filter); the class uses only the pinned rows.
         finite = np.isfinite(self.positions).all(1)
         near = np.zeros(len(self.positions), bool)
@@ -131,7 +140,8 @@ class Context:
         agreeing = int((np.isfinite(dz) & (np.abs(dz) <= tol['supportHeightAgreementMeters'])).sum())
         require(agreeing == int((distances <= g['supportRadiusMeters']).sum()), 'Support rows disagree with recomputed agreement')
         return {'supportClass': 'observed-nearby' if observed else 'map-only', 'groundPoint': p.tolist(), 'hidden': hidden,
-                'alongRayUncertaintyM': float(uncertainty), 'rangeM': hit['t'], 'hitKind': hit['kind'],
+                'alongRayUncertaintyM': float(uncertainty), 'rangeM': hit['t'], 'horizontalRangeM': float(math.hypot(p[0], p[2])),
+                'hitKind': hit['kind'],
                 'terrainCityZ': hit['cellCityZ'], 'terrainCell': hit['cell'],
                 'supportEvidence': {'returnsWithinRadius': int(near.sum()), 'cameraEligibleWithinRadius': int(len(idx)),
                                     'cameraVisibleWithinRadius': int(len(visible)), 'agreeingWithinRadius': agreeing,
@@ -144,53 +154,32 @@ class Context:
         c = self.scene['camera']
         return 0 <= pixel[0] <= c['width'] - 1 and 0 <= pixel[1] <= c['height'] - 1
 
-    def search_pixel(self, xz, uv):
-        """Protocol v2 pixelSelection: among in-crop pixels within +/-window (Chebyshev) of the rounded projection whose
-        runtime ray reaches mapped drivable ground, the one whose hit is horizontally nearest the mapped point xz.
-        Ties: nearest the floating projection uv, then smaller v, then smaller u. Returns (best or None, record)."""
-        rounded = [math.floor(uv[0] + .5), math.floor(uv[1] + .5)]
-        best = None; record = {'windowPx': self.window, 'roundedPixel': rounded, 'roundedResidualM': None,
-                               'candidatesInCrop': 0, 'candidatesPlaced': 0}
-        for dv in range(-self.window, self.window + 1):
-            for du in range(-self.window, self.window + 1):
-                pixel = [rounded[0] + du, rounded[1] + dv]
-                if not self.in_crop(pixel):
-                    continue
-                record['candidatesInCrop'] += 1
-                _d, hit, reason = self.ground_hit(pixel)
-                if hit is None:
-                    if du == dv == 0:
-                        record['roundedReason'] = reason
-                    continue
-                record['candidatesPlaced'] += 1
-                residual = math.hypot(hit['point'][0] - xz[0], hit['point'][2] - xz[1])
-                if du == dv == 0:
-                    record['roundedResidualM'] = residual
-                key = (residual, math.hypot(pixel[0] - uv[0], pixel[1] - uv[1]), pixel[1], pixel[0])
-                if best is None or key < best[0]:
-                    best = (key, pixel, [du, dv])
-        if best is not None:
-            record.update(offsetPx=best[2], residualM=best[0][0])
-        return (None if best is None else best[1]), record
+    def integer_check(self, pixel, xz):
+        """Diagnostic only: the runtime rule at the integer anchor pixel and its horizontal residual to the mapped point."""
+        _d, hit, reason = self.ground_hit(pixel)
+        if hit is None:
+            return {'reason': reason}
+        return {'groundPoint': list(hit['point']), 'residualM': float(math.hypot(hit['point'][0] - xz[0], hit['point'][2] - xz[1]))}
 
     def place(self, xz, base):
-        """Desired mapped ground point -> protocol v2 pixel (nearest ground hit within the window) -> its runtime result."""
+        """Protocol v3 pixelSelection (exactProjection): desired mapped ground point -> its exact floating projection pixelUV
+        (evaluated with the runtime rule, no rounding or search) and the integer pixel containing it (display/nudge anchor)."""
         h = self.height(xz)
         if h is None:
             return {**base, 'status': 'unknown', 'supportClass': 'unknown', 'reason': 'No mapped ground height at the mapped point.'}
         desired = [float(xz[0]), h, float(xz[1])]; uv = project(self.scene, desired)
-        rounded = None if uv is None else [math.floor(uv[0] + .5), math.floor(uv[1] + .5)]
-        if rounded is None or not self.in_crop(rounded):
+        if uv is None or not self.in_crop(uv):
             return {**base, 'status': 'unknown', 'supportClass': 'unknown', 'mappedPoint': desired, 'reason': 'Mapped point is outside the recorded image.'}
-        pixel, search = self.search_pixel(xz, uv)
-        if pixel is None:
-            return {**base, 'status': 'unknown', 'supportClass': 'unknown', 'mappedPoint': desired, 'pixel': rounded, 'pixelSearch': search,
-                    'reason': f'No pixel within {self.window} px reaches mapped drivable ground ({search.get("roundedReason", "")})'}
-        result = self.evaluate_pixel(pixel)
-        require(result['supportClass'] != 'unknown', 'Chosen pixel disagrees with the runtime rule')
-        return {**base, **result, 'pixel': pixel, 'mappedPoint': desired, 'projectedUV': uv,
-                'supportLabel': SUPPORT_LABEL[result['supportClass']], 'pixelSearch': search,
-                'pixelOffsetFromMappedM': search['residualM']}
+        uv = [float(uv[0]), float(uv[1])]; pixel = [math.floor(uv[0] + .5), math.floor(uv[1] + .5)]
+        result = self.evaluate_pixel(uv)
+        if result['supportClass'] == 'unknown':  # no fallback pixel: the object stays Unknown with the runtime reason
+            return {**base, 'status': 'unknown', 'supportClass': 'unknown', 'mappedPoint': desired, 'pixelUV': uv, 'pixel': pixel,
+                    'reason': result['reason']}
+        g = result['groundPoint']
+        return {**base, **result, 'pixel': pixel, 'pixelUV': uv, 'mappedPoint': desired,
+                'supportLabel': SUPPORT_LABEL[result['supportClass']],
+                'pixelOffsetFromMappedM': float(math.hypot(g[0] - desired[0], g[2] - desired[2])),
+                'integerPixelCheck': self.integer_check(pixel, xz)}
 
     # ------------------------------------------------------------ mapped elements
     def near_edge(self):
@@ -210,6 +199,25 @@ class Context:
         return None if s is None else float(start @ self.r + s)
 
 
+def crossing_error(protocol, crossing_id):
+    """protocol v3 crossingError: the crossing stays the mapped near edge; the shown +/- is the measured mapped-to-paint
+    offset, or a named status while it is unmeasured, pending measurement or unresolved."""
+    entry = protocol['crossingError']['perCrossing'].get(crossing_id, {'status': 'unmeasured'})
+    status = entry.get('status'); base = {'basis': 'mapped near edge', 'status': status}
+    if status == 'measured':
+        value, evidence = entry.get('plusMinusM'), entry.get('evidence')
+        require(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 5 and isinstance(evidence, dict) and
+                set(evidence) == {'file', 'sha256'} and isinstance(evidence['sha256'], str) and len(evidence['sha256']) == 64,
+                'A measured crossing error needs plusMinusM (0-5 m) and its evidence {file, sha256}')
+        shown = math.ceil(float(value) * 100 - 1e-9) / 100
+        return {**base, 'label': f'±{shown:.2f} m', 'plusMinusM': shown, 'evidence': dict(evidence)}
+    require(status in CROSSING_ERROR_LABELS, f'Unknown crossing error status {status!r}')
+    evidence = entry.get('evidence')
+    require(status != 'unresolved' or (isinstance(evidence, dict) and set(evidence) == {'file', 'sha256'}),
+            'An unresolved crossing error needs its evidence {file, sha256}')
+    return {**base, 'label': CROSSING_ERROR_LABELS[status], 'plusMinusM': None, 'evidence': None if evidence is None else dict(evidence)}
+
+
 def annotated_vehicle(ctx, edge_p0, edge_u):
     prefix = ctx.protocol['currentVehicle']['trackPrefix']; failures = []
     if ctx.cuboids is None:
@@ -225,6 +233,8 @@ def annotated_vehicle(ctx, edge_p0, edge_u):
     front = center + half * heading
     if box['category'] not in VEHICLES:
         failures.append(f"Category {box['category']} is not a vehicle.")
+    if 'poseAverage' not in box:
+        failures.append('No averaged annotated pose in the ground layer (protocol v3 currentVehicle.pose).')
     if motion is None or motion['spanSeconds'] < 3.0 or motion['maxDisplacementFromFirstM'] > 1.0:
         failures.append('Track is not stationary under the protocol (>= 3.0 s, <= 1.0 m).')
     if not inside_polygons(center, ctx.polygons)[0]:
@@ -274,9 +284,11 @@ def suggest(scene, ground, terrain, positions, eligible, protocol):
         dims = {k: round(box[k], 2) for k in ('width', 'height', 'length')}
         base = {'status': 'annotated', 'label': STATIONARY_LABEL, 'reason': STATIONARY_REASON, 'dimensions': dims,
                 'track': box['track'], 'category': box['category'], 'motion': box['motion'],
+                'pose': {'kind': 'averaged', 'annotations': box['poseAverage']['rows']},
                 'headingWorld': [float(vehicle['heading'][0]), 0., float(vehicle['heading'][1])],
                 'headingToRoadAxisDeg': vehicle['headingToRoadAxisDeg'], 'yawToRoadAxisDeg': vehicle['yawToRoadAxisDeg'],
-                'frontGapToCrossingM': vehicle['gap'], 'appModel': APP_MODEL}
+                'frontGapToCrossingM': vehicle['gap'],
+                'appModel': APP_MODEL_REPLACEMENT if 'declaredReplacement' in ctx.protocol['currentVehicle'] else APP_MODEL}
         result_vehicle = ctx.place(vehicle['front'], base)
         if result_vehicle['status'] != 'unknown':  # app model front (pixel ground point) minus the annotated front, horizontal
             diff = np.asarray(result_vehicle['groundPoint'], float)[[0, 2]] - vehicle['front']
@@ -306,7 +318,7 @@ def suggest(scene, ground, terrain, positions, eligible, protocol):
         crossing_xz = start
     crossing = ctx.place(crossing_xz, {'status': 'mapped', 'label': 'crosswalk mapped', 'nearEdge': edge_name,
                                       'reason': f'Mapped near edge ({edge_name}) of crossing {ground["crossing"]["id"]} on the current vehicle centre line.',
-                                      'paintOffset': PAINT_OFFSET.get(ground['crossing']['id'], UNMEASURED)})
+                                      'crossingError': crossing_error(protocol, ground['crossing']['id'])})
     if crossing['status'] != 'unknown':
         crossing['forwardM'] = float(np.asarray(crossing['groundPoint'])[[0, 2]] @ ctx.a)
     pspec = defaults['person']
@@ -357,23 +369,30 @@ def load(grounded, metadata_sha256, buffers_dir, protocol_path, protocol_sha256)
 
 def document(scene, ground, terrain, positions, eligible, protocol, inputs):
     objects = suggest(scene, ground, terrain, positions, eligible, protocol)
-    doc = {'schemaVersion': 2, 'sceneId': scene['id'], 'sourceClass': 'mappedGround', 'generatedUtc': generated_utc(),
+    doc = {'schemaVersion': 3, 'sceneId': scene['id'], 'sourceClass': 'mappedGround', 'generatedUtc': generated_utc(),
             'generator': {'script': 'scripts/california/suggest_av2_placements.py', 'sha256': digest(Path(__file__).read_bytes()),
                           'sharedScript': 'scripts/california/prepare_av2_ground.py', 'sharedSha256': digest((HERE / 'prepare_av2_ground.py').read_bytes()),
                           'python': platform.python_version(), 'numpy': np.__version__},
             'inputs': inputs, 'protocolSha256': inputs['protocol.json'], 'license': ground['license'],
-            'tolerances': {k: ground[k] for k in ('roadToleranceMeters', 'supportHeightAgreementMeters', 'supportRadiusMeters', 'maxRangeMeters')},
+            'tolerances': {**{k: ground[k] for k in ('roadToleranceMeters', 'supportHeightAgreementMeters', 'supportRadiusMeters', 'maxRangeMeters',
+                                                    'placementRangeLimitMeters')},
+                           'alongRayHeightBandMeters': ground['alongRayUncertainty']['heightBandMeters']},
             **objects,
             'limitations': ['One frame; no independent reference. Mapped ground is publisher terrain inside mapped drivable areas, not observed road.',
-                            'The crossing is the mapped near edge on the current vehicle centre line; map-to-paint offset is shown as a label and never moves it.',
+                            'The crossing is the mapped near edge on the current vehicle centre line; its error is the map-to-paint offset '
+                            '(crossingError), which never moves it.',
                             'A point labeled mapped, not observed has no camera-visible LiDAR return agreeing with the map within 0.5 m (for example in the LiDAR shadow).',
                             'A hidden point lies behind an annotated object in the image: the pixel shows that object, not the ground.',
-                            'Annotated objects are from the LiDAR sweep about 40 ms before the image.',
+                            'Annotated objects other than the current vehicle are from the LiDAR sweep about 40 ms before the image; the current '
+                            'stationary vehicle is the average of all its annotations in the log.',
                             'The person position and height are declared defaults, not detections.',
-                            'Each pixel is the one within the protocol window whose ground hit is nearest the mapped point; '
-                            'the remaining horizontal residual is recorded per object (pixelSearch.residualM).',
-                            'The declared vehicle box starts at the vehicle pixel ground point and runs along the road axis with the '
-                            'annotated dimensions; its residual to the annotated front and the annotated yaw difference are recorded.',
+                            'Each object is evaluated at the exact floating projection of its mapped point (pixelUV); the integer pixel only '
+                            'anchors display and small edits. pixelOffsetFromMappedM is internal consistency, not accuracy.',
+                            'The along-ray uncertainty uses a height band fitted on this development scene\'s LiDAR ground returns; it describes '
+                            'the mapped-ground height error along the pixel ray, not the crossing position or a physical accuracy bound.',
+                            f'Placements more than {ground["placementRangeLimitMeters"]:g} m from the camera (horizontal) are refused.',
+                            *([REPLACEMENT_LIMITATION] if 'declaredReplacement' in protocol['currentVehicle'] and
+                              objects['vehicle']['status'] == 'annotated' else []),
                             'Geometric visibility only, never Clear; not a safety, recognition or compliance judgment.']}
     require(BANNED not in canonical(doc).lower(), 'Suggestions must not use any form of the banned vehicle-status word')
     return doc

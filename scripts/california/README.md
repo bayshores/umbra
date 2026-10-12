@@ -216,7 +216,7 @@ validated transaction guarantees.
 ## Map-first ground layer and placement suggestions
 
 `prepare_av2_ground.py` adds a mapped-ground layer to one assembled indexed
-AV2 scene. `suggest_av2_placements.py` then writes schema-v2 placement
+AV2 scene. `suggest_av2_placements.py` then writes schema-v3 placement
 suggestions from it. Both read a frozen placement protocol (tolerances,
 support classes, declared defaults) by explicit path and sha256. They do not
 download data, run a model, change the app catalog or publish anything. Use the
@@ -251,52 +251,91 @@ with the raster; every return is tested, with no height pre-filter. The grounded
 `measurements.ground` descriptor, a relative `originalSourceRecordBase` and
 the ground wording. Its buffers stay byte-identical to the assembled scene.
 
-The suggestion step maps each object to a crop pixel and to the ground point
-that pixel's camera ray reaches first on the mapped raster inside the mapped
-drivable area. This is the same rule the app applies. The pixel follows the
-protocol's `pixelSelection` rule (protocol v2, `nearestHitWindow`): project the
-mapped point, round it to a pixel, then check every crop pixel up to
-`windowPx` (3) pixels away from that rounded pixel in each direction (a 7×7
-square). The chosen pixel is the one whose ground hit lands horizontally
-nearest the mapped point; ties go to the pixel nearest the projected point,
-then the smaller row, then the smaller column. Plain rounding alone left
-0.9–1.0 m errors along the ray at the shallow (~4°) viewing angle of the AV2
-scene. Each object records `pixelSearch` (rounded pixel and its residual, the
-chosen offset, the remaining residual in metres). The window only bounds the
-search; it is not a pass/fail limit. A protocol without this rule (v1) is
-refused. Each point has a support class: `observed-nearby` (a camera-visible
-return agrees within 0.5 m),
-`map-only` (shown as "mapped, not observed"), or `unknown` (not placed). It
-also has a `hidden` flag, set when the ray passes through an annotated cuboid
-first; the flag is null when annotations are not supplied. The crossing is the
-mapped near edge on the current vehicle's centre line. The road axis comes
-from the mapped ego lane, and its skew is reported, never used as a limit. The
-curb is the drivable-area edge, a proxy rather than a measured curb. An
-annotated stationary vehicle is labeled "stationary vehicle (AV2 annotation);
-reason for stopping unknown". No output states why it stopped, and the
-script refuses to write output containing any word built on "park". The app
-draws this vehicle in its exact annotated pose: the cuboid's centre,
-horizontal heading and dimensions from `ground.json` (sub-degree pitch and
-roll are not used). The what-if vehicle is that same box moved along the lane
-axis, so both start as the same box. The box is turned slightly from the lane,
-so the slider minimum puts the front corner nearest the crossing, not the
-front-face centre, at the road tolerance from the crossing. If the front pixel
-moves or the size changes, the app uses a declared box on the lane axis
-instead. `frontResidualToAnnotatedM` and `yawToRoadAxisDeg` record how far the
-vehicle pixel's ground point is from the annotated front and how far the
-annotated box is turned from the road axis. The vehicle's `appModel` text and
-the `limitations` line about "the declared vehicle box" still describe an
-earlier model (a declared box from the vehicle pixel along the road axis).
-They are historical: the app only checks that they are text and never shows
-or uses them, and they stay unchanged because the existing output is pinned by
-hash. Without annotations the vehicle is a declared default or
-Unknown. Without LiDAR support, points are map-only or Unknown. Both scripts refuse to overwrite
-existing outputs. Output files contain relative paths only, and identical
-inputs give byte-identical outputs.
+With a protocol v3 file (`protocolVersion` 3) the ground step also writes
+`ground.json` schemaVersion 2. Protocols v1 and v2 still give the schema-1
+layer exactly as before. Version 3 adds three things:
+
+- **Averaged stationary vehicle.** The current vehicle (the protocol's track
+  prefix) is drawn at the average of all its annotations in the log. Its
+  centre is the mean, its heading is the circular mean, and its size is the
+  median. The box is upright. This happens only when the track passes the
+  stationary check and the prefix names one track at the sweep.
+  `poseAverage` records the spread and how far the sweep box was from the
+  average. Every other cuboid stays at the sweep time.
+- **Fitted uncertainty band.** The along-ray uncertainty uses a height band
+  (`alongRayUncertainty.heightBandMeters`). It is fitted on this development
+  scene's camera-visible LiDAR ground returns: the nearest-rank 95th
+  percentile of their height difference from the raster, rounded up to
+  1 mm. The fit uses returns inside the drivable area within 30 m and within
+  0.25 m of the raster. The file also records coverage by range band, for a
+  click at a return's exact projection and at its nearest pixel, and a
+  split-half check. This coverage is in-sample (the band is tested on the
+  returns it was fitted on), so it is not evidence that the band is adequate.
+  The script refuses to fit on held-out or reserve logs of the frozen Palo
+  Alto split. A held-out scene uses a fixed band fitted on development scenes
+  (protocol method `fixed`): the file then records that scene's residuals and
+  coverage as `heldOutResiduals`, a test of the band, never a fit, with no
+  minimum count and no split-half refit.
+- **Range limit.** A placement more than 30 m from the camera (horizontal) is
+  refused: `Too far to place (over 30 m).` The limit is stored as
+  `placementRangeLimitMeters`.
+
+The suggestion step needs protocol v3 and a schema-2 ground layer. It refuses
+protocols v1 and v2, whose outputs are historical and were written by earlier
+versions of this script. Each object (crossing, vehicle front, person) gets
+two positions:
+
+- `pixelUV` is the exact floating projection of its mapped point. It is the
+  position the app evaluates while the suggestion is untouched.
+- `pixel` is the integer pixel that contains `pixelUV`. It is the marker and
+  nudge anchor.
+
+The object's ground point comes from the same rule the app applies: the
+first hit of the `pixelUV` camera ray on the mapped ground raster, within
+30 m and inside the mapped drivable area. There is no rounding, no search and
+no fallback pixel. If that ray finds no valid ground, the object stays
+Unknown with the reason. `pixelOffsetFromMappedM` is the remaining distance
+to the mapped point. It is an internal consistency check, not accuracy, and
+it is zero unless the raster blocks the point along its own ray.
+`integerPixelCheck` records what the integer pixel alone would give.
+
+Each point has a support class: `observed-nearby` (a camera-visible return
+agrees within 0.5 m), `map-only` (shown as "mapped, not observed"), or
+`unknown` (not placed). It also has a `hidden` flag, set when the ray passes
+through an annotated cuboid first; the flag is null when annotations are not
+supplied. The along-ray uncertainty is the fitted band divided by the sine of
+the ray's angle below horizontal. The crossing is the mapped near edge on the
+current vehicle's centre line. Its error is a separate `crossingError` field:
+the mapped edge plus a ± paint offset. The status is `pending-measurement`,
+`unmeasured`, `measured` (with `plusMinusM` and evidence) or `unresolved`.
+Paint never moves the crossing. The road axis comes from the mapped ego lane,
+and its skew is reported, never used as a limit. The curb is the
+drivable-area edge, a proxy rather than a measured curb.
+
+An annotated stationary vehicle is labeled "stationary vehicle (AV2
+annotation); reason for stopping unknown". No output states why it stopped,
+and the script refuses to write output containing any word built on "park".
+The app draws this vehicle with the averaged annotated box from `ground.json`:
+its centre, horizontal heading and dimensions. The front pixel only names that
+box. The what-if vehicle is the same box moved along the lane axis, so both
+start as the same box. If the size changes or a declaration replaces the vehicle while the front
+pixel is still within the nudge allowance, the app uses a declared box on the
+lane axis whose front is the averaged box's front point (`mappedPoint`;
+protocol v3.1 `currentVehicle.declaredReplacement`). With protocol v3.1 the
+script says so in `appModel` and one limitation line. The front pixel's own
+ray hit is not used then: on AV2 8c the raster blocks that ray 1.03 m short of
+the front. If the front pixel moves more than the nudge allowance, the app
+uses a declared box on the lane axis at that pixel's ground hit.
+`frontResidualToAnnotatedM` and `yawToRoadAxisDeg` record how far the vehicle
+front's ground point is from the averaged front, and how far the box is
+turned from the road axis. Without annotations the vehicle is a declared
+default or Unknown. Without LiDAR support, points are map-only or Unknown.
+Both scripts refuse to overwrite existing outputs. Output files contain
+relative paths only, and identical inputs give byte-identical outputs.
 
 Mapped ground is publisher terrain, not observed road. The LiDAR agreement
-check is only a consistency check, because the publisher built the map from
-LiDAR too. These layers do not establish free space, Clear, contact, why a
-vehicle stopped, or physical accuracy. Results stay Blocked or Unknown. The
-data stays under CC BY-NC-SA 4.0 with the "(c) 2021 Argo AI, LLC" attribution recorded
-in both files.
+check and the band fit are consistency checks, because the publisher built
+the map from LiDAR and the LiDAR shares the camera's calibration. These layers
+do not establish free space, Clear, contact, why a vehicle stopped, or physical
+accuracy. Results stay Blocked or Unknown. The data stays under CC BY-NC-SA
+4.0 with the "(c) 2021 Argo AI, LLC" attribution recorded in both files.

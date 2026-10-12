@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-// Palo Alto accuracy baseline (task M0). Loads the local AV2 8c development scene the way tests/av2-ground.test.mjs does
-// and measures the app's own geometry (src/*.mjs, unchanged) against named references. Development-grade,
-// AV2-referenced numbers from one development scene: not surveyed, not held-out, never a passed gate.
+// Palo Alto accuracy harness (tasks M0, M2, M4d). Loads the local AV2 8c development scene (current folder GROUNDED_DIR,
+// protocol v3.1) the way tests/av2-ground.test.mjs does and measures the app's own geometry (src/*.mjs) against named
+// references. Development-grade, AV2-referenced numbers from one development scene: not surveyed, not held-out, never a
+// passed gate. Metric K (LiDAR shadow) is computed by v3.1-analysis/metric_k.py next to the grounded folder.
 //
 //   node scripts/evaluation/pao-baseline.mjs [--date YYYY-MM-DD] [--out DIR] [--no-coverage] [--samples N]
 //
@@ -14,14 +15,15 @@ import {performance} from 'node:perf_hooks';
 import os from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {loadScene} from '../../src/scene.mjs';
-import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,TOO_CLOSE_TO_CALL_M} from '../../src/geometry.mjs';
+import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
+  TOO_CLOSE_TO_CALL_M} from '../../src/geometry.mjs';
 import {setbackSweep,actorConflicts} from '../../src/scenario-assistant.mjs';
 import {suggestedSetup} from '../../src/suggestions.mjs';
 
 export const ROOT=new URL('../../',import.meta.url);
 export const DEV={id:'av2-pao-8c52d911-2658849',dir:new URL('.local/evaluation/av2-map-first-2026-10-11/',ROOT)};
 export const OUT_DIR=new URL('.local/evaluation/pao-accuracy/',ROOT);
-// Range bands for click-to-ground (task M0) and the planning lane's bands (reproduction check only).
+// Range bands for click-to-ground (task M0) and the planning lane's bands (kept for comparison with the M0 baseline).
 export const BANDS=[[0,10],[10,12],[12,25],[25,30],[30,60]];
 export const LANE_BANDS=[[0,10],[10,15],[15,20],[20,30],[30,60]];
 // A camera-visible LiDAR return counts as a ground return when its height is within this of the mapped ground under it.
@@ -39,18 +41,21 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Output names for the app's pixel keys (its vehicle-front key is not used in written results).
 const pixelsOut=p=>({crossing:p.crossing,vehicleFront:p.parking,person:p.target});
 
-export const devDataPresent=()=>existsSync(new URL('grounded-v2/scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
-  &&existsSync(new URL('grounded-v2/catalog-entry.json',DEV.dir));
+// The current grounded folder (app contract): protocol v3.1. Earlier folders are history and the app refuses them.
+export const GROUNDED_DIR='grounded-v3.1/';
+export const devDataPresent=()=>existsSync(new URL(GROUNDED_DIR+'scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
+  &&existsSync(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir));
 
-// Serves the contract's directory like tests/av2-ground.test.mjs: assembled buffers plus every grounded-v2 file. cache
-// holds file bytes, so a second load with the same cache measures loadScene without disk reads.
+// Serves the contract's directory like tests/av2-ground.test.mjs: assembled buffers plus every file of the current
+// grounded folder (never files from two grounded folders). cache holds file bytes, so a second load with the same cache
+// measures loadScene without disk reads.
 export async function loadDevelopmentScene(cache=new Map()) {
-  const entry=JSON.parse(await readFile(new URL('grounded-v2/catalog-entry.json',DEV.dir),'utf8'));
+  const entry=JSON.parse(await readFile(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir),'utf8'));
   const fetch=async path=>{
     const name=path.split('/').at(-1);
     if(!path.startsWith(`/scenes/${DEV.id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
     try{
-      if(!cache.has(name))cache.set(name,await readFile(new URL((GROUNDED.has(name)?'grounded-v2/':'assembled/')+name,DEV.dir)));
+      if(!cache.has(name))cache.set(name,await readFile(new URL((GROUNDED.has(name)?GROUNDED_DIR:'assembled/')+name,DEV.dir)));
       return new Response(cache.get(name));
     }catch{return new Response(null,{status:404});}
   };
@@ -122,10 +127,11 @@ function behindAnyCuboid(ground,point) {
 
 // ---------------------------------------------------------------- B. click to ground vs camera-visible LiDAR
 // Reference: LiDAR returns the left camera can see (prepared referenceEligible = finite, positive camera depth, inside
-// the crop; and the camera-origin-to-return segment crosses no annotated cuboid: protocol v2 cameraVisibleReturn) whose
-// height is within the gate of the mapped ground. The "click" is the return's nearest integer pixel; the app's
-// mappedGroundHit places it. Error = horizontal distance from the placed point to the return. Partly independent:
-// the publisher built the ground raster from LiDAR, and the ground gate uses that raster.
+// the crop; and the camera-origin-to-return segment crosses no annotated cuboid: protocol cameraVisibleReturn) whose
+// height is within the gate of the mapped ground. The "click" is the return's nearest integer pixel (the M0 definition;
+// what a user's click gives) or, as a second column, its exact floating projection (protocol v3 accepts fractional
+// positions); the app's mappedGroundHit places it. Error = horizontal distance from the placed point to the return.
+// Partly independent: the publisher built the ground raster from LiDAR, and the ground gate uses that raster.
 export function clickToGround(scene) {
   const m=scene.measurements,c=scene.camera,g=scene.ground,rows=[],skipped={notCameraEligible:0,nonFinite:0,noMappedHeight:0,notGroundReturn:0,behindAnnotatedCuboid:0,outsideImage:0};
   for(let i=0;i<m.count;i++) {
@@ -139,15 +145,15 @@ export function clickToGround(scene) {
     if(behindAnyCuboid(g,p)){skipped.behindAnnotatedCuboid++;continue;}
     const px=[Math.floor(m.referenceUV[2*i]+.5),Math.floor(m.referenceUV[2*i+1]+.5)];
     if(px[0]<0||px[0]>=c.width||px[1]<0||px[1]>=c.height){skipped.outsideImage++;continue;}
-    const range=Math.hypot(p[0],p[2]),row={range,dy};
-    try{
-      const hit=mappedGroundHit(scene,px),dx=hit.point[0]-p[0],dz=hit.point[2]-p[2],u=[p[0]/range,p[2]/range];
-      Object.assign(row,{error:Math.hypot(dx,dz),along:dx*u[0]+dz*u[1],shown:hit.alongRayUncertaintyM});
-    }catch(e){row.unknown=e.message;}
-    rows.push(row);
+    const range=Math.hypot(p[0],p[2]),u=[p[0]/range,p[2]/range],place=position=>{
+      try{const hit=mappedGroundHit(scene,position),dx=hit.point[0]-p[0],dz=hit.point[2]-p[2];return {error:Math.hypot(dx,dz),along:dx*u[0]+dz*u[1],shown:hit.alongRayUncertaintyM};}
+      catch(e){return {unknown:e.message};}
+    };
+    rows.push({range,dy,...place(px),fractional:place([m.referenceUV[2*i],m.referenceUV[2*i+1]])});
   }
-  const bin=(bands,gate)=>bands.map(([a,b])=>{
-    const inBand=rows.filter(x=>x.range>=a&&x.range<b&&Math.abs(x.dy)<=gate),placed=inBand.filter(x=>x.unknown===undefined),unknown={};
+  const bin=(bands,gate,kind='integer')=>bands.map(([a,b])=>{
+    const inBand=rows.filter(x=>x.range>=a&&x.range<b&&Math.abs(x.dy)<=gate).map(x=>kind==='integer'?x:{range:x.range,dy:x.dy,...x.fractional});
+    const placed=inBand.filter(x=>x.unknown===undefined),unknown={};
     for(const x of inBand)if(x.unknown!==undefined)unknown[x.unknown]=(unknown[x.unknown]??0)+1;
     const e=placed.map(x=>x.error),shown=placed.map(x=>x.shown);
     return {band:`${a}-${b} m`,candidates:inBand.length,placed:placed.length,unknown,
@@ -158,10 +164,10 @@ export function clickToGround(scene) {
   return {
     reference:'camera-visible LiDAR ground returns of the scene sweep (protocol v2 cameraVisibleReturn; ground gate on mapped height)',
     independence:'partly independent: LiDAR is a direct observation, but the publisher ground raster the app uses was built from LiDAR and the ground gate uses that raster',
-    click:'nearest integer pixel to the return projection (floor(uv + 0.5)); the app accepts integer pixels only',
+    click:'bands: nearest integer pixel to the return projection (floor(uv + 0.5)), the M0 definition; fractionalClickBands: the exact floating projection (referenceUV)',
     errorDefinition:'horizontal (world X/Z) distance from the app placed point to the return; signed along-ray > 0 means placed beyond the return',
     groundGateM:GROUND_GATE_M,skipped,
-    bands:bin(BANDS,GROUND_GATE_M),
+    bands:bin(BANDS,GROUND_GATE_M),fractionalClickBands:bin(BANDS,GROUND_GATE_M,'fractional'),
     strictGate:{groundGateM:STRICT_GROUND_GATE_M,bands:bin(BANDS,STRICT_GROUND_GATE_M)},
     laneBandsForReproduction:bin(LANE_BANDS,GROUND_GATE_M),
   };
@@ -179,20 +185,26 @@ export function placeablePixels(scene) {
 }
 
 // ---------------------------------------------------------------- C. suggestion internal consistency
-// The stored suggestion pixel's runtime ground hit vs the intended point the suggestion was made from (mapped crossing
-// point, annotated vehicle front-face centre, mapped person point). These are the app's own inputs: a self-check, not
-// accuracy.
+// The point the app uses for each untouched suggestion (geometry.mjs anchorPoint: the ground hit of the exact sub-pixel
+// position pixelUV; for the annotated vehicle front, its averaged front point, protocol v3.1 declaredReplacement) vs the
+// intended point the suggestion was made from (mapped crossing point, averaged front-face centre, mapped person point).
+// Also the pixelUV ray hit itself (what protocol v3 stored) and the integer anchor alone. These are the app's own inputs:
+// a self-check, not accuracy. Target (plan section 3, proposed): <= 0.05 m.
+export const METRIC_C_TARGET_M=.05;
 export function suggestionConsistency(scene) {
   const s=scene.suggestions,travel=s.roadAxis.directionOfTravel,right=[-travel[2],0,travel[0]],out={};
-  for(const [name,role] of [['crossing','crossing'],['vehicleFront','vehicle'],['person','person']]) {
+  for(const [name,key,role] of [['crossing','crossing','crossing'],['vehicleFront','parking','vehicle'],['person','target','person']]) {
     const e=s[role];
     if(e.status==='unknown'){out[name]={status:'unknown',reason:e.reason};continue;}
-    const hit=mappedGroundHit(scene,e.pixel),d=[hit.point[0]-e.mappedPoint[0],hit.point[1]-e.mappedPoint[1],hit.point[2]-e.mappedPoint[2]];
-    out[name]={pixel:e.pixel,horizontalM:r(Math.hypot(d[0],d[2])),alongTravelM:r(d[0]*travel[0]+d[2]*travel[2]),
-      rightOfTravelM:r(d[0]*right[0]+d[2]*right[2]),verticalM:r(d[1]),storedResidualM:r(e.pixelOffsetFromMappedM),
-      pixelFromProjectionPx:r(Math.hypot(e.pixel[0]-e.projectedUV[0],e.pixel[1]-e.projectedUV[1]),3),rangeM:r(hit.rangeM,3)};
+    const parts=p=>{const d=[p[0]-e.mappedPoint[0],p[1]-e.mappedPoint[1],p[2]-e.mappedPoint[2]];
+      return {horizontalM:r(Math.hypot(d[0],d[2]),6),alongTravelM:r(d[0]*travel[0]+d[2]*travel[2],6),rightOfTravelM:r(d[0]*right[0]+d[2]*right[2],6),verticalM:r(d[1],6)};};
+    const used=anchorPoint(scene,key,e.pixel).point,hit=mappedGroundHit(scene,evaluatedPosition(scene,key,e.pixel)),anchor=mappedGroundHit(scene,e.pixel);
+    const usedResidual=Math.hypot(used[0]-e.mappedPoint[0],used[2]-e.mappedPoint[2]),hitResidual=Math.hypot(hit.point[0]-e.mappedPoint[0],hit.point[2]-e.mappedPoint[2]);
+    out[name]={pixel:e.pixel,pixelUV:e.pixelUV,pointUsed:{source:key==='parking'&&e.status==='annotated'?'averaged front point':'pixelUV ray hit',...parts(used)},
+      pixelUVRayHit:{...parts(hit.point),rangeM:r(hit.rangeM,3)},integerAnchorAlone:parts(anchor.point),storedResidualM:r(e.pixelOffsetFromMappedM,6),
+      metricC:{targetM:METRIC_C_TARGET_M,pointUsedMet:usedResidual<=METRIC_C_TARGET_M,pixelUVRayHitMet:hitResidual<=METRIC_C_TARGET_M}};
   }
-  return {label:'internal consistency (the app checked against its own map and annotation inputs), not accuracy',roles:out};
+  return {label:'internal consistency (the app checked against its own map and annotation inputs), not accuracy',targetM:METRIC_C_TARGET_M,roles:out};
 }
 
 // ---------------------------------------------------------------- setback sweep with clearance
@@ -266,8 +278,13 @@ export function setbackSweepBaseline(scene,setup) {
         // Misses only (positive clearance): since M1 Unknown rows can also cut in (too close to call).
         unknownMissByLessThanM:nonOverlap.filter(x=>x.state==='unknown'&&x.clearanceM>0&&x.clearanceM<BORDERLINE_M).map(x=>x.setbackM)}};
   }
+  // Plan M4 acceptance (protocol v3.1 evaluation.stopsBlockingRange.likelyFalseRows): the child rows nearest the five
+  // setbacks metric F marked likely false on protocol v2 (the box is 1.49 m tall where the real hood is 0.81-0.99 m).
+  out.likelyFalseRowsV2=LIKELY_FALSE_V2_M.map(m=>{const row=out.child.rows.reduce((a,b)=>Math.abs(b.setbackM-m)<Math.abs(a.setbackM-m)?b:a);
+    return {v2SetbackM:m,nearestRowM:row.setbackM,state:row.state,...(row.reason&&{reason:row.reason}),clearanceM:row.clearanceM,plainBlocked:row.state==='blocked'};});
   return out;
 }
+export const LIKELY_FALSE_V2_M=[.85,1.1,9.85,10.1,10.35];
 
 // Where the line stops touching the box and where the app's Blocked ends, and how much each moves with the driver
 // position and small box errors (diagnostic only). lineTouches*: the line touches the box (the app's stopsBlockingAt
@@ -310,7 +327,45 @@ export function blockedEndRange(scene,setup) {
     boxSensitivity:[perturb('none',b=>b),perturb('yaw +1 deg',turn(1)),perturb('yaw -1 deg',turn(-1)),perturb('box 0.10 m right of travel',shift(.1,'side')),
       perturb('box 0.10 m left of travel',shift(-.1,'side')),perturb('box 0.10 m toward camera',shift(.1,'axis')),perturb('box 0.10 m away from camera',shift(-.1,'axis'))],
     sideConvention:'right of travel = [axis.z, 0, -axis.x] of the what-if box (axis points toward the camera; classifySightline local x)',
+    stopsBlockingRange:stopsBlockingRange(scene,setup),
   };
+}
+// Protocol v3.1 evaluation.stopsBlockingRange (plan M0 default, M4d): where the line stops touching the what-if box and
+// where the app's Blocked ends, at the named eye, over every combination of the averaged box moved -1/0/+1 standard
+// deviation of its annotation spread along its heading and sideways, its heading turned -1/0/+1 standard deviation, and
+// the driver eye moved -0.40/0/+0.40 m along the lane axis (outside the slider limits: skipped and counted). Ends are in
+// the app's setback (the slider's number). Not a confidence interval.
+export const DRIVER_SHIFT_M=.4;
+export function stopsBlockingRange(scene,setup) {
+  const sc=createScenario(scene,setup.input),L=sc.limits,w=sc.whatIf,track=pose(scene,setup)?.track;
+  const spread=scene.ground.cuboids.items.find(b=>b.track===track)?.poseAverage;
+  if(w.pose!=='annotated'||!spread)return {status:'unknown',reason:'The current vehicle has no averaged annotation spread.'};
+  const a=spread.centreSpreadM.alongStd,l=spread.centreSpreadM.lateralStd,y=spread.yawSpreadDeg.std;
+  // The what-if box axis points toward the camera; forward along the heading is -boxAxis, left of the heading is
+  // [-heading.z, 0, heading.x] in world X/Z (up x heading).
+  const heading=w.boxAxis.map(n=>-n),left=[-heading[2],0,heading[0]];
+  const turn=(v,deg)=>{const t=deg*Math.PI/180,c=Math.cos(t),s=Math.sin(t);return [v[0]*c-v[2]*s,0,v[0]*s+v[2]*c];};
+  const out={definition:'protocol v3.1 evaluation.stopsBlockingRange',spreadUsed:{alongStdM:r(a,4),lateralStdM:r(l,4),yawStdDeg:r(y,4),driverShiftM:DRIVER_SHIFT_M}};
+  for(const [name,height] of [['child',Number(setup.targetHeight)],['adult',ADULT_HEIGHT_M]]) {
+    const base=createScenario(scene,{...setup.input,targetHeight:String(height)}),ends={lineTouchEnd:[],blockedEnd:[]},none={lineTouchEnd:0,blockedEnd:0};
+    let skipped=0,combinations=0,nominal=null;
+    for(const da of [-a,0,a])for(const dl of [-l,0,l])for(const dy of [-y,0,y])for(const dd of [-DRIVER_SHIFT_M,0,DRIVER_SHIFT_M]) {
+      combinations++;
+      const d=L.captureDistance+dd;
+      if(d<L.minimumDriverDistance-1e-9||d>L.captureDistance+1e-9){skipped++;continue;}
+      const eye=createScenario(scene,{...setup.input,targetHeight:String(height),driverDistance:d}).eye;
+      const center=w.center.map((n,i)=>n+heading[i]*da+left[i]*dl),boxAxis=turn(w.boxAxis,dy),moved={...w,center,boxAxis};
+      const boxAt=s=>whatIfBox(moved,s),touch=cutIntervals(base,eye,base.target,0,boxAt),blocked=cutIntervals(base,eye,base.target,TOO_CLOSE_TO_CALL_M,boxAt);
+      const end={lineTouchEnd:touch.at(-1)?.[1]??null,blockedEnd:blocked.at(-1)?.[1]??null};
+      for(const k of Object.keys(ends)){if(end[k]===null)none[k]++;else ends[k].push(end[k]);}
+      if(!da&&!dl&&!dy&&!dd)nominal=end;
+    }
+    const range=v=>v.length?[r(Math.min(...v),4),r(Math.max(...v),4)]:null;
+    out[name]={targetHeightM:height,combinations,skippedDriverPositions:skipped,
+      lineTouchEndM:{nominal:r(nominal.lineTouchEnd,4),range:range(ends.lineTouchEnd),withoutInterval:none.lineTouchEnd},
+      blockedEndM:{nominal:r(nominal.blockedEnd,4),range:range(ends.blockedEnd),withoutInterval:none.blockedEnd}};
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- honesty counters
@@ -441,21 +496,30 @@ export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=
     note:'Node only, single process, warm module cache except the cold load; browser load and drag latency are measured separately'};
 }
 
-// ---------------------------------------------------------------- reproduction checks against the planning lanes
-function reproduction(b) {
-  const lane=b.clickToGround.laneBandsForReproduction,checks=[];
+// ---------------------------------------------------------------- expected values (app contract A5-A7, protocol v3.1)
+// The protocol v2 planning-lane reproduction (first-load gap 0.0251 m, residuals 0.144/0.177/0.210 m, 41 touching rows) is
+// recorded in baseline-2026-10-12.json and after-m1-fixes-2026-10-12/; the app no longer loads protocol v2 data. These
+// are the contract's protocol v3 values (grounded-v3.1 has the same geometry), from independent preparation-side code.
+function expectations(b) {
+  const checks=[];
   const check=(name,expected,measured,tolerance)=>checks.push({name,expected,measured,tolerance,pass:measured!=null&&Math.abs(measured-expected)<=tolerance});
-  check('first-load clearance (m)',.0251,b.firstLoad.clearanceM,.001);
-  if(b.placeablePixels)check('placeable crop pixels',107661,b.placeablePixels.placed,0);
-  for(const [i,p95,cov] of [[0,.144,1],[1,.881,.954],[2,.713,.98],[3,1.417,1],[4,5.755,.842]]) {
-    check(`lane band ${lane[i].band} p95 horizontal error (m)`,p95,lane[i].horizontalErrorM.p95,.01);
-    check(`lane band ${lane[i].band} shown-uncertainty coverage`,cov,lane[i].shownUncertaintyCoverage,.002);
+  check('first-load clearance (m), contract A6',.06241,b.firstLoad.clearanceM,1e-4);
+  check('first-load baseline setback (m), contract A6',.41981,b.firstLoad.baselineSetbackM,1e-4);
+  // Contract A6 lists 0.005 m grid values; these are the bisected ends (a grid value can be up to one step inside).
+  for(const [k,[a,z]] of [['child',[1.093,10.038]],['adult',[6.028,10.038]]]) {
+    const iv=b.setbackSweep[k].appBlockedIntervalsM;
+    check(`${k} app Blocked from (m), contract A6`,a,iv[0]?.[0],.006);check(`${k} app Blocked until (m), contract A6`,z,iv.at(-1)?.[1],.006);
   }
-  for(const [k,v] of [['crossing',.1437],['vehicleFront',.1767],['person',.2096]])check(`suggestion ${k} residual (m)`,v,b.suggestionConsistency.roles[k].horizontalM,.0005);
-  // The lanes counted rows whose line touches the box; since M1 three of those 41 are Unknown, too close to call.
-  check('child sweep rows whose line touches the box',41,b.setbackSweep.child.lineTouchesBoxRows,0);
-  check('child sweep stopsBlockingAt row (m)',10.603,b.setbackSweep.child.stopsBlockingAtRowM,.001);
-  return {source:'planning lanes 2026-10-12 (measure-out.json, coverage.mjs, budget-out.json, app-contract.md section 8)',checks,allPass:checks.every(c=>c.pass)};
+  const touch=b.setbackSweep.child.lineTouchesIntervalsM;
+  check('child line touches from (m), contract A6',.683,touch[0]?.[0],.006);check('child line touches until (m), contract A6',10.453,touch.at(-1)?.[1],.006);
+  const band=b.clickToGround.bands.find(x=>x.band==='12-25 m'),far=b.clickToGround.bands.find(x=>x.band==='30-60 m');
+  check('metric B 12-25 m shown-uncertainty coverage (integer click), run-receipt-v3 harnessMetricB',.962,band.shownUncertaintyCoverage,.001);
+  check('metric B 30-60 m refused as too far (integer click), run-receipt-v3 harnessMetricB',516,far.unknown['Too far to place (over 30 m).']??0,0);
+  check('metric C crossing point used (m)',0,b.suggestionConsistency.roles.crossing.pointUsed.horizontalM,1e-6);
+  check('metric C person point used (m)',0,b.suggestionConsistency.roles.person.pointUsed.horizontalM,1e-6);
+  check('metric C vehicle front point used (m)',0,b.suggestionConsistency.roles.vehicleFront.pointUsed.horizontalM,1e-6);
+  check('stored vehicle-front pixelUV ray hit residual (m), contract A5 (metric C NOT met there)',1.02848,b.suggestionConsistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1e-4);
+  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 has the same geometry)',checks,allPass:checks.every(c=>c.pass)};
 }
 
 function provenance() {
@@ -474,11 +538,11 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}
   const sc=createScenario(scene,setup.input);
   const lock=existsSync(new URL('split.lock.json',OUT_DIR))?JSON.parse(await readFile(new URL('split.lock.json',OUT_DIR),'utf8')):null;
   const splitBytes=existsSync(new URL('split.json',OUT_DIR))?await readFile(new URL('split.json',OUT_DIR)):null;
-  const b={schemaVersion:1,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
+  const b={schemaVersion:2,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
     label:'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.',
     provenance:provenance(),
     split:{file:'split.json',lockSha256:lock?.sha256??null,fileSha256:splitBytes?sha(splitBytes):null,matchesLock:!!(lock&&splitBytes&&sha(splitBytes)===lock.sha256)},
-    scene:{id:DEV.id,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions},
+    scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions},
     conventions:{
       driverEye:`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`,
       target:`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`,
@@ -500,7 +564,7 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}
       ...honestyCounters(scene,setup,sample.placements)};
   }
   b.timing=await timing(setup,{...timingRuns,firstLoadMs});
-  b.reproduction=reproduction(b);
+  b.expectations=expectations(b);
   return b;
 }
 
@@ -516,6 +580,6 @@ async function main(argv) {
   await mkdir(out,{recursive:true});
   const target=new URL(`baseline-${date}.json`,out);
   await writeFile(target,text);
-  console.log(JSON.stringify({wrote:fileURLToPath(target),sha256:sha(text),reproductionAllPass:b.reproduction.allPass}));
+  console.log(JSON.stringify({wrote:fileURLToPath(target),sha256:sha(text),expectationsAllPass:b.expectations.allPass}));
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)await main(process.argv.slice(2));
