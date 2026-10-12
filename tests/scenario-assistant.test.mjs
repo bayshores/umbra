@@ -81,11 +81,13 @@ test('declarations never invent placements or substitute out-of-extent values',(
 
 test('scenario facts are scalar, unit-labelled and carry no pixels or coordinates',()=>{
   const facts=scenarioFacts(scene,createScenario(scene,input));
-  assert.deepEqual(Object.keys(facts),['scene','units','eyeHeight_m','vehicle_m','targetHeight_m','maximumSetback_m','maximumSetback_ft','current','proposed']);
+  assert.deepEqual(Object.keys(facts),['scene','units','eye','eyeHeight_m','vehicle_m','targetHeight_m','maximumSetback_m','maximumSetback_ft','current','proposed']);
+  // The eye is named: the recording camera's position and height, not a seated driver's eye.
+  assert.equal(facts.eye,'recording camera height');
   const values=v=>v&&typeof v==='object'?Object.values(v).flatMap(values):[v];
   assert.ok(values(facts).every(v=>!Array.isArray(v)&&['string','number','boolean'].includes(typeof v)));
   assert.equal(facts.units,'meters');near(facts.eyeHeight_m,scene.camera.eye[1],.005);
-  assert.deepEqual(facts.current,{setback_m:6.55,setback_ft:21.5,state:'blocked',targetInside:false,eyeInside:false});
+  assert.deepEqual(facts.current,{setback_m:6.55,setback_ft:21.5,state:'blocked',result:'blocked',targetInside:false,eyeInside:false});
   assert.equal(JSON.stringify(facts).includes(String(input.pixels.crossing[0])),false);
 });
 
@@ -93,7 +95,9 @@ test('a declared vehicle over the measured person is an overlap, never blocked',
   const vehicle={width:2,height:1.8,length:5};
   for(const proposedSetback of [.5,2]) {
     const s=createScenario(scene,{...input,vehicle,proposedSetback});
-    assert.equal(s.proposedVisibility.state,'blocked');
+    // Unknown with the reason, in the comparison as in the facts and sweep (the comparison said Blocked before M1).
+    assert.deepEqual([s.proposedVisibility.state,s.proposedVisibility.reasonCode],['unknown','person-inside-vehicle']);
+    assert.equal(scenarioFacts(scene,s).proposed.unknownReason,'person inside a vehicle');
     assert.deepEqual(actorConflicts(s,'proposed'),{targetInside:true,eyeInside:false});
     assert.deepEqual(actorConflicts(s,'current'),{targetInside:false,eyeInside:false});
     assert.equal(scenarioFacts(scene,s).proposed.state,'overlap');
@@ -110,7 +114,8 @@ test('every sweep row matches the measured comparison and never yields Clear',()
     for(const {setback,state} of sweep.rows) {
       const s=createScenario(scene,{...input,vehicle:{width:vehicle.width,height:vehicle.height,length:vehicle.length},proposedSetback:setback});
       const c=actorConflicts(s,'proposed');
-      if(state==='overlap')assert.ok(c.targetInside||c.eyeInside);
+      // Overlap rows are the comparison's person- or driver-inside Unknown; every other row has its state and reason.
+      if(state==='overlap'){assert.ok(c.targetInside||c.eyeInside);assert.equal(s.proposedVisibility.state,'unknown');assert.match(s.proposedVisibility.reasonCode,/inside-vehicle$/);}
       else {assert.deepEqual(c,{targetInside:false,eyeInside:false});assert.equal(state,s.proposedVisibility.state);}
     }
     assert.ok(sweep.rows.every(r=>['blocked','unknown','overlap'].includes(r.state)));
@@ -135,17 +140,29 @@ test('sweep steps 0.25 m across the fitted range and includes in-range 15 ft and
 });
 
 test('analytic transition: blocking stops at the first tested setback above 5.25 m',()=>{
-  // Sightline height at distance a from the crossing is 0.5 + a/15; a 0.85 m box starting at s blocks iff s <= 5.25.
+  // Sightline height at distance a from the crossing is 0.5 + a/15; a 0.85 m box starting at s touches it iff s <= 5.25.
+  // Its cut depth is the largest min(d, 0.35 - (s + d)/15) over the depth d past the front face, so it reaches the 0.10 m
+  // margin iff s <= 3.65: Blocked up to 3.65 m, Unknown (too close to call) above it to 5.25 m, then not blocked.
   const flat=flatScene(10,1),base={pixels:{crossing:[10,11],parking:[10,12],target:[10,11]},targetHeight:.5};
   const sweep=setbackSweep(flat,base,{label:'low trailer',width:2,height:.85,length:4});
   assert.equal(sweep.error,undefined);near(sweep.range[1],10,1e-6);
-  for(const r of sweep.rows)assert.equal(r.state,r.setback<=5.25?'blocked':'unknown');
+  for(const r of sweep.rows)assert.deepEqual([r.state,r.reason],r.setback<=3.65?['blocked',undefined]:r.setback<=5.25?['unknown','too-close-to-call']:['unknown',undefined],`setback ${r.setback}`);
   near(sweep.stopsBlockingAt,5.33);near(sweep.notBlockedFrom,5.33);
-  assert.equal(sweep.at15ft,'blocked');assert.equal(sweep.at20ft,'unknown');
+  assert.equal(sweep.at15ft,'unknown');assert.equal(sweep.at20ft,'unknown');
   const facts=sweepFacts([sweep,{label:'too long',error:'Vehicle extends beyond the captured road extent.'}]);
   assert.deepEqual(facts.vehicles[0],{label:'low trailer',vehicle_m:{width:2,height:.85,length:4},targetHeight_m:.5,tested_m:[.08,10],tested_ft:[.26,32.81],step_m:.25,
-    stopsBlockingAt_m:5.33,stopsBlockingAt_ft:17.49,at15ft:'blocked',at20ft:'unknown',blocked_m:[[.08,5.08]],overlap_m:[],
-    result:'blocked 0.08-5.08 m; not blocked by the vehicle from 5.33 m (17.49 ft)',short:'not blocked by the vehicle from 5.33 m (17.49 ft)'});
+    stopsBlockingAt_m:5.33,stopsBlockingAt_ft:17.49,at15ft:'unknown',at20ft:'unknown',blocked_m:[[.08,3.58]],overlap_m:[],tooCloseToCall_m:[[3.83,5.08]],
+    result:'blocked 0.08-3.58 m; too close to call 3.83-5.08 m; not blocked by the vehicle from 5.33 m (17.49 ft)',short:'not blocked by the vehicle from 5.33 m (17.49 ft)'});
+  // The 10 cm rule in the comparison itself. Here the cut depth is (5.25 - s)/16 m (the d above where both terms are
+  // equal), so 0.101 m at s = 3.634 (Blocked) and 0.099 m at s = 3.666 (too close to call); the line just touches at
+  // 5.25 m and misses beyond.
+  const vehicle={width:2,height:.85,length:4},driverDistance=placementFromPixels(flat,base.pixels).captureDistance;
+  const at=s=>createScenario(flat,{...base,vehicle,proposedSetback:s,driverDistance}).proposedVisibility;
+  for(const [s,state,reasonCode] of [[3.634,'blocked',undefined],[3.666,'unknown','too-close-to-call'],[5.249,'unknown','too-close-to-call'],[5.251,'unknown',undefined]]) {
+    const v=at(s);assert.deepEqual([v.state,v.reasonCode],[state,reasonCode],`setback ${s}`);
+    near(v.gapM,s<=5.25?-(5.25-s)/16:v.gapM,1e-6);
+  }
+  assert.ok(at(5.251).gapM>0);
   assert.deepEqual(facts.vehicles[1],{label:'too long',error:'Vehicle extends beyond the captured road extent.'});
   const always=setbackSweep(flat,base,{label:'tall',width:2,height:2,length:4});
   assert.equal(always.stopsBlockingAt,null);assert.equal(always.notBlockedFrom,null);
@@ -154,11 +171,12 @@ test('analytic transition: blocking stops at the first tested setback above 5.25
 });
 
 test('blocking stops where every later row is unknown, not at the first unknown row',()=>{
-  // Measured scene: unknown at 0.08 m, blocked from 0.33 m, then unknown to the end of the tested range.
+  // Measured scene: unknown at 0.08 m, the line inside the box from 0.33 m (by under 10 cm at 0.33-1.33 m and
+  // 18.83-21.33 m: too close to call), then unknown to the end of the tested range.
   const sweep=setbackSweep(scene,input,{label:'small car',width:1.6,height:1.4,length:3},.5),first=sweep.rows.findIndex(r=>r.state==='blocked');
   assert.equal(sweep.rows[0].state,'unknown');assert.ok(first>0);
   near(sweep.stopsBlockingAt,21.58);near(sweep.notBlockedFrom,21.58);
-  assert.equal(sweepPhrase(sweep),'blocked 0.33-21.33 m; not blocked by the vehicle from 21.58 m (70.8 ft)');
+  assert.equal(sweepPhrase(sweep),'blocked 1.58-18.58 m; too close to call 0.33-1.33 m, 18.83-21.33 m; not blocked by the vehicle from 21.58 m (70.8 ft)');
   assert.ok(sweep.rows.filter(r=>r.setback<21.58-1e-9).some(r=>r.state==='blocked'));
   assert.ok(sweep.rows.filter(r=>r.setback>=21.58-1e-9).every(r=>r.state==='unknown'));
   // A vehicle under the analytic sightline never blocks: every row is unknown from the first tested setback.
@@ -179,7 +197,9 @@ test('an eye inside the declared box is an overlap even where only the eye is in
   assert.ok(eyeOnly.length>=1);
   for(const {r,s,c} of eyeOnly) {
     assert.deepEqual(c,{targetInside:false,eyeInside:true});assert.equal(r.state,'overlap');assert.deepEqual([r.person,r.driver],[false,true]);
-    assert.equal(s.proposedVisibility.state,'blocked');assert.equal(scenarioFacts(scene,s).proposed.state,'overlap');
+    // The comparison reports Unknown with the reason (it said Blocked before M1); the facts keep overlap plus the reason.
+    assert.deepEqual([s.proposedVisibility.state,s.proposedVisibility.reasonCode],['unknown','driver-inside-vehicle']);assert.equal(r.reason,'driver-inside-vehicle');
+    assert.deepEqual([scenarioFacts(scene,s).proposed.state,scenarioFacts(scene,s).proposed.unknownReason],['overlap','driver inside a vehicle']);
   }
   // Overlap rows never count as blocking; the unknown run after them starts the not-blocked range.
   assert.equal(sweep.rows.some(r=>r.state==='blocked'),false);
@@ -247,10 +267,11 @@ test('result phrases name only the states their rows hold',()=>{
   const a=swept(sets.A);
   assert.equal(a.rows.some(r=>r.state==='blocked'),false);assert.equal(a.stopsBlockingAt,null);
   assert.equal(sweepPhrase(a),'not blocked by the vehicle at any tested distance (rest unknown); overlaps person 5.83-10.49 m');
-  // Set B: unknown rows before a blocked tail are never called blocked.
+  // Set B: unknown rows before a blocked tail are never called blocked; the first row inside the box is too close to call.
   const b=swept(sets.B);
-  assert.deepEqual(b.rows.slice(0,4).map(r=>r.state),['unknown','unknown','unknown','blocked']);assert.equal(b.stopsBlockingAt,null);
-  assert.equal(sweepPhrase(b),'blocked 0.83-7.08 m');
+  assert.deepEqual(b.rows.slice(0,5).map(r=>[r.state,r.reason]),[['unknown',undefined],['unknown',undefined],['unknown',undefined],['unknown','too-close-to-call'],['blocked',undefined]]);
+  assert.equal(b.stopsBlockingAt,null);
+  assert.equal(sweepPhrase(b),'blocked 1.08-7.08 m; too close to call at 0.83 m');
   // Every phrase is grounded as written; "every tested distance" only when every row is blocked; a stop distance only
   // after blocking.
   for(const pixels of [input.pixels,sets.A,sets.B,{...input.pixels,target:[592,318]}])for(const v of vehicles) {
@@ -259,7 +280,9 @@ test('result phrases name only the states their rows hold',()=>{
     const facts=sweepFacts([r]),phrase=facts.vehicles[0].result;
     assert.equal(phrase,sweepPhrase(r));
     assert.equal(/every tested distance/.test(phrase),r.rows.every(x=>x.state==='blocked'),phrase);
-    assert.equal(/not blocked by the vehicle from/.test(phrase),r.stopsBlockingAt!==null&&r.rows.some(x=>x.state==='blocked'),phrase);
+    const touches=r.rows.some(x=>x.state==='blocked'||x.reason==='too-close-to-call');
+    assert.equal(/not blocked by the vehicle from/.test(phrase),r.stopsBlockingAt!==null&&touches,phrase);
+    assert.equal(/too close to call/.test(phrase),r.rows.some(x=>x.reason==='too-close-to-call'),phrase);
     assert.ok(checkAnswer(`${v.label}: ${phrase}.`,allowedNumbersFrom(facts)).ok,phrase);
   }
   assert.equal(sweepPhrase({error:'Vehicle extends beyond the captured road extent.'}),'Vehicle extends beyond the captured road extent.');
@@ -422,3 +445,128 @@ test('line of sight is allowed only when the clause says it is blocked',()=>{
     assert.equal(checkAnswer(claim,[]).ok,false,claim);
 });
 
+
+// ------------------------------------------------------------------ M1 (2026-10-12): wrong outputs and answer checks
+// First-load AV2 8c facts as numbers (scenarioFacts shape): width 1.88, height 1.49, length 4.03, child 1.1, eye 1.47,
+// turned 1.41 deg, setback 0.69 m (2.25 ft), maximum 13.53 m (44.39 ft).
+const firstLoadFacts={eye:'recording camera height',eyeHeight_m:1.47,vehicle_m:{width:1.88,height:1.49,length:4.03},targetHeight_m:1.1,maximumSetback_m:13.53,maximumSetback_ft:44.39,
+  current:{pose:'annotated',turnedFromLane_deg:1.41,setback_m:.69,setback_ft:2.25,state:'unknown'},proposed:{pose:'annotated',turnedFromLane_deg:1.41,setback_m:.69,setback_ft:2.25,state:'unknown'}};
+
+test('a computed number used for another quantity is withheld',()=>{
+  const allowed=allowedNumbersFrom(firstLoadFacts);
+  // The robustness lane's two misattributions, then more of the same kind (each number is in the facts, wrong quantity).
+  for(const claim of ['The vehicle is 1.4 m wide.','The stationary vehicle is 1.49 m from the crossing.','The vehicle is 1.88 m tall.','The vehicle is 4.03 m wide.',
+    'The vehicle is 1.49 m long.','The child is 1.49 m tall.','The 1.47 m child is not blocked by the vehicle (rest unknown).','The stationary vehicle is 2.25 m from the crossing.',
+    'The stationary vehicle is 0.69 ft from the crossing.','The vehicle is 1.88 ft wide.','A vehicle width of 1.1 m.','Its setback is 1.47 m.','The vehicle sits 13.53 ft back.',
+    'The 1.49 m tall child is not blocked by the vehicle (rest unknown).']) {
+    const r=checkAnswer(claim,allowed,{mapped:true});
+    assert.deepEqual([r.ok,r.kind],[false,'role'],claim);assert.match(r.reason,/is not Sightline's computed /,claim);
+    assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: used a computed number for the wrong quantity.');
+    assert.equal(checkAnswer(claim,allowed).kind,'role',`${claim} (measured-depth scene too)`);
+  }
+  for(const good of ['The vehicle is 1.88 m wide, 1.49 m tall and 4.03 m long.','The 1.1 m child is not blocked by the vehicle (rest unknown).',
+    'The stationary vehicle is 0.69 m (2.25 ft) from the crossing.','The line from the driver eye at 1.47 m to the child is not blocked by the vehicle (rest unknown).',
+    'The eye is 1.47 m high.','The child is 1.1 m tall.','Its setback is 0.69 m.','The vehicle could move 13.53 m back.','It is turned 1.41 degrees from the lane.',
+    'The child (1.1 m) is blocked by the 1.49 m tall vehicle.','The vehicle is 1.49 m tall, the child 1.1 m.'])
+    assert.deepEqual(checkAnswer(good,allowed,{mapped:true}),{ok:true,reason:'',text:good},good);
+  // Sweep facts: every vehicle's sizes and every setback, stop distance and range count for their own quantity.
+  const sweep=allowedNumbersFrom(sweepFacts([setbackSweep(scene,input,vehicles[1])]));
+  assert.equal(checkAnswer('The compact car is 1.8 m wide and stops blocking 4.33 m (14.21 ft) from the crossing.',sweep).ok,true);
+  assert.equal(checkAnswer('The compact car is 1.5 m from the crossing.',sweep).kind,'role');
+  // A plain number list (no roles) is checked by value only, as before.
+  assert.equal(checkAnswer('The vehicle is 1.4 m wide.',[1.41]).ok,true);
+});
+
+test('mapped-ground answers never give a reason for the stop or claim a measured source',()=>{
+  const allowed=allowedNumbersFrom(firstLoadFacts);
+  // The robustness lane's six invented reasons (and stopped for traffic) pass on neither mapped answers nor labels.
+  const reasons=['The stationary vehicle is stopped at the stop sign, and the line to the child is not blocked by the vehicle (rest unknown).',
+    'The car is waiting at the crosswalk; the child line is not blocked by the vehicle (rest unknown).','The stationary vehicle is yielding to pedestrians and does not block the line.',
+    'The stalled car does not block the line to the child.','The car is idling in the lane, not blocked by the vehicle.','The driver of the stationary car is dropping someone off.',
+    'The car stopped for traffic; it is 0.69 m from the crossing.','The vehicle broke down 0.69 m from the crossing.','The van is unloading at 0.69 m.','It is queued at a red light.'];
+  const sources=['The stationary vehicle sits 0.69 m from the crosswalk, measured precisely.','The crosswalk position is measured by LiDAR and the vehicle is 0.69 m back.',
+    'The surveyed crossing is 0.69 m away.','The crossing edge is accurate to the centimetre.'];
+  for(const claim of [...reasons,...sources]) {
+    const r=checkAnswer(claim,allowed,{mapped:true});
+    assert.deepEqual([r.ok,r.kind],[false,'wording'],claim);
+  }
+  // The app's own phrases, labels and support words still pass.
+  for(const good of ['Your vehicle stops blocking from 10.6 m (34.79 ft); too close to call at 0.85 m.','The delivery van and SUV: no tested distance where it stops blocking.',
+    'The vehicle front has nearby LiDAR returns.','The stationary vehicle is 0.69 m (2.25 ft) from the crossing; the reason for stopping is unknown.'])
+    assert.equal(checkAnswer(good,[...allowed,10.6,34.79,.85],{mapped:true}).ok,true,good);
+  for(const label of ['waiting car','idling SUV','broken down car','stalled van','delivering van','stopped car','queued truck']) {
+    const d=validateDeclaration({...declaration,vehicle_label:label},{mapped:true});
+    assert.equal(d.ok,false,label);assert.doesNotMatch(d.error,new RegExp(label.split(' ')[0]),label);
+  }
+  for(const label of ['delivery van','box truck','your vehicle','pick-up truck'])assert.equal(validateDeclaration({...declaration,vehicle_label:label},{mapped:true}).ok,true,label);
+  // Measured-depth (DrivingStereo) answers and labels keep their wording rules.
+  assert.equal(checkAnswer(reasons[1],allowed).ok,true);assert.equal(validateDeclaration({...declaration,vehicle_label:'waiting car'}).ok,true);
+});
+
+test('the check tool refuses setbacks below the slider minimum and implausible sizes',()=>{
+  for(const setback_value of [.01,.05]) {
+    const r=applyDeclaration(scene,input.pixels,input,{...declaration,setback_value,setback_unit:'m'});
+    assert.equal(r.error,'Proposed setback must be at least 0.08 m from the crossing (the slider minimum).',String(setback_value));
+  }
+  assert.equal(applyDeclaration(scene,input.pixels,input,{...declaration,setback_value:.08,setback_unit:'m'}).error,undefined);
+  // Typed fields the distance check sweeps from are checked the same way as declarations.
+  const typed={pixels:input.pixels,vehicle:{width:'0x2',height:'2.4',length:'5.4'},targetHeight:'1.3',input:null,setupInput:{...input,vehicle:{width:'0x2',height:'2.4',length:'5.4'}}};
+  const out=runTool(scene,'check',typed,'sweep_setbacks',{vehicles:[{label:'SUV',width_m:2,height_m:1.8,length_m:5}]});
+  assert.equal(out.sweep.results[0].error,'Vehicle width must be a number from 0.5 to 3.5 m.');assert.equal(out.sweep.results[1].error,undefined);
+  assert.deepEqual(RANGES,{width:[.5,3.5],height:[.5,4.5],length:[1,20],targetHeight:[.3,2.5],label:40});
+});
+
+test('short phrases for sweeps whose rows are all Unknown for one reason',()=>{
+  const r=(rows,stop=null)=>({rows:rows.map(([state,reason],i)=>({setback:i,state,...(reason&&{reason})})),stopsBlockingAt:stop});
+  assert.equal(sweepShort(r([['unknown','person-inside-object'],['unknown','person-inside-object']])),'unknown at every tested distance (person inside a real object)');
+  assert.equal(sweepShort(r([['overlap','person-inside-vehicle'],['overlap','driver-inside-vehicle']])),'unknown at every tested distance');
+  assert.equal(sweepShort(r([['unknown','too-close-to-call'],['unknown']],1)),'not blocked by the vehicle from 1 m (3.28 ft)');
+  assert.equal(sweepShort(r([['unknown','too-close-to-call'],['unknown','too-close-to-call']])),'no tested distance where it stops blocking');
+  assert.equal(sweepPhrase(r([['unknown','too-close-to-call'],['unknown']],1)),'too close to call at 0 m; not blocked by the vehicle from 1 m (3.28 ft)');
+  assert.equal(sweepPhrase(r([['unknown','person-inside-object'],['unknown','person-inside-object']])),'person inside a real object 0-1 m');
+});
+
+// ------------------------------------------------------------------ M1 fixes (2026-10-12): result phrases and "not blocked"
+test('every position carries one result phrase; "not blocked by the vehicle" only for a plain Unknown',()=>{
+  // Analytic flat street (see the analytic transition test): the low trailer at 4.5 m cuts under 10 cm into the line
+  // (too close to call); the current vehicle at 7.5 m misses it (plain Unknown); at 3 m it is Blocked.
+  const flat=flatScene(10,1),base={pixels:{crossing:[10,11],parking:[10,12],target:[10,11]},targetHeight:.5};
+  const vehicle={width:2,height:.85,length:4},driverDistance=placementFromPixels(flat,base.pixels).captureDistance;
+  const at=s=>scenarioFacts(flat,createScenario(flat,{...base,vehicle,proposedSetback:s,driverDistance}));
+  const close=at(4.5);
+  assert.deepEqual([close.current.result,close.proposed.result],['not blocked by the vehicle (rest unknown)','unknown (too close to call)']);
+  assert.equal(at(3).proposed.result,'blocked');
+  const allowed=allowedNumbersFrom(close);
+  for(const text of ['At 4.5 m the person is not blocked by the vehicle (rest unknown).','The proposed vehicle is not blocked by the vehicle (rest unknown).',
+    'The child is not blocked by the vehicle (rest unknown).','At 4.5 m (14.76 ft) the trailer does not block the line.','From 4.5 m it stops blocking at 4.5 m.',
+    'The current vehicle is blocked at 7.5 m, but the proposed one is not blocked by the vehicle.']) {
+    const r=checkAnswer(text,allowed);assert.deepEqual([r.ok,r.kind],[false,'result'],text);
+  }
+  for(const text of ['At 4.5 m the result is unknown (too close to call).','The current vehicle at 7.5 m (24.61 ft) is not blocked by the vehicle (rest unknown).',
+    'At 4.5 m it is unknown (too close to call), but at 7.5 m it is not blocked by the vehicle (rest unknown).','At 7.5 m: not blocked by the vehicle (rest unknown).'])
+    assert.deepEqual(checkAnswer(text,allowed),{ok:true,reason:'',text},text);
+  // Both positions plain: the unqualified claim is true. Nothing computed: no claim is grounded.
+  assert.equal(checkAnswer('The child is not blocked by the vehicle (rest unknown).',allowedNumbersFrom(at(6))).ok,true);
+  assert.equal(checkAnswer('The child is not blocked by the vehicle (rest unknown).',allowedNumbersFrom({scene:'x',placed:['crossing']})).kind,'result');
+  // An overlap position (person inside the box) is "unknown (person inside a vehicle)", never not blocked.
+  const inside=scenarioFacts(scene,createScenario(scene,{...input,vehicle:{width:2,height:1.8,length:5},proposedSetback:.5}));
+  assert.deepEqual([inside.proposed.state,inside.proposed.result],['overlap','unknown (person inside a vehicle)']);
+});
+
+test('a sweep whose last rows are not tested says where that starts instead of claiming it blocks to the end',()=>{
+  const r=(rows,stop=null)=>({rows:rows.map(([state,reason,gapM=-1],i)=>({setback:i,state,gapM,...(reason&&{reason})})),stopsBlockingAt:stop});
+  assert.equal(sweepShort(r([['blocked'],['unknown','overlaps-real-object',-.05],['unknown','overlaps-real-object',.01]])),'unknown from 1 m (overlaps a real object)');
+  assert.equal(sweepShort(r([['blocked'],['overlap','person-inside-vehicle'],['unknown','overlaps-real-object',.2]])),'unknown from 1 m');
+  assert.equal(sweepShort(r([['blocked'],['unknown','too-close-to-call']])),'no tested distance where it stops blocking');
+  assert.equal(sweepShort(r([['blocked'],['unknown','overlaps-real-object',.1],['blocked']])),'no tested distance where it stops blocking');
+});
+
+test('the answer check reads crossing synonyms, "set back", the eye height and two words before a noun',()=>{
+  const allowed=allowedNumbersFrom(firstLoadFacts);
+  for(const text of ['The stationary vehicle is 1.49 m from the intersection.','It is set back 1.49 m.','The vehicle is 1.88 m back from the stop line.',
+    'The driver eye is at 0.69 m.','The distance to the crossing is 1.1 m.'])
+    assert.equal(checkAnswer(text,allowed,{mapped:true}).kind,'role',text);
+  for(const text of ['The child is behind a 1.49 m tall red delivery van.','The vehicle is 0.69 m (2.25 ft) from the intersection.','It is set back 0.69 m.',
+    'The line from the driver eye at 1.47 m to the child is not blocked by the vehicle (rest unknown).','The vehicle is 1.49 m tall and the child is 1.1 m tall.'])
+    assert.deepEqual(checkAnswer(text,allowed,{mapped:true}),{ok:true,reason:'',text},text);
+});

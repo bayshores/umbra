@@ -5,11 +5,30 @@ const add = (a,b) => a.map((v,i)=>v+b[i]);
 const mul = (a,s) => a.map(v=>v*s);
 const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
 const finite3 = p => Array.isArray(p)&&p.length===3&&Number.isFinite(p[0])&&Number.isFinite(p[1])&&Number.isFinite(p[2]);
+const fmt2=n=>String(Number(n.toFixed(2)));
+// A typed value is a finite number or a plain decimal string ("1.88", ".5", "2e0"); hex ("0x2"), signs, spaces and
+// empty strings are refused, never read as something else.
+const DECIMAL=/^(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?$/;
+const decimal=value=>typeof value==='number'?value:typeof value==='string'&&DECIMAL.test(value)?Number(value):NaN;
 function positive(value,label) {
-  const n = Number(value);
-  if (value == null || value === '' || !Number.isFinite(n) || n <= 0) throw new Error(`${label} must be a positive number.`);
+  const n = decimal(value);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${label} must be a positive number.`);
   return n;
 }
+// Declared sizes, metres. One set for typed fields and Nemotron declarations (the tool ranges of the Nemotron spec and
+// worker/nemotron.js): vehicle width 0.5-3.5, height 0.5-4.5, length 1-20 (a motorcycle or low trailer up to an
+// oversize load or articulated bus); tested person height 0.3-2.5. Out-of-range values are refused, never clamped.
+// Why 20 m: it holds an articulated bus (about 18 m) and long rigid trucks. A semi tractor-trailer (about 21-23 m
+// overall) is refused with the length message, never shortened. The AV2 8c approach from the crossing to the recording
+// camera is 17.6 m, so no setback there could hold a longer vehicle anyway. An annotated stationary vehicle outside these
+// sizes fails the suggestion load (suggestions.mjs), so a scene never opens straight into a size refusal.
+export const SIZE_LIMITS=Object.freeze({width:Object.freeze([.5,3.5]),height:Object.freeze([.5,4.5]),length:Object.freeze([1,20]),targetHeight:Object.freeze([.3,2.5])});
+function sized(value,label,[lo,hi]) {
+  const n=decimal(value);
+  if(!Number.isFinite(n)||n<lo||n>hi)throw new Error(`${label} must be a number from ${lo} to ${hi} m.`);
+  return n;
+}
+const vehicleSizes=vehicle=>Object.fromEntries(['width','height','length'].map(k=>[k,sized(vehicle?.[k],`Vehicle ${k}`,SIZE_LIMITS[k])]));
 export function measuredPoint(scene,pixel) {
   const [u,v] = pixel ?? [], c = scene.camera;
   if (!Number.isInteger(u)||!Number.isInteger(v)||u<0||u>=c.width||v<0||v>=c.height) throw new Error('Select a pixel inside the recorded image.');
@@ -123,16 +142,26 @@ export function mappedGroundHit(scene,pixel) {
   }
   throw new Error(`No mapped ground within ${max} m along the pixel ray.`);
 }
+// How far (pixels, each image axis) the vehicle front may be nudged from the suggested annotated front and still name the
+// annotated stationary vehicle (protocol v3 candidate, October 12, 2026; reason: plan M1(d)). A 1-2 px nudge corrects
+// a click; it does not name a different vehicle. Near the horizon one pixel row moves a ground point by up to about a
+// metre (AV2 8c: a nudge of up to 2 px moves the front's ground hit by 0.02-1.22 m, about its shown +/-1.21 m along-ray
+// uncertainty), so before this rule a 1 px nudge swapped the real car for a declared box or was refused. The suggested
+// pixel itself sits 3.3 px from the projection of the annotated front.
+export const ANNOTATED_FRONT_NUDGE_PX=2;
+export const namesAnnotatedFront=(suggested,pixel)=>Array.isArray(pixel)&&pixel.length===2&&Number.isInteger(pixel[0])&&Number.isInteger(pixel[1])&&
+  Array.isArray(suggested)&&Math.abs(pixel[0]-suggested[0])<=ANNOTATED_FRONT_NUDGE_PX&&Math.abs(pixel[1]-suggested[1])<=ANNOTATED_FRONT_NUDGE_PX;
 // The annotated stationary vehicle of a mapped-ground scene: suggestions.json names it (vehicle status "annotated", its
-// track) and ground.json holds its cuboid. While the vehicle front pixel and the three size fields still hold that
-// suggestion, the current vehicle is this cuboid's exact annotated centre, heading and dimensions; it is never re-derived
-// from the road axis or the front pixel. Returns null for any other vehicle (moved, resized, or not annotated): that one is
-// a declared box. classifySightline takes a horizontal axis, so the heading is the box's horizontal forward direction
+// track) and ground.json holds its cuboid. While the vehicle front pixel stays within ANNOTATED_FRONT_NUDGE_PX of that
+// suggestion and the three size fields still hold it, the current vehicle is this cuboid's exact annotated centre,
+// heading and dimensions; it is never re-derived from the road axis or the front pixel (a nudged front pixel changes
+// nothing about the box). Returns null for any other vehicle (moved further, resized, or not annotated): that one is a
+// declared box. classifySightline takes a horizontal axis, so the heading is the box's horizontal forward direction
 // (its sub-degree pitch and roll are not used). The axis points toward the camera, like the lane axis.
 export function annotatedVehicle(scene,pixels,vehicle) {
-  const v=isMappedGround(scene)?scene.suggestions?.vehicle:null,front=pixels?.parking;
-  if(v?.status!=='annotated'||!Array.isArray(front)||front[0]!==v.pixel[0]||front[1]!==v.pixel[1]||
-    ['width','height','length'].some(k=>vehicle?.[k]===''||vehicle?.[k]==null||Number(vehicle[k])!==v.dimensions[k]))return null;
+  const v=isMappedGround(scene)?scene.suggestions?.vehicle:null;
+  // Sizes as createScenario reads them (plain decimals), so a value it would refuse never names the annotated vehicle.
+  if(v?.status!=='annotated'||!namesAnnotatedFront(v.pixel,pixels?.parking)||['width','height','length'].some(k=>decimal(vehicle?.[k])!==v.dimensions[k]))return null;
   const boxes=scene.ground.cuboids.items.filter(box=>box.track===v.track);
   if(boxes.length!==1)throw new Error('The annotated vehicle is missing from the mapped ground annotations.');
   const [box]=boxes,M=box.worldFromBox,n=Math.hypot(M[0][0],M[2][0]),axis=[-M[0][0]/n,0,-M[2][0]/n],travel=mappedTravel(scene);
@@ -161,7 +190,7 @@ export function whatIfBox(w,setback) {
 // at the recorded camera. vehicleDeclared: a declaration (Nemotron or an applied distance-check row) set the vehicle,
 // which ends the annotated pose even when the sizes equal the annotation.
 export function comparisonStart(scene,pixels,vehicle,vehicleDeclared=false) {
-  const p=placementFromPixels(scene,pixels),pose=vehicleDeclared?null:annotatedVehicle(scene,pixels,vehicle);
+  const pose=vehicleDeclared?null:annotatedVehicle(scene,pixels,vehicle),p=placementFromPixels(scene,pixels,{annotated:!!pose});
   return {proposedSetback:pose?annotatedSetback(p.crossing,p.axis,pose):p.baselineSetback,driverDistance:p.captureDistance};
 }
 // Unit direction of travel: chord of the mapped ego lane's boundary midpoints (prepare suggestions use the same chord).
@@ -170,15 +199,22 @@ export function mappedTravel(scene) {
   const a=mid(left[0],right[0]),b=mid(left.at(-1),right.at(-1)),dx=b[0]-a[0],dz=b[1]-a[1],n=Math.sqrt(dx*dx+dz*dz);
   return [dx/n,0,dz/n];
 }
+// Mapped-scene refusals for a current vehicle at or past the crossing; part names the point tested (the declared front
+// or an annotated box's nearest front corner).
+const cameraSide=(part,past)=>`Place the current vehicle on the camera side of the crossing (its ${part} is ${fmt2(past)} m past the crossing along the lane).`;
+const separated=(part,gap,tolerance)=>`Current vehicle front must be separated from the crossing (its ${part} is ${fmt2(Math.max(gap,0))} m from it along the lane; more than ${fmt2(tolerance)} m is needed).`;
 // The declared vehicle runs along the mapped lane axis (toward the camera) through its own front. The crossing and front
 // are less than a metre apart, so the axis never comes from those two points. vehicleOrigin is the vehicle's line at
-// the crossing's distance along the axis.
-function mappedVehicleLine(scene,crossing,parking) {
+// the crossing's distance along the axis. check false: the front pixel names the annotated vehicle, whose own box gets
+// the same rules in createScenario (its nearest front corner), so the front pixel's ground hit is not refused here.
+function mappedVehicleLine(scene,crossing,parking,check=true) {
   const travel=mappedTravel(scene),axis=[-travel[0],0,-travel[2]];
   const baselineSetback=(parking[0]-crossing[0])*axis[0]+(parking[2]-crossing[2])*axis[2],tolerance=scene.ground.roadToleranceMeters;
-  // A front beyond the crossing (negative gap along the axis) needs moving, not separating.
-  if(baselineSetback<-tolerance)throw new Error('Place the current vehicle on the camera side of the crossing.');
-  if(baselineSetback<=tolerance)throw new Error('Current vehicle front must be separated from the crossing.');
+  // A front beyond the crossing (negative gap along the axis) needs moving, not separating. Near the horizon one image
+  // pixel can move a ground point by a metre (AV2 8c suggestion: crossing and front 4 px and 0.86 m apart), so a
+  // one-pixel edit of a declared front can land here; the refusal names the measured gap.
+  if(check&&baselineSetback<-tolerance)throw new Error(cameraSide('front',-baselineSetback));
+  if(check&&baselineSetback<=tolerance)throw new Error(separated('front',baselineSetback,tolerance));
   return {axis,baselineSetback,vehicleOrigin:[parking[0]-axis[0]*baselineSetback,parking[1],parking[2]-axis[2]*baselineSetback]};
 }
 // End of the contiguous run from s=0 along origin + s*axis (horizontal) that stays inside the mapped drivable areas
@@ -202,13 +238,13 @@ function mappedRunEnd(scene,origin,axis,limit) {
   }
   return end;
 }
-function mappedPlacement(scene,pixels) {
+function mappedPlacement(scene,pixels,annotated) {
   const points={},support={};
   for (const key of ['crossing','parking','target']) {
     const hit=mappedGroundHit(scene,pixels?.[key]);
     points[key]=hit.point;support[key]={supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM};
   }
-  const {axis,baselineSetback,vehicleOrigin}=mappedVehicleLine(scene,points.crossing,points.parking);
+  const {axis,baselineSetback,vehicleOrigin}=mappedVehicleLine(scene,points.crossing,points.parking,!annotated);
   const captureDistance=dot(sub(scene.camera.eye,points.crossing),axis);
   if (captureDistance<=0) throw new Error('Place the current vehicle on the camera side of the crossing.');
   // The vehicle stays between the crossing and the recorded camera, on contiguous mapped drivable ground.
@@ -233,16 +269,16 @@ export function placementPreview(scene,pixels,vehicle,targetHeight,vehicleDeclar
   if(isMappedGround(scene)) {
     if(pixels?.crossing&&pixels?.parking&&['width','height','length'].every(k=>vehicle?.[k]!==''&&vehicle?.[k]!=null)) {
       const crossing=roadPoint(scene,pixels.crossing,'crossing'),parking=roadPoint(scene,pixels.parking,'vehicle');
-      const line=mappedVehicleLine(scene,crossing,parking);
-      const dimensions=Object.fromEntries(['width','height','length'].map(k=>[k,positive(vehicle[k],`Vehicle ${k}`)]));
-      if(Object.values(dimensions).some(n=>n>span))throw new Error('Actor dimensions exceed the measured scene extent.');
       // The annotated stationary vehicle is drawn in its annotated pose, like the comparison's current vehicle.
       const pose=vehicleDeclared?null:annotatedVehicle(scene,pixels,vehicle);
+      const line=mappedVehicleLine(scene,crossing,parking,!pose);
+      const dimensions=vehicleSizes(vehicle);
+      if(Object.values(dimensions).some(n=>n>span))throw new Error('Actor dimensions exceed the measured scene extent.');
       preview.vehicle=pose?{dimensions:pose.dimensions,axis:pose.axis,center:pose.center,annotated:true}
         :{dimensions,axis:line.axis,center:vehicleCenter(line.vehicleOrigin,line.axis,line.baselineSetback,dimensions,parking[1])};
     }
     if(pixels?.target&&targetHeight!==''&&targetHeight!=null) {
-      const height=positive(targetHeight,'Target height');
+      const height=sized(targetHeight,'Target height',SIZE_LIMITS.targetHeight);
       if(height>span)throw new Error('Actor dimensions exceed the measured scene extent.');
       const hit=mappedGroundHit(scene,pixels.target);
       preview.targetGround=hit.point;preview.targetHidden=hit.hidden;
@@ -254,21 +290,23 @@ export function placementPreview(scene,pixels,vehicle,targetHeight,vehicleDeclar
     const crossing=roadPoint(scene,pixels.crossing,'crossing'),parking=roadPoint(scene,pixels.parking,'vehicle');
     const delta=[parking[0]-crossing[0],0,parking[2]-crossing[2]],distance=Math.hypot(...delta);
     if(distance<=scene.processing.roadToleranceMeters)throw new Error('Current vehicle front must be separated from the crossing.');
-    const dimensions=Object.fromEntries(['width','height','length'].map(k=>[k,positive(vehicle[k],`Vehicle ${k}`)]));
+    const dimensions=vehicleSizes(vehicle);
     if(Object.values(dimensions).some(n=>n>span))throw new Error('Actor dimensions exceed the measured scene extent.');
     const axis=mul(delta,1/distance),center=vehicleCenter(crossing,axis,distance,dimensions,parking[1]);
     preview.vehicle={dimensions,axis,center};
   }
   if(pixels?.target&&targetHeight!==''&&targetHeight!=null) {
-    const height=positive(targetHeight,'Target height');
+    const height=sized(targetHeight,'Target height',SIZE_LIMITS.targetHeight);
     if(height>span)throw new Error('Actor dimensions exceed the measured scene extent.');
     preview.targetGround=roadPoint(scene,pixels.target,'person');
     preview.target=add(preview.targetGround,[0,height,0]);
   }
   return preview;
 }
-export function placementFromPixels(scene,pixels) {
-  if(isMappedGround(scene))return mappedPlacement(scene,pixels);
+// annotated (mapped-ground scenes): the front pixel names the annotated stationary vehicle (annotatedVehicle), so its
+// ground hit only marks that vehicle and is not refused for its gap to the crossing (createScenario tests the box).
+export function placementFromPixels(scene,pixels,{annotated=false}={}) {
+  if(isMappedGround(scene))return mappedPlacement(scene,pixels,annotated);
   const points={};
   for (const key of ['crossing','parking','target']) {
     points[key]=roadPoint(scene,pixels?.[key],key);
@@ -393,25 +431,114 @@ export function classifySightline(scene,start,end,vehicle,axis,center) {
     ? 'Depth samples cover this angular path, but their free-space footprint is unvalidated.'
     : 'Part of the sightline has no supported free-space evidence.',supportedFraction:supported};
 }
+// ---------------------------------------------------------------- results: Blocked, or Unknown with a reason
+// Sean (2026-10-12): a sightline that cuts into a vehicle box by less than this is "too close to call" (Unknown), not
+// Blocked. The margin still has to be justified by the locked error budget. It only turns Blocked into Unknown.
+export const TOO_CLOSE_TO_CALL_M=.1;
+// Why a result is Unknown instead of Blocked (results are only Blocked or Unknown; Clear does not exist). Short texts for
+// labels such as "Unknown (too close to call)"; each result also carries a full sentence in its reason.
+export const UNKNOWN_REASONS=Object.freeze({
+  'driver-inside-vehicle':'driver inside a vehicle','person-inside-vehicle':'person inside a vehicle',
+  'driver-inside-object':'driver inside a real object','person-inside-object':'person inside a real object',
+  'overlaps-real-object':'overlaps a real object','too-close-to-call':'too close to call'});
+const fmt3=n=>String(Number(n.toFixed(3)));
+// Signed sightline-to-box gap in the box frame (a, b: segment ends; half: half sizes), from the same closed
+// segment-box test. A segment that touches the box gets minus its cut depth: the largest d at which it still touches the
+// box shrunk by d on every side (0 for grazing contact). One that misses gets the smallest d at which it touches the
+// box grown by d on every side. Bisection to 1e-9 m.
+export function sightlineGap(a,b,half) {
+  const touches=d=>half.every(n=>n-d>=0)&&segmentIntersectsBox(a,b,half.map(n=>d-n),half.map(n=>n-d));
+  let lo=0,hi;
+  if(touches(0)) {
+    hi=Math.min(...half);
+    if(touches(hi))return -hi;
+    while(hi-lo>1e-9){const m=(lo+hi)/2;if(touches(m))lo=m;else hi=m;}
+    return -lo;
+  }
+  hi=Math.max(...[a,b].map(p=>Math.max(...p.map((n,i)=>Math.abs(n)-half[i]))));
+  while(hi-lo>1e-9){const m=(lo+hi)/2;if(touches(-m))hi=m;else lo=m;}
+  return hi;
+}
+// Real annotated objects of a mapped-ground scene: every annotated cuboid except the suggestion's stationary vehicle,
+// which is the current vehicle itself or the vehicle a declaration replaced. Each keeps its full 3D pose.
+const OBJECTS=new WeakMap();
+function realObjects(scene) {
+  if(!isMappedGround(scene)||!scene.ground?.cuboids?.available)return [];
+  const own=scene.suggestions?.vehicle?.status==='annotated'?scene.suggestions.vehicle.track:null,cached=OBJECTS.get(scene);
+  if(cached&&cached.own===own&&cached.items===scene.ground.cuboids.items)return cached.list;
+  const list=scene.ground.cuboids.items.filter(b=>b.track!==own).map(b=>{
+    const M=b.worldFromBox,u=[0,1,2].map(k=>[M[0][k],M[1][k],M[2][k]]),e=[b.length/2,b.width/2,b.height/2];
+    return {track:b.track,category:b.category,c:b.center,u,e,radius:Math.hypot(...e),local:p=>{const d=sub(p,b.center);return u.map(axis=>dot(d,axis));}};
+  });
+  OBJECTS.set(scene,{own,items:scene.ground.cuboids.items,list});
+  return list;
+}
+const objectName=o=>o.category.toLowerCase().replace(/_/g,' ');
+const insideObject=(o,p)=>o.local(p).every((n,i)=>Math.abs(n)<=o.e[i]);
+const crossesObject=(o,a,b)=>segmentIntersectsBox(o.local(a),o.local(b),o.e.map(n=>-n),o.e);
+// Separating-axis test of the tested upright box against a real object (touching counts as overlapping).
+function overlapsObject(box,o) {
+  const A={c:box.center,u:[[box.axis[2],0,-box.axis[0]],[0,1,0],box.axis],e:[box.vehicle.width/2,box.vehicle.height/2,box.vehicle.length/2]};
+  const T=sub(o.c,A.c);
+  if(Math.hypot(...T)>Math.hypot(...A.e)+o.radius)return false;
+  const axes=[...A.u,...o.u];
+  for(const a of A.u)for(const b of o.u){const c=cross(a,b),n=Math.hypot(...c);if(n>1e-9)axes.push(mul(c,1/n));}
+  return axes.every(L=>Math.abs(dot(T,L))<=A.e.reduce((s,e,i)=>s+e*Math.abs(dot(A.u[i],L)),0)+o.e.reduce((s,e,i)=>s+e*Math.abs(dot(o.u[i],L)),0));
+}
+// The one result rule for a tested vehicle box: createScenario's current and proposed results and every distance-check
+// row. s: {eye, target, targetGround}; box: {center, axis, vehicle}. Unknown, with a reason code and sentence, when (in
+// order) the driver eye is inside the box; the person's ground-to-head column touches it; on a mapped-ground scene the
+// eye or the person is inside a real annotated object, or the box overlaps one (ownPosition: the box is the annotated
+// stationary vehicle where it really is, so that last test is skipped); or the sightline cuts into the box by less than
+// TOO_CLOSE_TO_CALL_M. Otherwise classifySightline decides (diagnostics false: its box test alone, for sweep rows; the
+// later diagnostics can only give Unknown). gapM is the signed gap (positive: the line passes the box by that much;
+// negative: it cuts in that deep).
+export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false}={}) {
+  if(![s?.eye,s?.target,s?.targetGround,box?.center,box?.axis].every(finite3))throw new Error('Invalid sightline coordinates.');
+  const side=[box.axis[2],0,-box.axis[0]],half=[box.vehicle.width/2,box.vehicle.height/2,box.vehicle.length/2],low=half.map(n=>-n);
+  const local=p=>{const d=sub(p,box.center);return [dot(d,side),d[1],dot(d,box.axis)];};
+  const e=local(s.eye),t=local(s.target),gapM=sightlineGap(e,t,half);
+  const unknown=(reasonCode,reason,extra)=>({state:'unknown',reason,supportedFraction:null,reasonCode,gapM,...extra});
+  if(e.every((n,i)=>Math.abs(n)<=half[i]))return unknown('driver-inside-vehicle','The driver eye is inside the vehicle box, so this placement is not tested.');
+  if(segmentIntersectsBox(local(s.targetGround),t,low,half))return unknown('person-inside-vehicle','The person stands inside the vehicle box, so this placement is not tested.');
+  const objects=realObjects(scene),ref=o=>({object:{category:o.category,track:o.track}});
+  let o=objects.find(x=>insideObject(x,s.eye));
+  if(o)return unknown('driver-inside-object',`The driver eye is inside a real annotated object (${objectName(o)}), so this placement is not tested.`,ref(o));
+  o=objects.find(x=>crossesObject(x,s.targetGround,s.target));
+  if(o)return unknown('person-inside-object',`The person stands inside a real annotated object (${objectName(o)}), so this placement is not tested.`,ref(o));
+  o=ownPosition?null:objects.find(x=>overlapsObject(box,x));
+  if(o)return unknown('overlaps-real-object',`The vehicle box overlaps a real annotated object (${objectName(o)}), so this placement is not tested.`,ref(o));
+  const touches=segmentIntersectsBox(e,t,low,half),deep=TOO_CLOSE_TO_CALL_M;
+  if(touches&&!(half.every(n=>n-deep>=0)&&segmentIntersectsBox(e,t,half.map(n=>deep-n),half.map(n=>n-deep))))
+    return unknown('too-close-to-call',`The sightline cuts only ${fmt3(-gapM)} m into the vehicle box, less than the ${fmt2(deep)} m margin: too close to call.`);
+  const v=diagnostics?classifySightline(scene,s.eye,s.target,box.vehicle,box.axis,box.center)
+    :touches?{state:'blocked',reason:'Declared vehicle volume intersects the sightline.',supportedFraction:null}:{state:'unknown',reason:null,supportedFraction:null};
+  return {...v,gapM};
+}
 export function createScenario(scene,input) {
-  const p=placementFromPixels(scene,input?.pixels);
-  const vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,positive(input?.vehicle?.[k],`Vehicle ${k}`)]));
-  const targetHeight=positive(input?.targetHeight,'Target height');
-  const tolerance=roadTolerance(scene),mapped=isMappedGround(scene);
-  // The current (baseline) vehicle: the annotated stationary vehicle's exact pose while it is still the suggested one and
-  // no declaration replaced it, otherwise the declared box on the lane axis. The what-if is that same box moved along the
-  // lane axis, so at the current setback it equals the current vehicle.
-  const pose=mapped&&!input?.vehicleDeclared?annotatedVehicle(scene,input?.pixels,vehicle):null;
+  const mapped=isMappedGround(scene);
+  // The current (baseline) vehicle: the annotated stationary vehicle's exact pose while it is still the suggested one
+  // (front within the nudge, same sizes) and no declaration replaced it, otherwise the declared box on the lane axis. The
+  // what-if is that same box moved along the lane axis, so at the current setback it equals the current vehicle.
+  const pose=mapped&&!input?.vehicleDeclared?annotatedVehicle(scene,input?.pixels,input?.vehicle):null;
+  const p=placementFromPixels(scene,input?.pixels,{annotated:!!pose});
+  const vehicle=vehicleSizes(input?.vehicle);
+  const targetHeight=sized(input?.targetHeight,'Target height',SIZE_LIMITS.targetHeight);
+  const tolerance=roadTolerance(scene);
   const baselineSetback=pose?annotatedSetback(p.crossing,p.axis,pose):p.baselineSetback;
   // A turned annotated pose has one front corner nearer the crossing than its front-face centre, by half its width times
   // the sine of its turn from the lane axis (0 for a declared box). The box's nearest point gets the declared front's
   // rules: the current vehicle more than the road tolerance from the crossing, a what-if on the camera side of it, and
   // the slider and distance check starting at the road tolerance.
   const cornerOffset=pose?pose.dimensions.width/2*Math.abs(pose.axis[0]*p.axis[2]-pose.axis[2]*p.axis[0]):0;
-  if(pose&&baselineSetback-cornerOffset<-tolerance)throw new Error('Place the current vehicle on the camera side of the crossing.');
-  if(pose&&baselineSetback-cornerOffset<=tolerance)throw new Error('Current vehicle front must be separated from the crossing.');
+  if(pose&&baselineSetback-cornerOffset<-tolerance)throw new Error(cameraSide('nearest front corner',cornerOffset-baselineSetback));
+  if(pose&&baselineSetback-cornerOffset<=tolerance)throw new Error(separated('nearest front corner',baselineSetback-cornerOffset,tolerance));
   const proposedSetback=positive(input?.proposedSetback,'Proposed setback'),driverDistance=positive(input?.driverDistance,'Driver distance');
   if(proposedSetback-cornerOffset<=0)throw new Error('Keep the proposed vehicle on the camera side of the crossing.');
+  // minimumSetback: the slider and distance-check start (the box's nearest point at the road tolerance). A typed or
+  // declared setback below it is refused like the slider would (1e-9 m allows browser number serialization).
+  const minimumSetback=tolerance+cornerOffset;
+  if(proposedSetback<minimumSetback-EPS)throw new Error(`Proposed setback must be at least ${fmt2(Math.ceil(minimumSetback*100-1e-6)/100)} m from the crossing (the slider minimum).`);
   // An annotated box keeps its own centre line: the contiguous mapped run along the lane axis through its front face.
   const front=pose&&annotatedFront(pose),availableSetback=pose
     ?mappedRunEnd(scene,[front[0]-p.axis[0]*baselineSetback,0,front[2]-p.axis[2]*baselineSetback],p.axis,p.captureDistance):p.availableSetback;
@@ -426,12 +553,15 @@ export function createScenario(scene,input) {
   // Mapped scenes keep the vehicle on its own line along the lane axis (vehicleOrigin); otherwise it runs from the crossing.
   const whatIf=pose?{pose:'annotated',center:pose.center,setback:baselineSetback,axis:p.axis,boxAxis:pose.axis,vehicle:pose.dimensions,cornerOffset}
     :{pose:'declared',origin:mapped?p.vehicleOrigin:p.crossing,axis:p.axis,vehicle,groundHeight:p.parking[1],cornerOffset};
+  // Driver eye: the recording camera's position and height, moved along the lane axis by the driver position. On AV2
+  // that is the stereo camera (about 1.47 m above the mapped ground), not a seated driver's eye.
   const eye=add(scene.camera.eye,mul(p.axis,driverDistance-p.captureDistance)),target=add(p.target,[0,targetHeight,0]);
-  const baseline=whatIfBox(whatIf,baselineSetback),proposed=whatIfBox(whatIf,proposedSetback);
+  const eyeGround=mapped?mappedGroundHeight(scene,eye[0],eye[2]):0;
+  const baseline=whatIfBox(whatIf,baselineSetback),proposed=whatIfBox(whatIf,proposedSetback),line={eye,target,targetGround:p.target};
   return {crossing:p.crossing,axis:p.axis,vehicle,vehicleGroundHeight:p.parking[1],targetGround:p.target,target,eye,baseline,proposed,whatIf,baselineSetback,proposedSetback,driverDistance,
-    // minimumSetback: the slider and distance-check start (the box's nearest point at the road tolerance).
-    limits:{minimumSetback:tolerance+cornerOffset,maximumSetback,captureDistance:p.captureDistance,minimumDriverDistance},
-    currentVisibility:classifySightline(scene,eye,target,baseline.vehicle,baseline.axis,baseline.center),
-    proposedVisibility:classifySightline(scene,eye,target,proposed.vehicle,proposed.axis,proposed.center),
+    eyeLabel:'recording camera height',eyeHeightM:eyeGround===null?null:eye[1]-eyeGround,
+    limits:{minimumSetback,maximumSetback,captureDistance:p.captureDistance,minimumDriverDistance},
+    currentVisibility:assessSightline(scene,line,baseline,{ownPosition:!!pose}),
+    proposedVisibility:assessSightline(scene,line,proposed,{ownPosition:!!pose&&proposedSetback===baselineSetback}),
     ...(mapped&&{vehicleOrigin:p.vehicleOrigin,support:p.support})};
 }

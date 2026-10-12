@@ -108,7 +108,11 @@ test('upstream request is fixed by the server for each mode',async t=>{
   assert.ok(c.body.messages[1].content.endsWith(JSON.stringify(context)));
   for(const prompt of Object.values(SYSTEM_PROMPTS)) {
     assert.ok(prompt.length<=1800,`${prompt.length} characters`);
-    assert.match(prompt,/never compute, estimate or guess/);assert.match(prompt,/not blocked by the vehicle \(rest unknown\)/);
+    assert.match(prompt,/never compute, estimate or guess/);
+    // Results are worded only with Sightline's own phrases (an Unknown that is too close to call is never "not blocked").
+    assert.match(prompt,/Give each result word for word as its "result" or "short" phrase in the facts or tool results; say "not blocked by the vehicle" only where that phrase does\./);
+    assert.doesNotMatch(prompt,/Unknown: the vehicle misses the line|measured/);
+    assert.match(prompt,/Never say why a vehicle is stopped or name its make or model\./);
     assert.match(prompt,/Never say clear, visible, safe, legal, compliant, or that anyone can see/);
   }
   assert.match(SYSTEM_PROMPTS.check,/exactly once/);assert.match(SYSTEM_PROMPTS.check,/state each vehicle's "short" phrase exactly/);

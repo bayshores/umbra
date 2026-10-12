@@ -1,4 +1,4 @@
-import { roadPoint, comparisonStart, createScenario, isMappedGround, mappedGroundHit, mappedTravel, SUPPORT_LABELS, SUPPORT_CONTEXT } from './geometry.mjs';
+import { roadPoint, comparisonStart, createScenario, isMappedGround, mappedGroundHit, mappedTravel, namesAnnotatedFront, SUPPORT_LABELS, SUPPORT_CONTEXT, SIZE_LIMITS } from './geometry.mjs';
 
 // Placement suggestions come from a one-time preparation step (suggestions.json), never from runtime guessing. Schema 1
 // is the measured-depth (DrivingStereo) file; schema 2 is the map-first (mapped ground) file. A declared default is a
@@ -142,6 +142,11 @@ function validateMapped(raw,scene) {
       if(boxes.length!==1||box.category!==v.category||!same(box.motion,v.motion)||DIMS.some(k=>Number(box[k].toFixed(2))!==v.dimensions[k])||
         Math.abs(v.headingWorld[0]-M[0][0]/n)>1e-6||Math.abs(v.headingWorld[2]-M[2][0]/n)>1e-6)
         fail('an annotated vehicle must match exactly one annotated cuboid');
+      // The app tests this cuboid at its exact sizes and fills the size fields with them, so a vehicle outside the
+      // supported sizes (geometry.mjs SIZE_LIMITS, e.g. a semi tractor-trailer) is refused here, by name, instead of
+      // opening the scene into a size refusal.
+      if(DIMS.some(k=>box[k]<SIZE_LIMITS[k][0]||box[k]>SIZE_LIMITS[k][1]))
+        fail(`the annotated vehicle (${DIMS.map(k=>`${k} ${fmt(box[k])} m`).join(', ')}) is outside the supported sizes (${DIMS.map(k=>`${k} ${SIZE_LIMITS[k][0]}-${SIZE_LIMITS[k][1]} m`).join(', ')})`);
     }else if(!positive(v.setbackM)||!Array.isArray(v.annotatedVehicleRejected)||!v.annotatedVehicleRejected.every(text)||
       !finiteList(v.curbLateralAlongLengthM,2)||!finiteNumber(v.lateralFromCameraM))
       fail('a declared default vehicle must carry its setback and curb evidence');
@@ -280,9 +285,10 @@ export function suggestionStatus(suggestions,setup,current) {
   const edited=Object.keys(p).some(key=>p[key].status!=='unplaced'&&!still(key));
   const parts=[],context={};
   const unknown=(key,word)=>{if(p[key].status==='unplaced'&&!current.pixels?.[key])parts.push({key,text:`${word} unknown`,title:p[key].reason});};
-  // Schema 2: the annotated vehicle keeps its annotated pose exactly while its front pixel and size hold the suggestion
-  // and no declaration replaced the vehicle (geometry.mjs createScenario uses the same test with vehicleDeclared).
-  const pose=p.parking?.status==='annotated'&&isStillSuggested('parking',value('parking'),p)&&still('vehicle');
+  // Schema 2: the annotated vehicle keeps its annotated pose exactly while its front pixel stays within the nudge of the
+  // suggestion, its size holds the suggestion and no declaration replaced the vehicle (geometry.mjs annotatedVehicle and
+  // createScenario use the same test with vehicleDeclared).
+  const pose=p.parking?.status==='annotated'&&!current.overridden?.includes('parking')&&namesAnnotatedFront(p.parking.value,value('parking'))&&still('vehicle');
   if(s.schemaVersion===2)return mappedStatus(s,p,still,unknown,parts,context,edited,pose);
   if(still('crossing'))parts.push({key:'crossing',text:`crosswalk detected ±${fmt(s.crossing.alongRoadUncertaintyM)} m`,title:`${s.crossing.method} · ±${fmt(s.crossing.alongRoadUncertaintyM)} m along the road`});
   unknown('crossing','crossing');
@@ -333,8 +339,9 @@ function mappedStatus(s,p,still,unknown,parts,context,edited,pose) {
     parts.push({key:'target',text:`${s.person.label} ${fmt(s.person.heightM)} m`,note:`(default; ${support('target')})`,title:title('target',s.person.reason)});
   unknown('target','person');
   if(still('crossing'))context.crossing=`mapped crosswalk edge, ${where('crossing')}`;
-  // A resized annotated vehicle is a declared box at the annotated front pixel, not the annotation.
-  if(still('parking'))context.vehicle_front=p.parking.status!=='annotated'?`declared default, ${where('parking')}`
+  // A resized annotated vehicle is a declared box at the annotated front pixel, not the annotation. A nudged front still
+  // names the annotated vehicle (its pixel is no longer the suggested one, so its status part is gone).
+  if(still('parking')||pose)context.vehicle_front=p.parking.status!=='annotated'?`declared default, ${where('parking')}`
     :pose?'stationary vehicle from the dataset annotation; reason for stopping unknown':`declared vehicle, ${where('parking')}`;
   if(still('vehicle'))context.vehicle_size=p.vehicle.status==='annotated'?'annotated stationary vehicle size':`declared default ${s.vehicle.label}`;
   if(still('target'))context.person_point=`declared default, ${where('target')}`;

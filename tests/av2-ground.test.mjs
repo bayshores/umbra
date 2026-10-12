@@ -5,10 +5,10 @@ import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {deflateSync,crc32} from 'node:zlib';
 import {loadScene} from '../src/scene.mjs';
-import {roadPoint,mappedGroundHit,mappedGroundHeight,placementFromPixels,placementPreview,createScenario,classifySightline,isMappedGround,roadTolerance,annotatedVehicle,comparisonStart,whatIfBox} from '../src/geometry.mjs';
+import {roadPoint,mappedGroundHit,mappedGroundHeight,placementFromPixels,placementPreview,createScenario,classifySightline,isMappedGround,roadTolerance,annotatedVehicle,comparisonStart,whatIfBox,ANNOTATED_FRONT_NUDGE_PX} from '../src/geometry.mjs';
 import {planCamera} from '../src/plan-camera.mjs';
 import * as THREE from 'three';
-import {suggestedSetup,suggestionStatus,isStillSuggested,supportSummary} from '../src/suggestions.mjs';
+import {suggestedSetup,suggestionStatus,isStillSuggested,supportSummary,validateSuggestions} from '../src/suggestions.mjs';
 import {scenarioFacts,supportFacts,runTool,setbackSweep,applyDeclaration,allowedNumbersFrom,checkAnswer,sweepPhrase,withheldNote} from '../src/scenario-assistant.mjs';
 import {SYSTEM_PROMPTS,TOOLS} from '../worker/nemotron.js';
 import {scene as legacyScene,input as legacyInput,fetchAsset} from './scene-input.mjs';
@@ -122,9 +122,15 @@ test('mapped ground: placement uses the mapped lane axis, the vehicle line and t
   close3(scenario.baseline.center,[front[0],front[1]+.75,front[2]+2],1e-12);
   close3(scenario.target,[p.target[0],p.target[1]+1.1,p.target[2]],1e-12);
   assert.equal(scenario.limits.maximumSetback,p.availableSetback-4);
-  assert.equal(scenario.currentVisibility.state,'blocked');
-  const low=createScenario(s,{...input,vehicle:{...input.vehicle,height:.5}});
-  assert.deepEqual(low.currentVisibility,{state:'unknown',reason:'Projected source returns do not establish a supported free-space path.',supportedFraction:null});
+  // This person point lies on the box's front face (same depth as the front pixel), so the box holds the person: Unknown
+  // with that reason, never Blocked (it was reported Blocked before M1).
+  assert.deepEqual([scenario.currentVisibility.state,scenario.currentVisibility.reasonCode],['unknown','person-inside-vehicle']);
+  // A person at the crossing: the line cuts deep into the box (Blocked) and passes over a low box (Unknown, no reason).
+  const atCrossing={...input,pixels:{...pixels,target:[2,4]}},deep=createScenario(s,atCrossing);
+  assert.equal(deep.currentVisibility.state,'blocked');assert.ok(deep.currentVisibility.gapM<=-.1);
+  const low=createScenario(s,{...atCrossing,vehicle:{...input.vehicle,height:.5}});
+  assert.deepEqual({...low.currentVisibility,gapM:undefined},{state:'unknown',reason:'Projected source returns do not establish a supported free-space path.',supportedFraction:null,gapM:undefined});
+  assert.ok(low.currentVisibility.gapM>0);
   assert.deepEqual(Object.keys(scenario.support),['crossing','parking','target']);
   close3(scenario.vehicleOrigin,[front[0],front[1],-14.375],1e-12);
   // Preview and comparison share the same vehicle line; the hidden target ground point is flagged for a hollow marker.
@@ -139,9 +145,10 @@ test('mapped ground: placement uses the mapped lane axis, the vehicle line and t
   near(placementFromPixels(short,pixels).availableSetback,11.375,1e-12);
   assert.throws(()=>createScenario(short,{...input,vehicle:{...input.vehicle,length:7}}),/beyond the captured road extent/);
   assert.throws(()=>placementFromPixels(s,{...pixels,parking:[2,4]}),/separated from the crossing/);
-  // A front beyond the crossing asks for the camera side, in placement and in the preview.
+  // A front beyond the crossing asks for the camera side, in placement and in the preview, naming the measured gap.
   for(const run of [()=>placementFromPixels(s,{...pixels,crossing:[2,5],parking:[2,4]}),()=>placementPreview(s,{crossing:[2,5],parking:[2,4]},input.vehicle,'')])
-    assert.throws(run,{message:'Place the current vehicle on the camera side of the crossing.'});
+    assert.throws(run,{message:'Place the current vehicle on the camera side of the crossing (its front is 4.79 m past the crossing along the lane).'});
+  assert.throws(()=>placementFromPixels(s,{...pixels,parking:[2,4]}),{message:'Current vehicle front must be separated from the crossing (its front is 0 m from it along the lane; more than 0.08 m is needed).'});
   assert.throws(()=>placementFromPixels(s,{...pixels,target:[7,4]}),/outside the mapped drivable area/);
   // Distance sweeps use the vehicle line with the same arithmetic as the comparison and never produce Clear.
   const sweep=setbackSweep(s,{pixels,driverDistance:p.captureDistance},{label:'van',width:1.9,height:1.5,length:4},1.1);
@@ -190,7 +197,7 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
   // Its own centre line (x 2.2 + 2 sin 10 deg) runs on mapped drivable ground to the camera; the turned box reaches
   // 4 cos 10 deg + 0.9 sin 10 deg (its rear corner) behind its front-face centre along the lane axis.
   near(scenario.limits.maximumSetback,14.375-4*cos-.9*sin,1e-12);
-  const facts=scenarioFacts(s,scenario),annotated={pose:'annotated',turnedFromLane_deg:10,setback_m:.41,setback_ft:1.33,state:'unknown',targetInside:false,eyeInside:false};
+  const facts=scenarioFacts(s,scenario),annotated={pose:'annotated',turnedFromLane_deg:10,setback_m:.41,setback_ft:1.33,state:'unknown',result:'not blocked by the vehicle (rest unknown)',targetInside:false,eyeInside:false};
   assert.deepEqual(facts.current,annotated);assert.deepEqual(facts.proposed,annotated);
   // Moving the what-if translates the annotated pose along the lane axis (same heading and size).
   const moved=createScenario(s,{...input,proposedSetback:setback+3});
@@ -205,7 +212,10 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
     return (c[0]-scenario.crossing[0])*scenario.axis[0]+(c[2]-scenario.crossing[2])*scenario.axis[2];})));
   near(nearest(whatIfBox(scenario.whatIf,scenario.limits.minimumSetback)),.08,1e-12);
   assert.throws(()=>createScenario(s,{...input,proposedSetback:.9*sin-1e-6}),{message:'Keep the proposed vehicle on the camera side of the crossing.'});
-  assert.ok(nearest(createScenario(s,{...input,proposedSetback:.9*sin+1e-6}).proposed)>0);
+  // Between that and the slider minimum (corner within the road tolerance) a typed or declared setback is refused too.
+  assert.throws(()=>createScenario(s,{...input,proposedSetback:.9*sin+1e-6}),{message:'Proposed setback must be at least 0.24 m from the crossing (the slider minimum).'});
+  assert.throws(()=>createScenario(s,{...input,proposedSetback:scenario.limits.minimumSetback-1e-6}),/at least 0\.24 m/);
+  assert.ok(nearest(createScenario(s,{...input,proposedSetback:scenario.limits.minimumSetback}).proposed)>0);
   // The distance check sweeps the same translated pose; every row agrees with the comparison.
   const sweep=setbackSweep(s,{pixels,driverDistance:p.captureDistance},{label:'your vehicle',width:1.8,height:1.6,length:4},1.1);
   assert.deepEqual(sweep.range,[scenario.limits.minimumSetback,scenario.limits.maximumSetback]);
@@ -214,12 +224,26 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
   const close=await loadAnalytic(analytic({ground:g=>{Object.assign(g.cuboids.items[0],{center:[2.2,-.6,.15-14.375+2*cos],length:4,width:1.8,height:1.6,
     worldFromBox:[[sin,-cos,0],[0,0,1],[-cos,-sin,0]]});}}));
   close.suggestions=s.suggestions;
-  assert.throws(()=>createScenario(close,{...input,proposedSetback:1}),{message:'Current vehicle front must be separated from the crossing.'});
+  assert.throws(()=>createScenario(close,{...input,proposedSetback:1}),
+    {message:'Current vehicle front must be separated from the crossing (its nearest front corner is 0 m from it along the lane; more than 0.08 m is needed).'});
   close3(placementPreview(s,pixels,fields,'1.1').vehicle.center,pose.center,0);
-  // Moving the front pixel, changing a size or a declaration (even at the annotated sizes) makes both the current
-  // vehicle and the what-if declared boxes on the lane axis at the front pixel.
+  // Nudging the front pixel by up to ANNOTATED_FRONT_NUDGE_PX (2) on each axis keeps the annotated vehicle exactly (plan
+  // M1d): same box, setback, limits and results. The nudged pixel only marks the vehicle, so a nudge whose ground hit
+  // lands on the crossing ([2,4]; a declared front there is refused) is not refused.
+  assert.equal(ANNOTATED_FRONT_NUDGE_PX,2);
+  const same=sc=>[sc.baseline,sc.proposed,sc.baselineSetback,sc.limits,sc.currentVisibility,sc.proposedVisibility];
+  for(const parking of [[2,6],[2,7],[3,5],[4,7],[4,4],[1,6],[2,4]]) {
+    const nudged={...pixels,parking};
+    assert.notEqual(annotatedVehicle(s,nudged,fields),null,String(parking));
+    const start2=comparisonStart(s,nudged,fields);assert.equal(start2.proposedSetback,start.proposedSetback,String(parking));
+    assert.deepEqual(same(createScenario(s,{...input,pixels:nudged})),same(scenario),String(parking));
+    close3(placementPreview(s,nudged,fields,'1.1').vehicle.center,pose.center,0);
+  }
+  assert.throws(()=>placementFromPixels(s,{...pixels,parking:[2,4]}),/separated from the crossing/);
+  // Moving the front pixel further (3 px), changing a size or a declaration (even at the annotated sizes) makes both
+  // the current vehicle and the what-if declared boxes on the lane axis at the front pixel.
   const lane={...input,proposedSetback:p.baselineSetback};
-  for(const [name,next] of [['moved',{...lane,pixels:{...pixels,parking:[2,6]}}],['resized',{...lane,vehicle:{...fields,width:'1.9'}}],['declared',{...lane,vehicleDeclared:true}]]) {
+  for(const [name,next] of [['moved',{...lane,pixels:{...pixels,parking:[2,8]}}],['resized',{...lane,vehicle:{...fields,width:'1.9'}}],['declared',{...lane,vehicleDeclared:true}]]) {
     const declared=createScenario(s,next),q=placementFromPixels(s,next.pixels);
     if(name!=='declared')assert.equal(annotatedVehicle(s,next.pixels,next.vehicle),null,name);
     assert.equal(declared.baseline.pose,'declared',name);assert.equal(declared.proposed.pose,'declared',name);
@@ -298,6 +322,55 @@ test('mapped ground: descriptors, hashes and ground schema are pinned; tampering
   const raw=Buffer.from('{"schemaVersion":1');
   g=analytic({scene:s=>{s.measurements.ground={file:'ground.json',bytes:raw.length,sha256:sha(raw)};}});g.bytes.set('ground.json',raw);
   await assert.rejects(loadAnalytic(g,{file:'ground.json',sha256:sha(raw)}),/Invalid mapped ground: not UTF-8 JSON/);
+});
+
+test('mapped ground: a box over a real annotated object, or a person or driver inside one, is Unknown with that reason',async()=>{
+  // The analytic cuboid (track analytic, at z -11.25 to -12.75) is a real object while no suggestion names it.
+  // The person stands at the crossing (z -14.375), so no tested box holds the person.
+  const s=await loadAnalytic(analytic()),pixels={crossing:[2,4],parking:[2,5],target:[2,4]},p=placementFromPixels(s,pixels);
+  const input={pixels,vehicle:{width:1.9,height:1.5,length:4},targetHeight:1.1,proposedSetback:p.baselineSetback,driverDistance:p.captureDistance,vehicleDeclared:true};
+  const sweep=setbackSweep(s,{pixels,driverDistance:p.captureDistance},{label:'van',...input.vehicle},1.1);
+  // A what-if box starting at setback s spans z -14.375 + s to -10.375 + s, so it overlaps the cuboid for s <= 3.125.
+  // Only the last row (the box reaching the camera) holds the driver eye.
+  assert.deepEqual(sweep.rows.filter(r=>r.state==='overlap').map(r=>[r.setback,r.person,r.driver]),[[sweep.range[1],false,true]]);
+  for(const row of sweep.rows.slice(0,-1)) {
+    assert.equal(row.reason==='overlaps-real-object',row.setback<=3.125,`setback ${row.setback}`);
+    const v=createScenario(s,{...input,proposedSetback:row.setback}).proposedVisibility;
+    assert.deepEqual([v.state,v.reasonCode],[row.state,row.reason],`setback ${row.setback}`);
+  }
+  const over=createScenario(s,{...input,proposedSetback:2}),facts=scenarioFacts(s,over);
+  assert.deepEqual([over.proposedVisibility.state,over.proposedVisibility.reasonCode,over.proposedVisibility.object],['unknown','overlaps-real-object',{category:'REGULAR_VEHICLE',track:'analytic'}]);
+  assert.equal(over.proposedVisibility.reason,'The vehicle box overlaps a real annotated object (regular vehicle), so this placement is not tested.');
+  assert.deepEqual([facts.proposed.state,facts.proposed.unknownReason],['unknown','overlaps a real object']);
+  assert.match(sweepPhrase(sweep),/overlaps a real object 0\.08-3\.08 m/);
+  // Named by the suggestion as the stationary vehicle itself, the cuboid is no longer another object.
+  s.suggestions={vehicle:{status:'annotated',track:'analytic',pixel:[7,9],dimensions:{width:1.5,height:1.5,length:1.5}}};
+  assert.equal(createScenario(s,{...input,proposedSetback:2}).proposedVisibility.reasonCode,undefined);
+  // A person standing in a real object, or a driver eye inside one: Unknown at every setback, never Blocked.
+  const atCrossing=await loadAnalytic(analytic({ground:g=>{g.cuboids.items[0].center=[0,-.75,-14.375];}}));
+  const person=createScenario(atCrossing,input);
+  for(const v of [person.currentVisibility,person.proposedVisibility])assert.deepEqual([v.state,v.reasonCode],['unknown','person-inside-object']);
+  assert.equal(scenarioFacts(atCrossing,person).current.unknownReason,'person inside a real object');
+  const personSweep=setbackSweep(atCrossing,{pixels,driverDistance:p.captureDistance},{label:'van',...input.vehicle},1.1);
+  assert.ok(personSweep.rows.every(r=>r.state!=='blocked'&&r.reason));assert.equal(personSweep.stopsBlockingAt,null);
+  const eye=await loadAnalytic(analytic({ground:g=>{g.cuboids.items.push({...g.cuboids.items[0],track:'around-eye',category:'BOLLARD',center:[0,-.2,0],length:1,width:1,height:1});}}));
+  const driver=createScenario(eye,input);
+  for(const v of [driver.currentVisibility,driver.proposedVisibility])assert.deepEqual([v.state,v.reasonCode],['unknown','driver-inside-object']);
+  assert.match(driver.currentVisibility.reason,/real annotated object \(bollard\)/);
+});
+
+test('mapped ground: an edited vehicle front or crossing gives a declared result or a refusal that names the gap',async()=>{
+  // Analytic fixture: front pixel rows 5 and 6 hit the ground 9.58 m and 7.19 m from the camera, the crossing row 4 at
+  // 14.38 m; swapping them puts the front past the crossing.
+  const s=await loadAnalytic(analytic()),base={crossing:[2,4],parking:[2,5],target:[3,5]};
+  const refusal=/^(?:Place the current vehicle on the camera side of the crossing \(its (?:front|nearest front corner) is \d+(?:\.\d+)? m past the crossing along the lane\)|Current vehicle front must be separated from the crossing \(its (?:front|nearest front corner) is \d+(?:\.\d+)? m from it along the lane; more than 0\.08 m is needed\))\.$/;
+  for(const pixels of [{...base,parking:[2,6]},{...base,crossing:[2,5],parking:[2,4]},{...base,parking:[2,4]}]) {
+    try{
+      const start=comparisonStart(s,pixels,{width:1.9,height:1.5,length:4});
+      const v=createScenario(s,{pixels,vehicle:{width:1.9,height:1.5,length:4},targetHeight:1.1,...start});
+      assert.equal(v.baseline.pose,'declared');assert.ok(['blocked','unknown'].includes(v.currentVisibility.state));
+    }catch(e){assert.match(e.message,refusal,JSON.stringify(pixels));}
+  }
 });
 
 test('Nemotron prompts and tool descriptions describe a generic declared vehicle',()=>{
@@ -420,10 +493,12 @@ test('AV2 8c: suggestions open the comparison with no clicks, in the annotated p
   close3(scenario.baseline.axis,raw.vehicle.headingWorld.map(n=>-n),1e-12,'axis is the reversed annotated heading');
   assert.deepEqual(scenario.proposed,scenario.baseline);
   close3(placementPreview(s,setup.pixels,setup.vehicle,setup.targetHeight).vehicle.center,box.center,0);
-  // First-load headline: the annotated box misses the driver-eye-to-head line, so Stationary Unknown and Proposed Unknown
-  // (the same box; never Clear).
+  // First-load headline: the annotated box misses the driver-eye-to-head line (by 2.5 cm), so Stationary Unknown and
+  // Proposed Unknown (the same box; never Clear). A miss carries no Unknown reason code: the 10 cm rule is for cut-ins.
   const unknown={state:'unknown',reason:'Projected source returns do not establish a supported free-space path.',supportedFraction:null};
-  assert.deepEqual(scenario.currentVisibility,unknown);assert.deepEqual(scenario.proposedVisibility,unknown);
+  for(const v of [scenario.currentVisibility,scenario.proposedVisibility]){const {gapM,...rest}=v;assert.deepEqual(rest,unknown);near(gapM,.02515,5e-5,'first-load gap');}
+  // Eye: the recording camera's position and height (1.47 m above the mapped ground), labelled as such.
+  assert.equal(scenario.eyeLabel,'recording camera height');near(scenario.eyeHeightM,1.471,.001,'eye height');
   // The slider translates the annotated pose along the lane axis: same heading and size, centre moved by the change.
   const back=createScenario(s,{...setup.input,proposedSetback:scenario.baselineSetback+1});
   close3(back.proposed.center,box.center.map((n,i)=>n+scenario.axis[i]),1e-12);
@@ -473,16 +548,27 @@ test('AV2 8c: suggestions open the comparison with no clicks, in the annotated p
   assert.deepEqual(declaredStatus.parts.map(p=>p.key),['crossing','target']);
   assert.doesNotMatch(JSON.stringify([resized,declaredStatus]),/park|annotated pose/i);
   const lane={...setup.input,proposedSetback:raw.vehicle.pixelGroundGapAlongAxisM};
-  for(const [name,next] of [['resized',{...lane,vehicle:{...setup.vehicle,width:'1.9'}}],['moved',{...lane,pixels:{...setup.pixels,parking:[377,189]}}],['declared',{...lane,vehicleDeclared:true}]]) {
+  for(const [name,next] of [['resized',{...lane,vehicle:{...setup.vehicle,width:'1.9'}}],['declared',{...lane,vehicleDeclared:true}]]) {
     const declared=createScenario(s,next);
     assert.deepEqual([declared.baseline.pose,declared.proposed.pose],['declared','declared'],name);
     assert.deepEqual(declared.baseline.axis,declared.axis,name);assert.deepEqual(declared.proposed.axis,declared.axis,name);
-    if(name!=='moved')near(declared.baselineSetback,.8591145531026565,1e-9,name);
-    assert.deepEqual([declared.currentVisibility.state,declared.proposedVisibility.state],['blocked','blocked'],name);
+    near(declared.baselineSetback,.8591145531026565,1e-9,name);
+    // These declared boxes cut into the line by 2-8 cm: Unknown, too close to call (Blocked before M1).
+    for(const v of [declared.currentVisibility,declared.proposedVisibility]) {
+      assert.deepEqual([v.state,v.reasonCode],['unknown','too-close-to-call'],name);assert.ok(v.gapM<=0&&v.gapM>-.1,`${name} ${v.gapM}`);
+    }
   }
+  // A front moved 3 px (past the 2 px nudge) is a declared box there; this one cuts 0.12 m into the line: Blocked.
+  const movedFront=createScenario(s,{...lane,pixels:{...setup.pixels,parking:[377,191]}});
+  assert.deepEqual([movedFront.baseline.pose,movedFront.proposed.pose],['declared','declared']);
+  assert.equal(movedFront.currentVisibility.state,'blocked');assert.ok(movedFront.currentVisibility.gapM<=-.1);
   assert.deepEqual(comparisonStart(s,setup.pixels,setup.vehicle,true).proposedSetback,raw.vehicle.pixelGroundGapAlongAxisM);
-  // Editing loses the label; the moved crossing removes its part.
+  // Editing loses the label, even within the nudge; the nudged front still names the stationary vehicle in the context.
   assert.equal(isStillSuggested('parking',[377,189],setup.provenance),false);
+  const nudgedStatus=suggestionStatus(raw,setup,{...current,pixels:{...setup.pixels,parking:[377,189]}});
+  assert.equal(nudgedStatus.edited,true);assert.deepEqual(nudgedStatus.parts.map(p=>p.key),['crossing','target']);
+  assert.equal(nudgedStatus.context.vehicle_front,'stationary vehicle from the dataset annotation; reason for stopping unknown');
+  assert.equal(suggestionStatus(raw,setup,{...current,pixels:{...setup.pixels,parking:[377,191]}}).context.vehicle_front,undefined);
   const moved=suggestionStatus(raw,setup,{...current,pixels:{...setup.pixels,crossing:[373,189]}});
   assert.equal(moved.edited,true);assert.deepEqual(moved.parts.map(p=>p.key),['parking','target']);
 });
@@ -490,11 +576,11 @@ test('AV2 8c: suggestions open the comparison with no clicks, in the annotated p
 test('AV2 8c: Ask and Check work on first load with the suggested setup',{skip},async()=>{
   const s=await loadAV2(),setup=suggestedSetup(s,s.suggestions),scenario=createScenario(s,setup.input);
   const facts=scenarioFacts(s,scenario);
-  assert.equal(facts.scene,ID);assert.ok(facts.eyeHeight_m>1&&facts.eyeHeight_m<2,`eye height ${facts.eyeHeight_m}`);
+  assert.equal(facts.scene,ID);assert.equal(facts.eyeHeight_m,1.47);assert.equal(facts.eye,'recording camera height');
   assert.deepEqual(facts.vehicle_m,{width:1.88,height:1.49,length:4.03});assert.equal(facts.targetHeight_m,1.1);
   // The facts describe the annotated pose (turned 1.41 deg from the lane), its front-face setback and its result; the
   // what-if starts as the same box. No margin is given.
-  const pose={pose:'annotated',turnedFromLane_deg:1.41,setback_m:.69,setback_ft:2.25,state:'unknown',targetInside:false,eyeInside:false};
+  const pose={pose:'annotated',turnedFromLane_deg:1.41,setback_m:.69,setback_ft:2.25,state:'unknown',result:'not blocked by the vehicle (rest unknown)',targetInside:false,eyeInside:false};
   assert.deepEqual(facts.current,pose);assert.deepEqual(facts.proposed,pose);
   const w={pixels:setup.pixels,vehicle:setup.vehicle,targetHeight:setup.targetHeight,input:setup.input,setupInput:setup.input,run:{},vehicleLabel:'stationary vehicle'};
   const check=runTool(s,'check',w,'sweep_setbacks',{vehicles:[{label:'SUV',width_m:2,height_m:1.8,length_m:5}]});
@@ -504,22 +590,35 @@ test('AV2 8c: Ask and Check work on first load with the suggested setup',{skip},
   // 'your vehicle' sweeps the annotated pose moved along the lane axis (front-face setbacks). The box is turned 1.41 deg,
   // so its nearer front corner is 0.94 m x sin 1.41 deg = 0.023 m nearer the crossing than the front-face centre: rows
   // start at 0.103 m, where that corner is the road tolerance (0.08 m) from the crossing. Not blocked by the vehicle at
-  // 0.10-0.60 m, blocked 0.85-10.35 m (both marks), not blocked by the vehicle from 10.60 m. The SUV is a declared box.
+  // 0.10-0.60 m; the line cuts into the box at 0.85-10.35 m (both marks) but by less than 10 cm at 0.85, 1.10 and
+  // 10.35 m (too close to call); not blocked by the vehicle from 10.60 m; from 12.10 m the moved box overlaps the real
+  // annotated vehicle cf467f3d beside the recording car (Unknown, overlaps a real object). The SUV is a declared box.
   const [own,suv]=check.sweep.results;
   const [a,l]=[scenario.baseline.axis,scenario.axis];
   near(scenario.whatIf.cornerOffset,scenario.baseline.vehicle.width/2*Math.abs(a[0]*l[2]-a[2]*l[0]),1e-12);near(scenario.whatIf.cornerOffset,.94*Math.sin(1.4071*Math.PI/180),1e-4,'contract yaw');
   near(scenario.limits.minimumSetback,.08+scenario.whatIf.cornerOffset,1e-12);
   assert.deepEqual(own.range,[scenario.limits.minimumSetback,scenario.limits.maximumSetback]);
-  assert.deepEqual(own.rows.slice(0,4).map(r=>[r2(r.setback),r.state]),[[.1,'unknown'],[.35,'unknown'],[.6,'unknown'],[.85,'blocked']]);
-  assert.equal(sweepPhrase(own),'blocked 0.85-10.35 m; not blocked by the vehicle from 10.6 m (34.79 ft)');
+  assert.deepEqual(own.rows.slice(0,6).map(r=>[r2(r.setback),r.state,r.reason]),
+    [[.1,'unknown',undefined],[.35,'unknown',undefined],[.6,'unknown',undefined],[.85,'unknown','too-close-to-call'],[1.1,'unknown','too-close-to-call'],[1.35,'blocked',undefined]]);
+  assert.equal(sweepPhrase(own),'blocked 1.35-10.1 m; too close to call 0.85-1.1 m, at 10.35 m; not blocked by the vehicle from 10.6 m (34.79 ft); overlaps a real object 12.1-13.53 m');
   assert.deepEqual([own.at15ft,own.at20ft,own.stopsBlockingAt],['blocked','blocked',own.rows.find(r=>r2(r.setback)===10.6).setback]);
-  assert.deepEqual(check.result.vehicles[0].blocked_m,[[.85,10.35]]);assert.deepEqual(check.result.vehicles[0].tested_m,[.1,13.53]);
+  const ownFacts=check.result.vehicles[0];
+  assert.deepEqual([ownFacts.blocked_m,ownFacts.tooCloseToCall_m,ownFacts.overlapsRealObject_m,ownFacts.tested_m],[[[1.35,10.1]],[[.85,1.1],[10.35,10.35]],[[12.1,13.53]],[.1,13.53]]);
+  // Every row carries the signed gap; Blocked rows cut in by at least 10 cm, too-close rows by less.
+  for(const row of own.rows)assert.ok(row.state==='blocked'?row.gapM<=-.1:row.reason==='too-close-to-call'?row.gapM<=0&&row.gapM>-.1:true,`setback ${row.setback}`);
+  assert.equal(own.rows.find(r=>r.reason==='overlaps-real-object')&&scenarioFacts(s,createScenario(s,{...setup.input,proposedSetback:12.1})).proposed.unknownReason,'overlaps a real object');
   // Below the corner offset the what-if's corner would reach the crossing: refused, never drawn past it.
   assert.throws(()=>createScenario(s,{...setup.input,proposedSetback:.02}),{message:'Keep the proposed vehicle on the camera side of the crossing.'});
-  assert.equal(createScenario(s,{...setup.input,proposedSetback:.05}).proposed.pose,'annotated');
-  assert.equal(sweepPhrase(suv),'blocked 0.08-10.58 m; not blocked by the vehicle from 10.83 m (35.53 ft)');
-  for(const row of check.sweep.results[0].rows.filter(r=>r.state!=='overlap'))
-    assert.equal(createScenario(s,{...setup.input,proposedSetback:row.setback}).proposedVisibility.state,row.state,`setback ${row.setback}`);
+  // Below the slider minimum (0.103 m) a typed or declared setback is refused (the check tool accepted 0.01 and 0.05 m).
+  assert.throws(()=>createScenario(s,{...setup.input,proposedSetback:.05}),{message:'Proposed setback must be at least 0.11 m from the crossing (the slider minimum).'});
+  assert.equal(createScenario(s,{...setup.input,proposedSetback:scenario.limits.minimumSetback}).proposed.pose,'annotated');
+  for(const setback of [.01,.05])
+    assert.match(applyDeclaration(s,setup.pixels,setup.input,{vehicle_label:'SUV',vehicle_width_m:2,vehicle_height_m:1.8,vehicle_length_m:5,target_label:'child',target_height_m:1.1,setback_value:setback,setback_unit:'m'}).error,/^Proposed setback must be at least 0\.08 m/);
+  assert.equal(sweepPhrase(suv),'blocked 0.08-10.33 m; too close to call at 10.58 m; not blocked by the vehicle from 10.83 m (35.53 ft); overlaps a real object 11.08-12.58 m');
+  for(const row of check.sweep.results[0].rows.filter(r=>r.state!=='overlap')) {
+    const v=createScenario(s,{...setup.input,proposedSetback:row.setback}).proposedVisibility;
+    assert.deepEqual([v.state,v.reasonCode],[row.state,row.reason],`setback ${row.setback}`);
+  }
   assert.ok(allowedNumbersFrom(facts,check.result).length>0);
   // Support for every placed point, in words the answer filter allows; an edited point keeps its support entry.
   assert.deepEqual(facts.support,{crossing:'map only',vehicle_front:'map only',person_point:'map only'});
@@ -530,7 +629,7 @@ test('AV2 8c: Ask and Check work on first load with the suggested setup',{skip},
     title:'crossing: mapped, not observed, pixel shows an annotated object, point behind it · vehicle front: mapped, not observed, pixel shows an annotated object, point behind it · person: mapped, not observed'});
   assert.doesNotMatch(JSON.stringify([facts,supportSummary(scenario.support)]),/park/i);
   // A crossing moved past the vehicle front asks for the camera side (browser repro: crossing at [373,200]).
-  assert.throws(()=>placementFromPixels(s,{...setup.pixels,crossing:[373,200]}),{message:'Place the current vehicle on the camera side of the crossing.'});
+  assert.throws(()=>placementFromPixels(s,{...setup.pixels,crossing:[373,200]}),{message:'Place the current vehicle on the camera side of the crossing (its front is 2.21 m past the crossing along the lane).'});
   const ask=runTool(s,'ask',{...w,vehicleLabel:'stationary vehicle'},'declare_scenario',
     {vehicle_label:'box truck',vehicle_width_m:2.5,vehicle_height_m:3.5,vehicle_length_m:8,target_label:'child',target_height_m:1.1,setback_value:20,setback_unit:'ft'});
   assert.equal(ask.error,undefined);assert.equal(ask.input.proposedSetback,20*.3048);assert.equal(ask.input.vehicleDeclared,true);
@@ -542,11 +641,13 @@ test('AV2 8c: Ask and Check work on first load with the suggested setup',{skip},
   // Same sizes, but the distance results were swept in the annotated pose, so they are cleared.
   assert.equal(same.error,undefined);assert.equal(same.input.vehicleDeclared,true);assert.equal(same.clearSweep,true);
   assert.equal(check.sweep.vehicleDeclared,false);
-  assert.deepEqual(same.result.current,{setback_m:.86,setback_ft:2.82,state:'blocked',targetInside:false,eyeInside:false});
-  // The kept 0.69 m what-if is now a declared lane-axis box (no pose field), which blocks there.
-  assert.deepEqual(same.result.proposed,{setback_m:.69,setback_ft:2.25,state:'blocked',targetInside:false,eyeInside:false});
+  // The declared box at 0.86 m cuts into the line by under 10 cm: too close to call (it was Blocked before M1).
+  assert.deepEqual(same.result.current,{setback_m:.86,setback_ft:2.82,state:'unknown',unknownReason:'too close to call',result:'unknown (too close to call)',targetInside:false,eyeInside:false});
+  // The kept 0.69 m what-if is now a declared lane-axis box (no pose field); it too cuts in by under 10 cm.
+  assert.deepEqual(same.result.proposed,{setback_m:.69,setback_ft:2.25,state:'unknown',unknownReason:'too close to call',result:'unknown (too close to call)',targetInside:false,eyeInside:false});
   const after=runTool(s,'check',{...w,input:same.input},'sweep_setbacks',{vehicles:[{label:'SUV',width_m:2,height_m:1.8,length_m:5}]});
-  assert.equal(sweepPhrase(after.sweep.results[0]),'blocked 0.83-10.58 m; not blocked by the vehicle from 10.83 m (35.53 ft)');
+  assert.equal(sweepPhrase(after.sweep.results[0]),
+    'blocked 1.08-10.08 m; too close to call at 0.83 m, 10.33-10.58 m; not blocked by the vehicle from 10.83 m (35.53 ft); overlaps a real object 12.08-13.55 m');
   assert.equal(after.sweep.vehicleDeclared,true);
   // A further declaration over a declared box at the same sizes keeps those (declared) distance results.
   const again=runTool(s,'ask',{...w,input:same.input,run:{}},'declare_scenario',
@@ -554,6 +655,96 @@ test('AV2 8c: Ask and Check work on first load with the suggested setup',{skip},
   assert.equal(again.clearSweep,false);
   assert.equal(applyDeclaration(s,setup.pixels,null,{vehicle_label:'van',vehicle_width_m:2,vehicle_height_m:2.5,vehicle_length_m:5.5,target_label:'adult',target_height_m:1.5}).error,undefined);
   assert.equal(classifySightline(s,scenario.eye,scenario.target,scenario.vehicle,scenario.axis,[1000,0,1000]).state,'unknown');
+});
+
+test('AV2 8c: a 1-2 px nudge of the vehicle front keeps the stationary vehicle; a crossing nudge keeps it or is refused naming the gap',{skip},async()=>{
+  // The suggested crossing [373,188] and vehicle front [377,188] hit the mapped ground 0.86 m apart along the lane; near
+  // the horizon one pixel row moves a ground point by about a metre. Plan M1(d): a front pixel within 2 px of the
+  // suggestion (each axis) still names the annotated stationary vehicle, so its exact box and results stay (before this
+  // fix a 1 px nudge either declared a box, which (0,+2) flipped from Unknown +0.025 m to Blocked -0.106 m, or was
+  // refused). A crossing nudge toward the camera puts the crossing past the box: refused with the measured gap (real
+  // geometry; fractional pixels are M2a). Every result is Blocked or Unknown; no other error appears.
+  const s=await loadAV2(),setup=suggestedSetup(s,s.suggestions),outcomes={},first=createScenario(s,setup.input);
+  const refusal=/^Place the current vehicle on the camera side of the crossing \(its nearest front corner is \d+(?:\.\d+)? m past the crossing along the lane\)\.$/;
+  for(const [role,reach] of [['crossing',1],['parking',2],['target',1]])for(let dv=-reach;dv<=reach;dv++)for(let du=-reach;du<=reach;du++) {
+    if(!du&&!dv)continue;
+    const [u,v]=setup.pixels[role],pixels={...setup.pixels,[role]:[u+du,v+dv]};
+    let key;
+    try{
+      const sc=createScenario(s,{...setup.input,pixels,...comparisonStart(s,pixels,setup.vehicle)});
+      assert.equal(sc.baseline.pose,'annotated',`${role} ${du},${dv}`);
+      if(role==='parking') {
+        // The nudged front changes nothing about the tested box: same setback, limits, boxes and results.
+        assert.deepEqual([sc.baseline,sc.proposed,sc.baselineSetback,sc.limits,sc.currentVisibility,sc.proposedVisibility],
+          [first.baseline,first.proposed,first.baselineSetback,first.limits,first.currentVisibility,first.proposedVisibility],`${du},${dv}`);
+        assert.equal(setbackSweep(s,{pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',width:1.88,height:1.49,length:4.03},1.1).stopsBlockingAt,
+          setbackSweep(s,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',width:1.88,height:1.49,length:4.03},1.1).stopsBlockingAt);
+      }
+      key=[sc.baseline.pose,...[sc.currentVisibility,sc.proposedVisibility].map(x=>x.state+(x.reasonCode?`(${x.reasonCode})`:''))].join(' ');
+    }catch(e){assert.match(e.message,refusal,`${role} ${du},${dv}`);key='refused: camera side';}
+    (outcomes[role]??={})[key]=(outcomes[role][key]??0)+1;
+  }
+  assert.deepEqual(outcomes,{
+    crossing:{'annotated unknown unknown':5,'refused: camera side':3},
+    parking:{'annotated unknown unknown':24},
+    target:{'annotated unknown unknown':8}});
+  // The finding's case: front (0,+2) keeps the stationary vehicle (Unknown, +0.025 m), not a declared Blocked box.
+  const v=createScenario(s,{...setup.input,pixels:{...setup.pixels,parking:[377,190]}}).currentVisibility;
+  assert.equal(v.state,'unknown');near(v.gapM,.02515,5e-5);
+});
+
+test('AV2 8c: answers say "not blocked by the vehicle" only where Sightline computed it, in its own result phrases',{skip},async()=>{
+  // Audit (October 12): with the adult (1.5 m) every row from 0.85 to 10.35 m cuts under 10 cm into the box (too close to
+  // call), yet the prompt told the model to call Unknown "not blocked by the vehicle (rest unknown)" and the check let it.
+  const s=await loadAV2(),setup=suggestedSetup(s,s.suggestions);
+  for(const [height,setback,gap] of [[1.5,5,-.0768],[1.1,1,-.0508],[1.1,10.35,-.0446]]) {
+    const sc=createScenario(s,{...setup.input,targetHeight:String(height),proposedSetback:setback}),facts=scenarioFacts(s,sc),allowed=allowedNumbersFrom(facts);
+    assert.deepEqual([sc.proposedVisibility.state,sc.proposedVisibility.reasonCode],['unknown','too-close-to-call']);near(sc.proposedVisibility.gapM,gap,5e-4);
+    assert.equal(facts.proposed.result,'unknown (too close to call)');assert.equal(facts.current.result,'not blocked by the vehicle (rest unknown)');
+    const at=String(setback),ft=String(facts.proposed.setback_ft);
+    for(const bad of [`At ${at} m the person is not blocked by the vehicle (rest unknown).`,`The proposed vehicle is not blocked by the vehicle (rest unknown).`,
+      `At ${at} m (${ft} ft) the line isn't blocked by the vehicle.`,`The what-if at ${at} m does not block the line.`,`From ${at} m it no longer blocks.`]) {
+      const r=checkAnswer(bad,allowed,{mapped:true});assert.deepEqual([r.ok,r.kind],[false,'result'],bad);
+      assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: described a result Sightline did not compute.');
+    }
+    for(const good of [`At ${at} m (${ft} ft) the result is unknown (too close to call).`,'The stationary vehicle at 0.69 m is not blocked by the vehicle (rest unknown).',
+      `Stationary vehicle: not blocked by the vehicle (rest unknown); proposed at ${at} m: unknown (too close to call).`])
+      assert.deepEqual(checkAnswer(good,allowed,{mapped:true}),{ok:true,reason:'',text:good},good);
+  }
+  // First load: both positions are plain Unknown (the line misses the box by 2.5 cm), so the unqualified claim is true.
+  const first=allowedNumbersFrom(scenarioFacts(s,createScenario(s,setup.input)));
+  assert.equal(checkAnswer('The child is not blocked by the vehicle (rest unknown).',first,{mapped:true}).ok,true);
+  // A delivery van (2.0 x 2.6 x 5.9 m): blocked to 10.08 m, then the moved box overlaps the real vehicle cf467f3d from
+  // 10.33 m (missing the line from 10.83 m). Its short phrase says so instead of "no tested distance where it stops blocking".
+  const w={pixels:setup.pixels,vehicle:setup.vehicle,targetHeight:setup.targetHeight,input:setup.input,setupInput:setup.input,run:{},vehicleLabel:'stationary vehicle'};
+  const check=runTool(s,'check',w,'sweep_setbacks',{vehicles:[{label:'delivery van',width_m:2,height_m:2.6,length_m:5.9}]}),van=check.result.vehicles[1];
+  assert.deepEqual([van.label,van.result,van.short,van.stopsBlockingAt_m],['delivery van','blocked 0.08-10.08 m; overlaps a real object 10.33-11.68 m','unknown from 10.33 m (overlaps a real object)',null]);
+  const sweepAllowed=allowedNumbersFrom(scenarioFacts(s,createScenario(s,setup.input)),check.result);
+  assert.equal(checkAnswer(`Delivery van: ${van.short}. Your vehicle: ${check.result.vehicles[0].short}.`,sweepAllowed,{mapped:true}).ok,true);
+  assert.equal(checkAnswer('Delivery van: not blocked by the vehicle from 10.33 m.',sweepAllowed,{mapped:true}).kind,'result');
+  // An annotated stationary vehicle outside the supported sizes fails the suggestion load by name (here 4.6 m tall).
+  const track=s.suggestions.vehicle.track,tall={...s,ground:{...s.ground,cuboids:{...s.ground.cuboids,items:s.ground.cuboids.items.map(b=>b.track===track?{...b,height:4.6}:b)}}};
+  const raw=structuredClone(s.suggestions);raw.vehicle.dimensions.height=4.6;
+  assert.throws(()=>validateSuggestions(raw,tall),{message:'Invalid placement suggestions: the annotated vehicle (width 1.88 m, height 4.6 m, length 4.03 m) is outside the supported sizes (width 0.5-3.5 m, height 0.5-4.5 m, length 1-20 m).'});
+  assert.equal(validateSuggestions(structuredClone(s.suggestions),s).vehicle.track,track);
+});
+
+test('AV2 8c: answer check catches invented stop reasons, sources, car models and synonyms for the crossing',{skip},async()=>{
+  const s=await loadAV2(),setup=suggestedSetup(s,s.suggestions),allowed=allowedNumbersFrom(scenarioFacts(s,createScenario(s,setup.input)));
+  // Fixed bad-sentence set (audit, October 12): each passed the M1 check on AV2.
+  const bad={wording:['The car pulled over 0.69 m from the crossing.','The car is out of gas at 0.69 m.','It has a flat tire.','It is letting a passenger out.',
+      'The crossing position comes from LiDAR.','The LiDAR shows the crossing 0.69 m away.','The stationary vehicle is exactly 0.69 m back.','The setback is verified.',
+      'This is ground truth.','The stationary vehicle is a Tesla Model S.','It is a Toyota.'],
+    role:['The stationary vehicle is 1.49 m from the intersection.','It is set back 1.49 m.','It sits 1.88 m from the stop line.','The setback is 1.49 m.']};
+  for(const [kind,list] of Object.entries(bad))for(const text of list) {
+    const r=checkAnswer(text,allowed,{mapped:true});assert.deepEqual([r.ok,r.kind],[false,kind],text);
+  }
+  // Correct sentences that the M1 check withheld, and the support class's own words.
+  for(const good of ['The child is behind a 1.49 m tall red delivery van.','The stationary vehicle is 0.69 m from the intersection.','It is set back 0.69 m (2.25 ft).',
+    'The vehicle front has nearby LiDAR returns.','The vehicle is 1.49 m tall and the child is 1.1 m tall.'])
+    assert.deepEqual(checkAnswer(good,allowed,{mapped:true}),{ok:true,reason:'',text:good},good);
+  // The prompt no longer says "measured" (the mapped-scene check withholds it), so the model is never led to it.
+  for(const prompt of Object.values(SYSTEM_PROMPTS))assert.equal(checkAnswer(prompt.match(/The crossing[^.]*\./)[0],[],{mapped:true}).ok,true);
 });
 
 test('AV2 8c: stale, tampered or reworded suggestions and ground fail the load',{skip},async()=>{
