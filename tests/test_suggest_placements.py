@@ -35,6 +35,12 @@ KEYS = {
     'person': {'pixel', 'status', 'label', 'heightM', 'reason'},
     'detection': {'status', 'model', 'package', 'license', 'weightsSha256', 'detectionsSha256', 'curbLaneParked'},
 }
+KEYS['crossCheck'] = KEYS['detection']
+# Labelled fixture model block (the block scripts/cloud/consume_nvdino_result.py carries); no real NV-DINO output.
+NVDINO_MODEL = {'name': 'NV-Grounding-DINO', 'license': 'NVIDIA Open Model License',
+                'package': 'NGC nvidia/tao/grounding_dino grounding_dino_swin_tiny_commercial_trainable_v1.1, run once '
+                           'with NVIDIA TAO Toolkit 7.2.0',
+                'weightsSha256': '8ea7e089e174e72a7fe57ff63cdba5e1e4994b159e41cf72122a7e0d841beaa6'}
 
 
 def sha256_bytes(data):
@@ -104,7 +110,10 @@ class SuggestPlacements(unittest.TestCase):
         return copy_scene(tmp.name, detections)
 
     def assert_keys(self, doc):
-        self.assertEqual(set(doc), KEYS['top'])
+        self.assertEqual(set(doc), KEYS['top'] | ({'crossCheck'} if 'crossCheck' in doc else set()))
+        if 'crossCheck' in doc:
+            self.assertEqual(set(doc['crossCheck']), KEYS['crossCheck'])
+            self.assertEqual(doc['crossCheck']['status'], 'ran')
         self.assertEqual(doc['schemaVersion'], 1)
         self.assertEqual(set(doc['generator']), KEYS['generator'])
         self.assertEqual(set(doc['inputs']), KEYS['inputs'])
@@ -167,7 +176,15 @@ class SuggestPlacements(unittest.TestCase):
         epoch = str(int(np.datetime64(stamp.rstrip('Z'), 's').astype('int64')))
         result = run(copy, '--detections', copy / 'detections.json', epoch=epoch)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((copy / 'suggestions.json').read_bytes(), shipped)
+        again = (copy / 'suggestions.json').read_bytes()
+        if again != shipped:
+            # The only allowed difference: the shipped file predates the current script (generator.sha256), until
+            # the next preparation run regenerates it. Every computed field must still reproduce.
+            new, old = json.loads(again), json.loads(shipped)
+            self.assertNotEqual(old['generator']['sha256'], sha256_bytes(SCRIPT.read_bytes()))
+            self.assertEqual(new['generator']['sha256'], sha256_bytes(SCRIPT.read_bytes()))
+            new['generator']['sha256'] = old['generator']['sha256']
+            self.assertEqual(json.dumps(new, indent=2) + '\n', shipped.decode())
         catalog = json.loads((SCENE.parent / 'index.json').read_text())
         entry = next(e for e in catalog if e['id'] == SCENE_ID)
         self.assertEqual(entry['suggestions'], {'file': 'suggestions.json', 'sha256': sha256_bytes(shipped)})
@@ -252,6 +269,88 @@ class SuggestPlacements(unittest.TestCase):
         self.assertLessEqual(abs(point[1]), 2 * meta['processing']['roadToleranceMeters'])
         self.assertAlmostEqual(point[2], -19.0, delta=0.5)
         self.assertAlmostEqual(vehicle['setbackM'], 29.4 - 19.0, delta=0.6)
+
+    def cross_pair(self, primary_extra=(), check_extra=()):
+        """Labelled fixtures: the shipped RF-DETR detections relabelled as the preferred detector, plus the
+        shipped file itself as the cross-check; optional extra boxes are appended to either side."""
+        copy = self.scratch()
+        primary = json.loads((copy / 'detections.json').read_text())
+        primary['model'] = dict(NVDINO_MODEL)
+        primary.pop('run')
+        check = json.loads((copy / 'detections.json').read_text())
+        for doc, extra in ((primary, primary_extra), (check, check_extra)):
+            for box in extra:
+                doc['detections'].append({'id': len(doc['detections']), **box})
+        (copy / 'primary.json').write_text(json.dumps(primary))
+        (copy / 'check.json').write_text(json.dumps(check))
+        return copy
+
+    # Labelled synthetic boxes. Score 0.3: inside the curb lane but below the 0.5 candidate cut-off, so curbLaneParked
+    # does not count it. LANE_CAR: an eligible curb-lane candidate between the camera and the crossing (counted).
+    # FAR_CAR: eligible, but beyond the crossing (not counted).
+    LANE_BOX = {'class': 'car', 'score': 0.3, 'box': [600.0, 230.0, 700.0, 280.0], 'lowerMedianWorld': [3.4, 0.0, -14.0],
+                'bodyForwardRangeM': [14.5, 19.0], 'curbLaneCandidate': {'eligible': False, 'reasons': ['score 0.3 below 0.5']}}
+    LANE_CAR = {'class': 'car', 'score': 0.9, 'box': [600.0, 230.0, 700.0, 280.0], 'lowerMedianWorld': [3.4, 0.0, -14.0],
+                'bodyForwardRangeM': [14.5, 19.0], 'curbLaneCandidate': {'eligible': True, 'reasons': []}}
+    NEXT_CAR = {**LANE_CAR, 'box': [500.0, 220.0, 560.0, 250.0], 'lowerMedianWorld': [3.0, 0.0, -20.0], 'bodyForwardRangeM': [20.0, 24.5]}
+    FAR_CAR = {**LANE_CAR, 'lowerMedianWorld': [3.4, 0.0, -40.0], 'bodyForwardRangeM': [40.0, 44.0]}
+
+    def test_cross_check_records_second_detector_with_the_same_fields(self):
+        copy = self.cross_pair()
+        doc = suggest(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'check.json')
+        self.assert_keys(doc)
+        self.assertEqual(list(doc)[-2:], ['crossCheck', 'limitations'])
+        self.assertEqual(doc['detection']['model'], 'NV-Grounding-DINO')
+        self.assertEqual(doc['detection']['detectionsSha256'], sha256_bytes((copy / 'primary.json').read_bytes()))
+        self.assertEqual(doc['crossCheck'], {'status': 'ran', 'model': 'RF-DETR Medium', 'package': 'rfdetr 1.11.2',
+                                             'license': 'Apache-2.0', 'weightsSha256': doc['crossCheck']['weightsSha256'],
+                                             'detectionsSha256': sha256_bytes((copy / 'check.json').read_bytes()),
+                                             'curbLaneParked': 0})
+        self.assertEqual(doc['detection']['curbLaneParked'], 0)
+        for key in ('crossing', 'roadAxis', 'curb', 'vehicle', 'person'):
+            self.assertEqual(doc[key], self.doc[key], key)
+        self.assertTrue(any('cross-checked against RF-DETR Medium' in s for s in doc['limitations']))
+
+    def test_cross_check_agreement_uses_the_curb_lane_parked_rule(self):
+        """Agreement means equal curbLaneParked counts, both computed by the same rule; both counts are recorded."""
+        agree = (((self.LANE_BOX,), (), 0), ((), (self.LANE_BOX,), 0),       # below the candidate score: not counted
+                 ((self.FAR_CAR,), (), 0),                                    # beyond the crossing: not counted
+                 ((self.LANE_CAR,), (self.LANE_CAR,), 1))                     # counted by both
+        for primary_extra, check_extra, count in agree:
+            copy = self.cross_pair(primary_extra, check_extra)
+            doc = suggest(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'check.json')
+            self.assertEqual((doc['detection']['curbLaneParked'], doc['crossCheck']['curbLaneParked']), (count, count))
+            self.assertEqual(doc['vehicle']['status'], 'detected' if count else 'declared-default')
+        disagree = (((self.LANE_CAR,), ()), ((), (self.LANE_CAR,)), ((self.LANE_CAR, self.NEXT_CAR), (self.LANE_CAR,)))
+        for primary_extra, check_extra in disagree:
+            copy = self.cross_pair(primary_extra, check_extra)
+            result = run(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'check.json')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('disagree', result.stderr)
+            self.assertIn('curbLaneParked', result.stderr)
+            self.assertIn('Stop and ask', result.stderr)
+            self.assertFalse((copy / 'suggestions.json').exists())
+
+    def test_cross_check_refusals(self):
+        copy = self.cross_pair()
+        same = run(copy, '--detections', copy / 'check.json', '--cross-check', copy / 'check.json')
+        alone = run(copy, '--cross-check', copy / 'check.json')
+        check = json.loads((copy / 'check.json').read_text())
+        check['testOnly'] = True
+        (copy / 'test-only.json').write_text(json.dumps(check))
+        test_only = run(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'test-only.json')
+        check['testOnly'] = False
+        rule = json.loads(json.dumps(check))
+        rule['rules']['candidateMinScore'] = 0.25
+        (copy / 'rule.json').write_text(json.dumps(rule))
+        other_rule = run(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'rule.json')
+        self.assertIn('different curb-lane rules', other_rule.stderr)
+        check['inputs']['recorded.jpg'] = '0' * 64
+        (copy / 'other.json').write_text(json.dumps(check))
+        other = run(copy, '--detections', copy / 'primary.json', '--cross-check', copy / 'other.json')
+        for name, result in (('same', same), ('alone', alone), ('test-only', test_only), ('rule', other_rule), ('other', other)):
+            self.assertNotEqual(result.returncode, 0, name)
+        self.assertFalse((copy / 'suggestions.json').exists())
 
     def test_vehicle_beyond_crossing_is_ignored_and_one_reaching_it_is_unknown(self):
         _, beyond = self.with_candidate([3.4, 0.0, -40.0], [40.0, 44.0])

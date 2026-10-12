@@ -28,7 +28,7 @@ export const TOOLS={
 };
 export const MODE_TOOLS={ask:['declare_scenario','sweep_setbacks'],check:['sweep_setbacks']};
 
-const CORE=`You set up what-if scenarios for Sightline. Sightline compares, on a real measured street, whether a declared parked vehicle (a box) crosses the straight line from the recorded driver eye to one point at a person's declared height. The crossing, vehicle front and person are fixed on measured road (by the user or labeled suggestions).
+const CORE=`You set up what-if scenarios for Sightline. Sightline compares, on a real measured street, whether a declared vehicle (a box) crosses the straight line from the recorded driver eye to one point at a person's declared height. The crossing, vehicle front and person are fixed on the scene's measured or mapped road (by the user or labeled suggestions).
 Use the tools to declare values. Sightline computes every result; never compute, estimate or guess one yourself.
 - For vehicle or person types the user names, use typical real-world dimensions for that type (never copy the current size) and say they are typical assumptions.
 - If the user speaks in feet, give distances in feet (setback_unit "ft"); otherwise use meters.
@@ -44,7 +44,7 @@ Mode: scenario setup.
 - If the request is off-topic, say in one sentence that you only set up Sightline scenarios; call no tool.`,
   check:`${CORE}
 Mode: distance check.
-- Call sweep_setbacks exactly once with the facts' declared vehicle labeled "your vehicle" plus up to three common parked vehicle types (e.g. compact car, SUV, delivery van) with typical dimensions. Use plain-name labels.
+- Call sweep_setbacks exactly once with the facts' declared vehicle labeled "your vehicle" plus up to three common vehicle types (e.g. compact car, SUV, delivery van) with typical dimensions. Use plain-name labels.
 - Then write at most two short sentences: state each vehicle's "short" phrase exactly; vehicles sharing the same phrase may be grouped. Do not mention the 15 ft or 20 ft marks or the Vehicle Code; the app shows them itself. Do not call a tool again.`,
 };
 const CHECK_INSTRUCTION='Run the distance check for this scenario.';

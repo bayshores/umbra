@@ -1,4 +1,4 @@
-import { createScenario, classifySightline, placementFromPixels, segmentIntersectsBox } from './geometry.mjs';
+import { createScenario, classifySightline, placementFromPixels, segmentIntersectsBox, isMappedGround, mappedGroundHeight, whatIfBox, annotatedVehicle, comparisonStart, SUPPORT_CONTEXT } from './geometry.mjs';
 
 // Nemotron only declares what-if values. blocked/unknown come only from geometry.mjs; overlap marks a declared box
 // over the person or eye. There is no Clear.
@@ -40,38 +40,46 @@ const FORBIDDEN=[/\bclear(?:ly|ed|er|est|ance|s)?\b/i,/\b(?:in|non-?)?visib\w*/i
   /\blines?\s+of\s+sight\b(?![^.;]*\bblocked\b)/i,/\bnothing\s+in\s+the\s+way\b/i,/\bin\s+the\s+open\b/i,/\b(?:appears?|appeared|appearing)\b/i,
   /\b(?:restored|unaffected)\b/i,/\b(?:is|are)\s+free\b/i,/\b(?:fine|ok|okay|good|safe)\s+to\s+park\b/i,/\bcan\s+(?:still\s+)?park\b/i,/\bfree\s+(?:of|from)\s+(?:any\s+)?(?:obstruct|obstacl|block)\w*/i,
   /(?:\bnot|n't|\bnever|\bno\s+longer)\s+(?:be\s+|being\s+|been\s+)?blocked\b(?!\s+by\s+the\s+vehicle\b)/i];
-const withheld=text=>FORBIDDEN.map(p=>text.match(p)).find(Boolean)?.[0];
+// Mapped-ground (AV2) scenes: the current vehicle is a stationary annotated vehicle whose reason for stopping is unknown,
+// so no model-written text (answer or label) containing any word built on "park" is shown there. Measured-depth scenes
+// keep their parking wording.
+const PARK=/\w*park\w*/i;
+const withheld=(text,mapped=false)=>(mapped?[...FORBIDDEN,PARK]:FORBIDDEN).map(p=>text.match(p)).find(Boolean)?.[0];
 // Model-written labels are shown word for word, so they are plain names: letters only, no result or state words and
 // none of the withheld wording. A label never carries a number or a result.
 const NAME=/^[A-Za-z][A-Za-z ,'&-]{0,39}$/,STATE_WORDS=/\b(?:un)?block\w*|\b(?:unknown|not|stops?|stopped|from|at|clear\w*|overlap\w*)\b|n't\b/i;
 
 // Each check returns plain error text or undefined; values are rejected, never clamped or substituted.
-const unexpected=(args,keys)=>{const key=Object.keys(args).find(k=>!keys.includes(k));return key&&`Unexpected field ${key}.`;};
-const nameError=(v,name)=>typeof v==='string'&&NAME.test(v)&&!STATE_WORDS.test(v)&&!withheld(v)?undefined
+// Mapped-scene errors never repeat model-written text, so a field name like "parked_vehicle" cannot reach the app's own line.
+const unexpected=(args,keys,mapped=false)=>{const key=Object.keys(args).find(k=>!keys.includes(k));return key&&(mapped?'Unexpected field.':`Unexpected field ${key}.`);};
+// The mapped-scene error never repeats the rejected word (tool errors can reach the app's own line).
+const nameError=(v,name,mapped=false)=>typeof v==='string'&&mapped&&PARK.test(v)?`${name} must name only the type, like "SUV" or "child", with no status words.`
+  :typeof v==='string'&&NAME.test(v)&&!STATE_WORDS.test(v)&&!withheld(v)?undefined
   :`${name} must be a plain name like "box truck" or "child": letters only, up to ${RANGES.label} characters, no numbers or results.`;
 const ranged=(v,name,[lo,hi])=>typeof v==='number'&&Number.isFinite(v)&&v>=lo&&v<=hi?undefined:`${name} must be a number from ${lo} to ${hi} m.`;
 
-export function validateDeclaration(args) {
+// mapped: the scene is a mapped-ground (AV2) scene, where labels must not use any word built on "park".
+export function validateDeclaration(args,{mapped=false}={}) {
   if(!object(args))return {ok:false,error:'Arguments must be an object.'};
   const a=args,setback=!absent(a.setback_value)||!absent(a.setback_unit);
-  const error=unexpected(a,['vehicle_label','vehicle_width_m','vehicle_height_m','vehicle_length_m','target_label','target_height_m','setback_value','setback_unit'])
-    ??nameError(a.vehicle_label,'vehicle_label')??ranged(a.vehicle_width_m,'vehicle_width_m',RANGES.width)
+  const error=unexpected(a,['vehicle_label','vehicle_width_m','vehicle_height_m','vehicle_length_m','target_label','target_height_m','setback_value','setback_unit'],mapped)
+    ??nameError(a.vehicle_label,'vehicle_label',mapped)??ranged(a.vehicle_width_m,'vehicle_width_m',RANGES.width)
     ??ranged(a.vehicle_height_m,'vehicle_height_m',RANGES.height)??ranged(a.vehicle_length_m,'vehicle_length_m',RANGES.length)
-    ??nameError(a.target_label,'target_label')??ranged(a.target_height_m,'target_height_m',RANGES.targetHeight)
+    ??nameError(a.target_label,'target_label',mapped)??ranged(a.target_height_m,'target_height_m',RANGES.targetHeight)
     ??(setback&&!(typeof a.setback_value==='number'&&Number.isFinite(a.setback_value)&&a.setback_value>0)?'setback_value must be a positive number.':undefined)
     ??(setback&&!['m','ft'].includes(a.setback_unit)?'setback_unit must be m or ft.':undefined);
   if(error)return {ok:false,error};
   return {ok:true,value:{vehicleLabel:a.vehicle_label,vehicle:{width:a.vehicle_width_m,height:a.vehicle_height_m,length:a.vehicle_length_m},
     targetLabel:a.target_label,targetHeight:a.target_height_m,setback:setback?{value:a.setback_value,unit:a.setback_unit,meters:toMeters(a.setback_value,a.setback_unit)}:null}};
 }
-export function validateSweep(args) {
+export function validateSweep(args,{mapped=false}={}) {
   if(!object(args))return {ok:false,error:'Arguments must be an object.'};
-  let error=unexpected(args,['vehicles','target_height_m'])
+  let error=unexpected(args,['vehicles','target_height_m'],mapped)
     ??(Array.isArray(args.vehicles)&&args.vehicles.length>=1&&args.vehicles.length<=4?undefined:'vehicles must list 1 to 4 vehicles.')
     ??(absent(args.target_height_m)?undefined:ranged(args.target_height_m,'target_height_m',RANGES.targetHeight));
   for(let i=0;!error&&i<args.vehicles.length;i++) {
     const v=args.vehicles[i],name=`vehicles[${i}]`;
-    error=object(v)?unexpected(v,['label','width_m','height_m','length_m'])??nameError(v.label,name+'.label')??ranged(v.width_m,name+'.width_m',RANGES.width)
+    error=object(v)?unexpected(v,['label','width_m','height_m','length_m'],mapped)??nameError(v.label,name+'.label',mapped)??ranged(v.width_m,name+'.width_m',RANGES.width)
       ??ranged(v.height_m,name+'.height_m',RANGES.height)??ranged(v.length_m,name+'.length_m',RANGES.length):`${name} must be an object.`;
   }
   if(error)return {ok:false,error};
@@ -81,39 +89,58 @@ export function validateSweep(args) {
 
 // classifySightline's axis-local frame and box with geometry's own segment-box test (same local values, same result).
 // The person's ground-to-head column touching the box (covers ground or head point inside) or the eye inside it is
-// an overlap; such a setback is never reported as blocked.
-function boxTests(scenario,center) {
-  const {axis,vehicle,eye,target}=scenario,side=[axis[2],0,-axis[0]],half=[vehicle.width/2,vehicle.height/2,vehicle.length/2],low=half.map(n=>-n);
+// an overlap; such a setback is never reported as blocked. box: {center, axis, vehicle}, as geometry.mjs builds the
+// current and what-if boxes (an annotated pose keeps its own heading and size).
+function boxTests(scenario,{center,axis,vehicle}) {
+  const {eye,target}=scenario,side=[axis[2],0,-axis[0]],half=[vehicle.width/2,vehicle.height/2,vehicle.length/2],low=half.map(n=>-n);
   const local=p=>{const d=[p[0]-center[0],p[1]-center[1],p[2]-center[2]];return [dot(d,side),d[1],dot(d,axis)];};
   return {targetInside:segmentIntersectsBox(local(scenario.targetGround),local(target),low,half),
     eyeInside:local(eye).every((n,i)=>Math.abs(n)<=half[i]),sightline:segmentIntersectsBox(local(eye),local(target),low,half)};
 }
 export function actorConflicts(scenario,which) {
-  const center=scenario?.[which==='current'?'baseline':which]?.center;
-  if(!center)throw new Error('Vehicle position must be current, baseline or proposed.');
-  const {targetInside,eyeInside}=boxTests(scenario,center);
+  const box=['current','baseline','proposed'].includes(which)?scenario?.[which==='proposed'?which:'baseline']:null;
+  if(!box?.center)throw new Error('Vehicle position must be current, baseline or proposed.');
+  const {targetInside,eyeInside}=boxTests(scenario,box);
   return {targetInside,eyeInside};
 }
+// Unsigned angle between two horizontal unit axes, in degrees.
+const turnDeg=(a,b)=>Math.atan2(Math.abs(a[0]*b[2]-a[2]*b[0]),a[0]*b[0]+a[2]*b[2])*180/Math.PI;
 
+// Mapped-ground scenes: every placed point's support class (suggested or edited), keyed like the suggestion context.
+// support: {crossing,parking,target} -> {supportClass} or null; points without a mapped-ground hit are left out.
+export function supportFacts(support) {
+  const out={};
+  for(const [key,name] of [['crossing','crossing'],['parking','vehicle_front'],['target','person_point']])
+    if(Object.hasOwn(SUPPORT_CONTEXT,support?.[key]?.supportClass??''))out[name]=SUPPORT_CONTEXT[support[key].supportClass];
+  return out;
+}
 // Model-facing facts: scalars only, no pixels or world coordinates.
 export function scenarioFacts(scene,scenario) {
   const s=scenario,v=s.vehicle,position=(which,setback,visibility)=>{
-    const c=actorConflicts(s,which);
-    return {setback_m:r2(setback),setback_ft:r2(setback/FOOT),state:c.targetInside||c.eyeInside?'overlap':visibility.state,...c};
+    const c=actorConflicts(s,which),state=c.targetInside||c.eyeInside?'overlap':visibility.state;
+    // An annotated pose (current vehicle and its what-if) is turned from the lane axis; its setback is the lane-axis
+    // distance from the crossing to its front-face centre (geometry.mjs).
+    const box=s[which],pose=box.pose==='annotated'?{pose:'annotated',turnedFromLane_deg:r2(turnDeg(box.axis,s.axis))}:{};
+    return {...pose,setback_m:r2(setback),setback_ft:r2(setback/FOOT),state,...c};
   };
-  return {scene:scene.id,units:scene.units,eyeHeight_m:r2(s.eye[1]),vehicle_m:{width:r2(v.width),height:r2(v.height),length:r2(v.length)},
+  // Mapped scenes put the camera at the world origin, so eye height is measured to the mapped ground under the eye
+  // (null when the map has no value there); measured-depth scenes have the road at Y 0.
+  const ground=isMappedGround(scene)?mappedGroundHeight(scene,s.eye[0],s.eye[2]):0;
+  return {scene:scene.id,units:scene.units,eyeHeight_m:ground===null?null:r2(s.eye[1]-ground),vehicle_m:{width:r2(v.width),height:r2(v.height),length:r2(v.length)},
     targetHeight_m:r2(s.target[1]-s.targetGround[1]),maximumSetback_m:r2(s.limits.maximumSetback),maximumSetback_ft:r2(s.limits.maximumSetback/FOOT),
-    current:position('baseline',s.baselineSetback,s.currentVisibility),proposed:position('proposed',s.proposedSetback,s.proposedVisibility)};
+    current:position('baseline',s.baselineSetback,s.currentVisibility),proposed:position('proposed',s.proposedSetback,s.proposedVisibility),
+    ...(s.support&&{support:supportFacts(s.support)})};
 }
 
 export function applyDeclaration(scene,pixels,currentInput,args) {
-  const checked=validateDeclaration(args);
+  const checked=validateDeclaration(args,{mapped:isMappedGround(scene)});
   if(!checked.ok)return {error:checked.error};
-  if(!['crossing','parking','target'].every(k=>pixels?.[k]))return {error:'Place the crossing, vehicle and person on the measured road first.'};
+  if(!['crossing','parking','target'].every(k=>pixels?.[k]))return {error:`Place the crossing, vehicle and person on the ${isMappedGround(scene)?'mapped ground':'measured road'} first.`};
   const d=checked.value;
   try {
     const placement=currentInput?null:placementFromPixels(scene,pixels);
-    const input={pixels,vehicle:{...d.vehicle},targetHeight:d.targetHeight,
+    // A declared vehicle ends the annotated pose of a mapped-ground scene, even at the annotated sizes.
+    const input={pixels,vehicle:{...d.vehicle},targetHeight:d.targetHeight,...(isMappedGround(scene)&&{vehicleDeclared:true}),
       proposedSetback:d.setback?d.setback.meters:currentInput?currentInput.proposedSetback:placement.baselineSetback,
       driverDistance:currentInput?currentInput.driverDistance:placement.captureDistance};
     const scenario=createScenario(scene,input),setback=d.setback&&{value:d.setback.value,unit:d.setback.unit,m:r2(d.setback.meters),ft:r2(d.setback.meters/FOOT)};
@@ -128,24 +155,25 @@ export function setbackSweep(scene,baseInput,vehicle,targetHeight=baseInput?.tar
   const label=vehicle?.label,dims={width:vehicle?.width,height:vehicle?.height,length:vehicle?.length};
   let s;
   try {
-    // One validation pass: a vehicle that does not fit at the nearest setback fits at none.
-    const driverDistance=baseInput?.driverDistance??placementFromPixels(scene,baseInput?.pixels).captureDistance;
-    s=createScenario(scene,{pixels:baseInput?.pixels,vehicle:dims,targetHeight,driverDistance,proposedSetback:scene.processing.roadToleranceMeters});
+    // One validation pass at the vehicle's own start (createScenario checks that it fits; one that does not fits nowhere).
+    // A vehicle with the annotated sizes, on an input no declaration changed, is swept in the annotated pose.
+    const start=comparisonStart(scene,baseInput?.pixels,dims,!!baseInput?.vehicleDeclared);
+    s=createScenario(scene,{pixels:baseInput?.pixels,vehicle:dims,targetHeight,driverDistance:baseInput?.driverDistance??start.driverDistance,
+      proposedSetback:start.proposedSetback,...(baseInput?.vehicleDeclared&&{vehicleDeclared:true})});
   }catch(e){return {label,vehicle:dims,error:e.message};}
-  const min=s.proposedSetback,max=s.limits.maximumSetback,setbacks=[];
+  // Rows start where the slider does: the box's nearest point at the road tolerance.
+  const min=s.limits.minimumSetback,max=s.limits.maximumSetback,setbacks=[];
   for(let k=0;min+k*STEP<=max+EPS;k++)setbacks.push(min+k*STEP);
   if(max-setbacks.at(-1)>1e-6)setbacks.push(max);
   for(const mark of Object.values(MARKS))if(mark>=min&&mark<=max&&!setbacks.some(n=>Math.abs(n-mark)<EPS))setbacks.push(mark);
   setbacks.sort((a,b)=>a-b);
-  const {crossing,axis,vehicle:v,vehicleGroundHeight,eye,target}=s;
-  const rows=[];
+  const {vehicle:v,eye,target}=s,rows=[];
   for(const setback of setbacks) {
-    // Identical arithmetic to createScenario's vehicle centre at this proposed setback.
-    const along=setback+v.length/2,center=[crossing[0]+axis[0]*along,vehicleGroundHeight+v.height/2,crossing[2]+axis[2]*along];
-    const c=boxTests(s,center),state=c.targetInside||c.eyeInside?'overlap':c.sightline?'blocked':'unknown';
+    // The same what-if box as createScenario's proposed vehicle at this setback (geometry.mjs whatIfBox).
+    const box=whatIfBox(s.whatIf,setback),c=boxTests(s,box),state=c.targetInside||c.eyeInside?'overlap':c.sightline?'blocked':'unknown';
     // classifySightline stays the authority: it confirms the first row of every run. Its later mesh and pixel
     // diagnostics ignore the vehicle and can only yield unknown, so repeating them per row (~1 ms each) is skipped.
-    if(state!=='overlap'&&state!==rows.at(-1)?.state&&classifySightline(scene,eye,target,v,axis,center).state!==state)
+    if(state!=='overlap'&&state!==rows.at(-1)?.state&&classifySightline(scene,eye,target,box.vehicle,box.axis,box.center).state!==state)
       throw new Error('Sweep disagrees with the measured comparison.');
     rows.push(state==='overlap'?{setback,state,person:c.targetInside,driver:c.eyeInside}:{setback,state});
   }
@@ -208,10 +236,11 @@ export function allowedNumbersFrom(...facts) {
   return [...out];
 }
 export const MAX_ANSWER=280;
-export function checkAnswer(text,allowedNumbers=[]) {
+// mapped: a mapped-ground (AV2) scene, where an answer using any word built on "park" is withheld too.
+export function checkAnswer(text,allowedNumbers=[],{mapped=false}={}) {
   if(typeof text!=='string'||!text.trim())return {ok:false,kind:'empty',reason:'Empty answer.'};
   if(text.length>MAX_ANSWER)return {ok:false,kind:'length',reason:'Answer is longer than two short sentences.'};
-  const word=withheld(text);
+  const word=withheld(text,mapped);
   if(word)return {ok:false,kind:'wording',reason:`Uses withheld wording "${word}".`};
   const key=n=>Math.round(n*10),allowed=new Set(allowedNumbers.filter(Number.isFinite).map(key));
   const stray=(text.match(NUMBER)??[]).find(n=>!allowed.has(key(Number(n))));
@@ -241,7 +270,7 @@ export function runTool(scene,mode,w,name,args) {
   if(name==='declare_scenario'&&mode==='ask') {
     const res=applyDeclaration(scene,w.pixels,w.input,args);
     if(res.error)return {error:res.error};
-    const d=res.declared,v=res.input.vehicle,before=w.input?.vehicle??w.vehicle;
+    const d=res.declared,v=res.input.vehicle,before=w.input?.vehicle??w.vehicle,prev=w.input??w.setupInput;
     // Small models tend to copy the on-screen size for a newly named vehicle type; ask once per run for that type's size.
     const prior=typeof w.vehicleLabel==='string'?w.vehicleLabel.trim().toLowerCase():'';
     if(w.run&&!w.run.sizeChecked&&prior&&d.vehicleLabel.trim().toLowerCase()!==prior&&DIMS.every(k=>Number(before?.[k])===v[k])) {
@@ -252,11 +281,12 @@ export function runTool(scene,mode,w,name,args) {
       fields:{vehicle:{width:String(v.width),height:String(v.height),length:String(v.length)},targetHeight:String(res.input.targetHeight)},
       parts:[vehiclePart(d.vehicleLabel,d.vehicle),{key:'person',text:`${d.targetLabel} ${fmt(d.targetHeight)} m`,value:d.targetHeight},
         ...(d.setback?[{key:'setback',text:`${d.setback.m} m (${d.setback.ft} ft) from crossing`,value:res.input.proposedSetback}]:[])],
-      // Distance results describe the vehicle they were run with; a declaration that changes its size clears them.
-      clearSweep:!DIMS.every(k=>Number(before?.[k])===v[k])};
+      // Distance results describe the vehicle they were run with; a declaration that changes its size, or that replaces
+      // an annotated pose (even at the same sizes), clears them.
+      clearSweep:!DIMS.every(k=>Number(before?.[k])===v[k])||!!(prev&&!prev.vehicleDeclared&&annotatedVehicle(scene,prev.pixels,prev.vehicle))};
   }
   if(name==='sweep_setbacks') {
-    const checked=validateSweep(args);
+    const checked=validateSweep(args,{mapped:isMappedGround(scene)});
     if(!checked.ok)return {error:checked.error};
     const from=w.input??w.setupInput;
     if(!from)return {error:'Declare or enter a vehicle first.'};
@@ -266,8 +296,9 @@ export function runTool(scene,mode,w,name,args) {
     const own={label:'your vehicle',...Object.fromEntries(DIMS.map(k=>[k,Number(from.vehicle[k])]))};
     const listed=checked.value.vehicles,mine=v=>DIMS.every(k=>Math.abs(v[k]-own[k])<.005);
     const vehicles=mode==='check'&&!listed.some(mine)?[own,...listed].slice(0,4):listed;
-    const results=vehicles.map(v=>setbackSweep(scene,{pixels:from.pixels,driverDistance},v,height));
-    return {result:sweepFacts(results),input:from,sweep:{pixels:from.pixels,targetHeight:height,driverDistance,results,own:{...from.vehicle}}};
+    const results=vehicles.map(v=>setbackSweep(scene,{pixels:from.pixels,driverDistance,vehicleDeclared:from.vehicleDeclared},v,height));
+    // vehicleDeclared: whether the checked vehicle was a declared box (false: an annotated pose may have been swept).
+    return {result:sweepFacts(results),input:from,sweep:{pixels:from.pixels,targetHeight:height,driverDistance,results,own:{...from.vehicle},vehicleDeclared:!!from.vehicleDeclared}};
   }
   return {error:`Unknown tool ${name}.`};
 }

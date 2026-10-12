@@ -1,4 +1,4 @@
-:root { font-family:'Geist Mono',monospace; color:#e8eeeb; background:#111718; font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; --surface:#1a2223; --sea-glass:#a5c9bd; --muted:#afb9b6; }
+:root { font-family:'Geist Mono',monospace; color:#e8eeeb; background:#111718; font-synthesis:none; text-rendering:optimizeLegibility; -webkit-font-smoothing:antialiased; --page:#111718; --surface:#1a2223; --sea-glass:#a5c9bd; --muted:#afb9b6; }
 * { box-sizing:border-box; }
 body { margin:0; min-width:320px; }
 button,input,select { font:inherit; }
@@ -34,6 +34,9 @@ h1,h2 { margin:0; font-size:15px; line-height:1.5; font-weight:500; }
 .recorded-actors { position:absolute; inset:0; pointer-events:none; }
 .anchor-marker { position:absolute; z-index:2; display:grid; place-items:center; width:26px; height:26px; padding:0; background:#202928; color:#c5d3cc; border-radius:50%; transform:translate(-50%,-50%); box-shadow:0 0 0 2px #111718; }
 .anchor-marker--selected { z-index:3; color:#111718; background:var(--sea-glass); box-shadow:0 0 0 3px #a5c9bd44; pointer-events:none; }
+/* A hidden point (its pixel shows an annotated object; the point lies behind it) is a hollow marker. */
+.anchor-marker.anchor-marker--hidden { background:color-mix(in srgb,var(--page) 70%,transparent); box-shadow:inset 0 0 0 2px currentColor,0 0 0 2px var(--page); }
+.anchor-marker--hidden.anchor-marker--selected { color:var(--sea-glass); }
 .pixel-cursor { position:absolute; z-index:4; display:grid; place-items:center; width:34px; height:34px; border-radius:50%; background:#111718ed; transform:translate(-50%,-50%); pointer-events:none; box-shadow:0 2px 8px #0005; }
 .pixel-cursor--supported { color:var(--sea-glass); }
 .pixel-cursor--unsupported { color:#d39276; }
@@ -113,6 +116,7 @@ input.wipe-control:focus-visible::-moz-range-thumb { outline:2px solid #e8eeeb; 
 .suggestion-reset { display:inline-flex; align-items:center; gap:5px; margin:-3px 0; padding:3px 7px; background:transparent; color:var(--sea-glass); font-size:11px; border-radius:5px; }
 .suggestion-reset:hover { background:#23302e; }
 .suggested-tag { color:var(--muted); font-size:10px; white-space:nowrap; }
+.support-tag { white-space:normal; }
 .selected-label .suggested-tag { margin-left:2px; }
 .field-bubble .suggested-tag { display:block; margin:-5px 0 3px; }
 .distance-panel { grid-column:1 / -1; background:var(--surface); border-radius:8px; padding:14px; min-width:0; }

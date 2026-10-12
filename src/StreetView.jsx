@@ -32,12 +32,12 @@ function validate(scene, eye, scenario) {
   for (const n of surface.colors) if (!Number.isFinite(n) || n < 0 || n > 1) return 'Scene reconstruction contains invalid RGB color data.';
   for (const i of surface.triangles) if (i >= surface.positions.length / 3) return 'Scene reconstruction contains an invalid triangle index.';
   if (scenario) {
-    const points = [scenario.target, scenario.targetGround, scenario.baseline?.center, scenario.proposed?.center, scenario.axis, scenario.crossing];
-    const dims = [scenario.vehicle?.width, scenario.vehicle?.height, scenario.vehicle?.length];
+    const points = [scenario.target, scenario.targetGround, scenario.baseline?.center, scenario.proposed?.center, scenario.axis, scenario.crossing, scenario.baseline?.axis, scenario.proposed?.axis];
+    const dims = [scenario.vehicle, scenario.baseline?.vehicle, scenario.proposed?.vehicle].flatMap(v => [v?.width, v?.height, v?.length]);
     const states = [scenario.currentVisibility?.state, scenario.proposedVisibility?.state];
     if (!points.every(finite3) || !dims.every(n => Number.isFinite(n) && n > 0) ||
         ![scenario.baselineSetback, scenario.proposedSetback].every(Number.isFinite) ||
-        !states.every(s => Object.hasOwn(STATES, s)) || Math.hypot(scenario.axis[0], scenario.axis[2]) === 0)
+        !states.every(s => Object.hasOwn(STATES, s)) || [scenario.axis, scenario.baseline.axis, scenario.proposed.axis].some(a => Math.hypot(a[0], a[2]) === 0))
       return 'Comparison geometry or visibility state is invalid.';
   }
   return null;
@@ -54,12 +54,21 @@ function addMarker(point, color, group) {
   marker.position.set(...point);
   group.add(marker);
 }
-function addTarget(point, ground, color, group) {
+// A hidden ground point (behind an annotated object in the recorded image) is a hollow ring facing the viewer.
+function addHollowMarker(point, color, group, facing) {
+  const ring = Array.from({ length: 24 }, (_, i) => new THREE.Vector3(Math.cos(i / 24 * Math.PI * 2) * 0.12, Math.sin(i / 24 * Math.PI * 2) * 0.12, 0));
+  const marker = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(ring), new THREE.LineBasicMaterial({ color }));
+  marker.position.set(...point);
+  marker.lookAt(...facing);
+  group.add(marker);
+}
+function addTarget(point, ground, color, group, hiddenGround = false, facing = null) {
   if (!finite3(point) || !finite3(ground)) throw new Error('Measured target ground point is missing or invalid.');
   addMarker(point, color, group);
   const stem = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...ground), new THREE.Vector3(...point)]);
   group.add(new THREE.Line(stem, new THREE.LineBasicMaterial({ color })));
-  addMarker(ground, color, group);
+  if (hiddenGround) addHollowMarker(ground, color, group, facing ?? [ground[0], ground[1] + 1, ground[2]]);
+  else addMarker(ground, color, group);
 }
 function addVehicle(center, dimensions, axis, group, baseline = false) {
   const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
@@ -202,10 +211,13 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     const rect = event.currentTarget.getBoundingClientRect();
     a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
     if (!a.ray.intersectObject(a.proposed, false).length) return;
+    // Mapped-ground scenes have the camera at the origin, so drag on the vehicle's ground height rather than Y 0.
+    a.plane.constant = config.scenario.vehicleOrigin ? -config.scenario.vehicleGroundHeight : 0;
     const point = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
     if (!point) return;
+    // The what-if moves along the lane axis: the setback changes by the pointer's movement along it from the grab point.
     const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
-    a.grabOffset = new THREE.Vector3(...s.proposed.center).sub(point).dot(axis);
+    a.grab = { along: point.dot(axis), setback: s.proposedSetback };
     a.dragging = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
@@ -215,11 +227,13 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     if (a?.dragging == null || a.dragging !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
     a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
+    a.plane.constant = config.scenario.vehicleOrigin ? -config.scenario.vehicleGroundHeight : 0;
     const point = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
     if (!point) return;
     const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
-    const setback = point.sub(new THREE.Vector3(...s.crossing)).dot(axis) + a.grabOffset - s.vehicle.length / 2;
-    if (Number.isFinite(setback) && setback > 0) config.onSetbackChange(setback);
+    const setback = a.grab.setback + point.dot(axis) - a.grab.along;
+    // The box's nearest point stays on the camera side of the crossing (a turned annotated pose: its nearer front corner).
+    if (Number.isFinite(setback) && setback > (s.whatIf?.cornerOffset ?? 0)) config.onSetbackChange(setback);
   }
   function pointerUp(event) { if (api.current?.dragging === event.pointerId) api.current.dragging = null; }
   function placeLabels() {
@@ -250,27 +264,31 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       a.proposed = null;
       a.currentOverlay = null;
       a.proposedOverlay = null;
+      // Plan mode looks down; the driver views face the eye.
+      const facing = mode === 'plan' ? null : (eye ?? scene.camera.eye);
       if (scenario) {
+        const hiddenGround = scenario.support?.target?.hidden === true;
         if (mode === 'compare') {
           a.currentOverlay = new THREE.Group();
           a.proposedOverlay = new THREE.Group();
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.currentVisibility.state], a.currentOverlay);
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], a.proposedOverlay);
-          addVehicle(scenario.baseline.center, scenario.vehicle, scenario.axis, a.currentOverlay);
-          addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, a.proposedOverlay);
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.currentVisibility.state], a.currentOverlay, hiddenGround, facing);
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], a.proposedOverlay, hiddenGround, facing);
+          // Each vehicle carries its own pose (an annotated stationary vehicle and its what-if may be turned from the lane axis).
+          addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, a.currentOverlay);
+          addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, a.proposedOverlay);
           group.add(a.currentOverlay, a.proposedOverlay);
         } else {
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group);
+          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group, hiddenGround, facing);
           if (mode === 'plan') {
-            addVehicle(scenario.baseline.center, scenario.vehicle, scenario.axis, group, true);
-            a.proposed = addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, group);
+            addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, group, true);
+            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
           } else {
-            a.proposed = addVehicle(scenario.proposed.center, scenario.vehicle, scenario.axis, group);
+            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
           }
         }
       } else if (preview) {
         if (preview.vehicle) addVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group);
-        if (preview.target) addTarget(preview.target, preview.targetGround, 0x9dc8ba, group);
+        if (preview.target) addTarget(preview.target, preview.targetGround, 0x9dc8ba, group, preview.targetHidden === true, facing);
       }
       a.world.add(group);
       a.overlay = group;

@@ -5,6 +5,11 @@ Separate offline preparation environment (scripts/requirements-detection.txt); n
 
 Run:
   .local/venv-detect/bin/python -I scripts/detect-vehicles.py public/scenes/<id> [--output <json>] [--replace]
+  <numpy+Pillow python> -I scripts/detect-vehicles.py public/scenes/<id> --boxes <nvdino-boxes.json> --output <json>
+
+--boxes applies the same measured-depth placement and curb-lane rules to externally supplied boxes (for example
+NV-Grounding-DINO boxes validated by scripts/cloud/consume_nvdino_result.py) instead of running RF-DETR. The output
+carries the supplied model block and no timings (the NVIDIA software terms bar publishing performance data).
 
 Weights must already be cached as <--weights-dir>/rf-detr-medium.pth (default .local/venv-detect/rf_home). Their
 sha256 is checked against the pinned value before the model is built, so rfdetr never downloads anything.
@@ -46,6 +51,12 @@ RULES = {
     'curbRaisedMaxHeightMeters': 0.6,
     'curbLaneMeters': [-3.0, 0.5],     # lateral range relative to the measured right curb
 }
+
+
+BOXES_KIND = 'sightline-external-boxes'
+BOX_KEYS = {'class', 'score', 'box', 'mergedLabels'}
+BOXES_NOTE = ("Boxes supplied by another detector; its scores are its own and are not calibrated against RF-DETR. "
+              "The same 0.5 candidate cut-off is used (TAO's own default inference conf_threshold is also 0.5).")
 
 
 def fail(message):
@@ -137,19 +148,53 @@ def candidacy(r, curb_x):
     return {'eligible': not reasons, 'reasons': reasons}
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('scene', type=Path, help='prepared scene directory (scene.json, recorded.jpg, depth.bin)')
-    ap.add_argument('--output', type=Path, help='detections JSON (default <scene>/detections.json)')
-    ap.add_argument('--replace', action='store_true', help='overwrite an existing output')
-    ap.add_argument('--weights-dir', type=Path, default=ROOT / '.local/venv-detect/rf_home')
-    ap.add_argument('--device', default='cpu')
-    ap.add_argument('--warm', type=int, default=3, help='extra timed predictions after the first')
-    args = ap.parse_args()
-    scene_dir = args.scene.resolve()
-    output = (args.output or scene_dir / 'detections.json').resolve()
-    if output.exists() and not args.replace:
-        fail(f'{output} exists; pass --replace to overwrite')
+def unique_keys(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            fail(f'duplicate key {key!r} in boxes file')
+        out[key] = value
+    return out
+
+
+def load_boxes(path, scene_dir, allow_test):
+    """Externally supplied boxes (strict); nothing is clipped, filled or re-scored here."""
+    try:
+        data = path.read_bytes()
+        doc = json.loads(data, parse_constant=lambda c: fail(f'non-finite number {c} in {path}'),
+                         object_pairs_hook=unique_keys)
+    except (OSError, ValueError) as exc:
+        fail(f'cannot read boxes: {exc}')
+    if not isinstance(doc, dict) or doc.get('schemaVersion') != 1 or doc.get('kind') != BOXES_KIND:
+        fail(f'{path} is not a schemaVersion 1 {BOXES_KIND} file')
+    if doc.get('testOnly') is not False and not (allow_test and doc.get('testOnly') is True):
+        fail('test-only boxes are refused (self-tests pass --allow-test-boxes)')
+    if not isinstance(doc.get('image'), dict) or doc['image'].get('sha256') != sha256(scene_dir / 'recorded.jpg'):
+        fail('boxes were made from a different recorded.jpg')
+    model = doc.get('model')
+    if not isinstance(model, dict) or not all(isinstance(model.get(k), str) and model[k]
+                                              for k in ('name', 'package', 'license', 'weightsSha256')):
+        fail('boxes model block must name the model, package, license and weights sha256')
+    if doc.get('threshold') != RULES['threshold'] or not isinstance(doc.get('boxes'), list):
+        fail(f"boxes threshold must be {RULES['threshold']} with a boxes list")
+    rows = []
+    for b in doc['boxes']:
+        ok = (isinstance(b, dict) and set(b) <= BOX_KEYS and {'class', 'score', 'box'} <= set(b)
+              and isinstance(b['class'], str) and b['class']
+              and type(b['score']) in (int, float) and RULES['threshold'] <= b['score'] <= 1
+              and isinstance(b['box'], list) and len(b['box']) == 4
+              and all(type(v) in (int, float) and np.isfinite(v) for v in b['box'])
+              and b['box'][0] <= b['box'][2] and b['box'][1] <= b['box'][3])
+        if not ok:
+            fail(f'invalid box entry: {json.dumps(b)[:200]}')
+        rows.append({'class': b['class'], 'score': b['score'], 'box': list(b['box'])})
+    given = doc.get('source') if isinstance(doc.get('source'), dict) else {}
+    source = {'sha256': hashlib.sha256(data).hexdigest(), **{k: given.get(k) for k in
+              ('channel', 'submissionId', 'planSha256', 'jobResultSha256', 'boxesJsonSha256')}}
+    return rows, dict(model), source, doc['testOnly']
+
+
+def rf_detr_rows(args, image):
     weights = args.weights_dir.resolve() / WEIGHTS_FILE
     if not weights.is_file():
         fail(f'{weights} not found; weights are never downloaded by this script')
@@ -158,7 +203,6 @@ def main():
     if weights_sha != WEIGHTS_SHA256:
         fail(f'{weights} sha256 {weights_sha} does not match the pinned {WEIGHTS_SHA256}')
     t_hash = time.perf_counter() - t
-    meta, image, valid, world, tol = load_scene(scene_dir)
 
     os.environ['RF_HOME'] = str(weights.parent)
     os.environ['HF_HUB_OFFLINE'] = '1'
@@ -185,6 +229,43 @@ def main():
     rows = [{'class': COCO_CLASSES.get(int(c), str(int(c))), 'cocoCategoryId': int(c), 'score': round(float(s), 4),
              'box': [round(float(v), 1) for v in b]}
             for b, s, c in zip(det.xyxy.tolist(), det.confidence.tolist(), det.class_id.tolist())]
+    model_block = {'name': 'RF-DETR Medium', 'package': f"rfdetr {metadata.version('rfdetr')}", 'license': 'Apache-2.0',
+                   'weightsFile': WEIGHTS_FILE, 'weightsUrl': WEIGHTS_URL, 'weightsSha256': weights_sha,
+                   'weightsBytes': weights.stat().st_size, 'weightsLicense': 'Apache-2.0',
+                   'labelSpace': 'COCO category ids'}
+    run = {'device': args.device, 'platform': f'{platform.system()} {platform.machine()}',
+           'timingSeconds': {'weightsHash': round(t_hash, 3), 'import': round(t_import, 3),
+                             'modelBuild': round(t_build, 3), 'firstPredict': round(t_first, 3),
+                             'warmMedian': round(statistics.median(warm), 4) if warm else None},
+           'timingNote': 'Wall clock in one process; functional record, not a serialized benchmark.'}
+    return rows, model_block, run, torch.__version__
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    ap.add_argument('scene', type=Path, help='prepared scene directory (scene.json, recorded.jpg, depth.bin)')
+    ap.add_argument('--output', type=Path, help='detections JSON (default <scene>/detections.json; required with --boxes)')
+    ap.add_argument('--replace', action='store_true', help='overwrite an existing output')
+    ap.add_argument('--weights-dir', type=Path, default=ROOT / '.local/venv-detect/rf_home')
+    ap.add_argument('--device', default='cpu')
+    ap.add_argument('--warm', type=int, default=3, help='extra timed predictions after the first')
+    ap.add_argument('--boxes', type=Path, help='externally supplied boxes (sightline-external-boxes JSON); no model runs')
+    ap.add_argument('--allow-test-boxes', action='store_true', help='accept testOnly boxes (self-tests only)')
+    args = ap.parse_args()
+    scene_dir = args.scene.resolve()
+    if args.boxes and not args.output:
+        fail('--boxes needs an explicit --output')
+    output = (args.output or scene_dir / 'detections.json').resolve()
+    if output.exists() and not args.replace:
+        fail(f'{output} exists; pass --replace to overwrite')
+    if args.boxes:
+        rows, model_block, source, test_only = load_boxes(args.boxes.resolve(), scene_dir, args.allow_test_boxes)
+        meta, image, valid, world, tol = load_scene(scene_dir)
+        run, torch_version = None, None
+    else:
+        meta, image, valid, world, tol = load_scene(scene_dir)
+        rows, model_block, run, torch_version = rf_detr_rows(args, image)
+        source, test_only = None, False
     rows.sort(key=lambda r: (-r['score'], r['box']))
     W, H = image.size
     curb_x, curb_bands = right_curb(valid, world, tol)
@@ -194,32 +275,37 @@ def main():
         p = {'id': i, **p, 'curbLaneCandidate': candidacy(p, curb_x)}
         placed.append(p)
 
+    generator = {'script': SCRIPT, 'sha256': sha256(__file__), 'python': platform.python_version()}
+    if torch_version:
+        generator['torch'] = torch_version
+    generator.update(numpy=np.__version__, pillow=metadata.version('pillow'))
     doc = {
         'schemaVersion': 1, 'sceneId': meta['id'],
         'generatedUtc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'generator': {'script': SCRIPT, 'sha256': sha256(__file__), 'python': platform.python_version(),
-                      'torch': torch.__version__, 'numpy': np.__version__, 'pillow': metadata.version('pillow')},
+        'generator': generator,
         'inputs': {name: sha256(scene_dir / name) for name in ('scene.json', 'recorded.jpg', 'depth.bin')},
-        'model': {'name': 'RF-DETR Medium', 'package': f"rfdetr {metadata.version('rfdetr')}", 'license': 'Apache-2.0',
-                  'weightsFile': WEIGHTS_FILE, 'weightsUrl': WEIGHTS_URL, 'weightsSha256': weights_sha,
-                  'weightsBytes': weights.stat().st_size, 'weightsLicense': 'Apache-2.0',
-                  'labelSpace': 'COCO category ids'},
-        'run': {'device': args.device, 'platform': f'{platform.system()} {platform.machine()}',
-                'timingSeconds': {'weightsHash': round(t_hash, 3), 'import': round(t_import, 3),
-                                  'modelBuild': round(t_build, 3), 'firstPredict': round(t_first, 3),
-                                  'warmMedian': round(statistics.median(warm), 4) if warm else None},
-                'timingNote': 'Wall clock in one process; functional record, not a serialized benchmark.'},
+        'model': model_block,
+    }
+    if run is not None:
+        doc['run'] = run
+    else:
+        doc['boxesSource'] = source
+        if test_only:
+            doc['testOnly'] = True
+    doc.update({
         'rules': {**RULES, 'bodyMinHeightMeters': tol,
-                  'placement': 'measured depth only (src/geometry.mjs measuredPoint); world x right, y up, -z forward'},
+                  'placement': 'measured depth only (src/geometry.mjs measuredPoint); world x right, y up, -z forward',
+                  **({'externalBoxes': BOXES_NOTE} if args.boxes else {})},
         'rightCurb': {'status': 'measured' if curb_x is not None else 'unknown',
                       'lateralX': None if curb_x is None else round(curb_x, 3), 'bands': curb_bands},
         'detections': placed,
         'curbLaneCandidates': [p['id'] for p in placed if (p['curbLaneCandidate'] or {}).get('eligible')],
-    }
+    })
     tmp = output.with_name(output.name + '.tmp')
     tmp.write_text(json.dumps(doc, indent=1) + '\n')
     os.replace(tmp, output)
-    print(json.dumps(doc['run']['timingSeconds']), file=sys.stderr)
+    if run is not None:
+        print(json.dumps(run['timingSeconds']), file=sys.stderr)
     print(f"{len(placed)} detections; curb-lane candidates {doc['curbLaneCandidates']}; wrote {output}", file=sys.stderr)
     print(sha256(output))
 

@@ -5,7 +5,12 @@ Deterministic, numpy + Pillow only (scripts/requirements-preparation.txt); no mo
 
 Run:
   .local/venv-preparation/bin/python -I scripts/suggest-placements.py public/scenes/<id> \
-      [--detections public/scenes/<id>/detections.json] [--replace]
+      [--detections public/scenes/<id>/detections.json] [--cross-check <other detections.json>] [--replace]
+
+--cross-check: `detection` describes --detections (the preferred detector) and the optional `crossCheck` block, with the
+same fields, describes the second detector. Both curbLaneParked counts are computed by the same rule; if they differ
+(DISAGREE below), nothing is written and the script exits non-zero so a person decides which detector sets the
+suggestion.
 
 Writes <scene>/suggestions.json (refuses to overwrite unless --replace), records its sha256 in the sibling
 index.json catalog entry when that catalog lists the scene, and prints the sha256 last. Set SOURCE_DATE_EPOCH
@@ -516,6 +521,13 @@ def choose_pixel(world, d, plane_depth, cand, target, curb=None, along_ref=None)
 
 
 # ---------------------------------------------------------------- detections (from scripts/detect-vehicles.py)
+DISAGREE = ('Disagree: the two curbLaneParked counts differ. Both count the same candidates with the same rule '
+            '(vehicle_from_detections): boxes marked curbLaneCandidate.eligible by scripts/detect-vehicles.py (class in '
+            'rules.candidateClasses, score >= rules.candidateMinScore, measured lower point ahead of the camera inside '
+            'the curb lane rightCurb.lateralX + rules.curbLaneMeters), between the camera and the crossing when the '
+            'crossing is known.')
+# The detections-file inputs of curbLaneCandidate.eligible; a cross-check needs them equal in both files.
+CURB_LANE_RULE = ('candidateClasses', 'candidateMinScore', 'curbLaneMeters')
 def load_detections(path, sc):
     """The detections document and the sha256 of its bytes (recorded in suggestions.json so the count is traceable)."""
     try:
@@ -533,7 +545,31 @@ def load_detections(path, sc):
     for key in ('name', 'package', 'license', 'weightsSha256'):
         if not isinstance(model.get(key), str) or not model[key]:
             fail(f'detections model.{key} missing')
+    if doc.get('testOnly', False) is not False:
+        fail(f'{path} is a test-only detections file')
     return doc, hashlib.sha256(data).hexdigest()
+
+
+def same_curb_lane_rule(primary, other):
+    """Refuses a cross-check whose curb-lane candidates were not decided by the same rule and measured curb."""
+    def rule(doc):
+        rules, curb = doc.get('rules') or {}, doc.get('rightCurb') or {}
+        return [rules.get(k) for k in CURB_LANE_RULE], curb.get('status'), curb.get('lateralX')
+    a, b = rule(primary), rule(other)
+    if a[1] != 'measured' or b[1] != 'measured' or any(v is None for v in a[0] + b[0]):
+        fail('cannot cross-check: a detections file has no measured right curb or curb-lane rule')
+    if a != b:
+        fail('cannot cross-check: the two detections files use different curb-lane rules or curb geometry')
+
+
+def check_agreement(doc):
+    """Raises (exit non-zero, nothing written) when the two recorded curbLaneParked counts differ; else both counts."""
+    a, b = doc['detection'], doc['crossCheck']
+    if a['curbLaneParked'] != b['curbLaneParked']:
+        fail(f"detectors disagree about the curb lane: {a['model']} curbLaneParked {a['curbLaneParked']}; "
+             f"{b['model']} curbLaneParked {b['curbLaneParked']}. " + DISAGREE
+             + ' Stop and ask which detector sets the suggestion; no suggestions were written.')
+    return a['curbLaneParked'], b['curbLaneParked']
 
 
 def vehicle_from_detections(doc, curb, along_edge, cross_world, gated, world, d, plane_depth, offset, tol):
@@ -587,7 +623,13 @@ def generated_utc():
     return t.strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def suggest(sc, detections, detections_sha256=None):
+def detection_block(doc, doc_sha256, count):
+    m = doc['model']
+    return {'status': 'ran', 'model': m['name'], 'package': m['package'], 'license': m['license'],
+            'weightsSha256': m['weightsSha256'], 'detectionsSha256': doc_sha256, 'curbLaneParked': count}
+
+
+def suggest(sc, detections, detections_sha256=None, check=None, check_sha256=None):
     cfg, g = CFG, CFG['selection']
     world, d, plane_depth = measured_world(sc)
     has = sc['raw'] > 0
@@ -653,7 +695,7 @@ def suggest(sc, detections, detections_sha256=None):
                     'distanceFromCameraM': round(float((sc['eye'] - edge_curb) @ axis_curb), 2),
                     'barCount': img_edge['bars']}
 
-    det_count = None
+    det_count, check_count = None, None
     if cross is None:
         out['vehicle'] = unknown('Crossing is unknown.')
     elif axis is None:
@@ -663,6 +705,9 @@ def suggest(sc, detections, detections_sha256=None):
         if detections:
             det_count, found = vehicle_from_detections(detections, curb, along_edge, cross['world'], gated,
                                                        world, d, plane_depth, offset, sc['tol'])
+        if check:
+            check_count, _ = vehicle_from_detections(check, curb, along_edge, cross['world'], gated,
+                                                     world, d, plane_depth, offset, sc['tol'])
         if found:
             out['vehicle'] = found
         else:
@@ -680,6 +725,8 @@ def suggest(sc, detections, detections_sha256=None):
                                   'reason': f'{why}; 20 ft default.'}
     if detections and det_count is None:
         det_count = len([r for r in detections['detections'] if (r.get('curbLaneCandidate') or {}).get('eligible') is True])
+    if check and check_count is None:
+        check_count = len([r for r in check['detections'] if (r.get('curbLaneCandidate') or {}).get('eligible') is True])
 
     if cross is None:
         out['person'] = unknown('Crossing is unknown.')
@@ -691,12 +738,11 @@ def suggest(sc, detections, detections_sha256=None):
             'heightM': pdecl['heightMeters'], 'reason': 'Curb end of the crossing near edge.'}
 
     if detections:
-        m = detections['model']
-        out['detection'] = {'status': 'ran', 'model': m['name'], 'package': m['package'], 'license': m['license'],
-                            'weightsSha256': m['weightsSha256'], 'detectionsSha256': detections_sha256,
-                            'curbLaneParked': det_count}
+        out['detection'] = detection_block(detections, detections_sha256, det_count)
     else:
         out['detection'] = {'status': 'not-run'}
+    if check:
+        out['crossCheck'] = detection_block(check, check_sha256, check_count)
 
     limitations = ['One frame; no independent reference. The hand test annotation is not ground truth.']
     if out['crossing']['status'] == 'detected':
@@ -710,15 +756,21 @@ def suggest(sc, detections, detections_sha256=None):
         limitations.append('No parked vehicle is measured here: the vehicle is a declared what-if with default SUV size.')
     if out['person']['status'] == 'declared-default':
         limitations.append('The person position and 1.1 m height are declared defaults, not detections.')
+    if check:
+        limitations.append(f"Vehicle detections were cross-checked against {check['model']['name']}; the two "
+                           'detectors\' scores are not calibrated against each other.')
     limitations.append('Geometric visibility only; not parking safety, recognition or compliance.')
 
-    return {'schemaVersion': 1, 'sceneId': sc['meta']['id'], 'generatedUtc': generated_utc(),
-            'generator': {'script': SCRIPT, 'sha256': sha256(__file__), 'python': platform.python_version(),
-                          'numpy': np.__version__, 'pillow': PIL.__version__},
-            'inputs': sc['inputs'],
-            'crossing': out['crossing'], 'roadAxis': out['roadAxis'], 'curb': out['curb'],
-            'vehicle': out['vehicle'], 'person': out['person'], 'detection': out['detection'],
-            'limitations': limitations}
+    doc = {'schemaVersion': 1, 'sceneId': sc['meta']['id'], 'generatedUtc': generated_utc(),
+           'generator': {'script': SCRIPT, 'sha256': sha256(__file__), 'python': platform.python_version(),
+                         'numpy': np.__version__, 'pillow': PIL.__version__},
+           'inputs': sc['inputs'],
+           'crossing': out['crossing'], 'roadAxis': out['roadAxis'], 'curb': out['curb'],
+           'vehicle': out['vehicle'], 'person': out['person'], 'detection': out['detection']}
+    if check:
+        doc['crossCheck'] = out['crossCheck']
+    doc['limitations'] = limitations
+    return doc
 
 
 def update_catalog(scene_dir, scene_id, digest):
@@ -740,8 +792,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('scene', type=Path, help='prepared scene directory (scene.json, recorded.jpg, depth.bin)')
     ap.add_argument('--detections', type=Path, help='detections JSON from scripts/detect-vehicles.py')
+    ap.add_argument('--cross-check', type=Path, help='second detections JSON (e.g. RF-DETR) recorded as crossCheck')
     ap.add_argument('--replace', action='store_true', help='overwrite an existing suggestions.json')
     args = ap.parse_args()
+    if args.cross_check and not args.detections:
+        fail('--cross-check needs --detections')
     scene_dir = args.scene.resolve()
     target = scene_dir / OUTPUT
     if target.exists() and not args.replace:
@@ -749,7 +804,15 @@ def main():
     t = time.perf_counter()
     sc = load_scene(scene_dir)
     detections, detections_sha256 = load_detections(args.detections, sc) if args.detections else (None, None)
-    doc = suggest(sc, detections, detections_sha256)
+    check, check_sha256, agreement = None, None, None
+    if args.cross_check:
+        check, check_sha256 = load_detections(args.cross_check, sc)
+        if check_sha256 == detections_sha256:
+            fail('--cross-check is the same file as --detections')
+        same_curb_lane_rule(detections, check)
+    doc = suggest(sc, detections, detections_sha256, check, check_sha256)
+    if check:
+        agreement = check_agreement(doc)
     elapsed = time.perf_counter() - t
     data = (json.dumps(doc, indent=2) + '\n').encode()
     tmp = target.with_name(OUTPUT + '.tmp')
@@ -757,7 +820,10 @@ def main():
     os.replace(tmp, target)
     digest = hashlib.sha256(data).hexdigest()
     note = update_catalog(scene_dir, doc['sceneId'], digest)
-    for key in ('crossing', 'roadAxis', 'curb', 'vehicle', 'person', 'detection'):
+    if agreement is not None:
+        print(f"cross-check agrees: curbLaneParked {detections['model']['name']} {agreement[0]}, "
+              f"{check['model']['name']} {agreement[1]}", file=sys.stderr)
+    for key in ('crossing', 'roadAxis', 'curb', 'vehicle', 'person', 'detection') + (('crossCheck',) if check else ()):
         item = doc[key]
         print(f"{key}: {item['status']}" + (f" {item['pixel']}" if 'pixel' in item else '')
               + (f" ({item['reason']})" if 'reason' in item else ''), file=sys.stderr)

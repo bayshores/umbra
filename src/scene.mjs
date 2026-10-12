@@ -49,8 +49,74 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
+const GROUND_KEYS=['baseSceneSha256','boundaryEpsilonMeters','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind','license',
+  'limitations','maxRangeMeters','processingCodeHashes','protocol','roadToleranceMeters','sceneId','schemaVersion','sources','support',
+  'supportHeightAgreementMeters','supportRadiusMeters','terrain'];
+const SOURCE_KEYS='annotations,assembledScene,groundRaster,groundTransform,map,poses,preparedManifest,references';
+const CUBOID_KEYS='category,center,height,length,motion,numInteriorPoints,track,width,worldFromBox';
+const TERRAIN_KEYS='byteOrder,bytes,cellMeters,column0,columns,dtype,file,finiteCells,layout,nanCells,rasterShape,row0,rows,samplingRule,sha256,sim2,values';
+// Structural checks on ground.json (schemaVersion 1) before any value is used; the bytes are already hash-pinned.
+function validateGround(g,scene) {
+  const need=(ok,detail)=>{if(!ok)throw new Error(`Invalid mapped ground: ${detail}.`);};
+  const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v),text=v=>typeof v==='string'&&v.length>0&&v.length<=4096,
+    hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),finite=v=>typeof v==='number'&&Number.isFinite(v),
+    finite3=p=>Array.isArray(p)&&p.length===3&&p.every(finite),count=v=>Number.isSafeInteger(v)&&v>=0,
+    positiveInt=v=>Number.isSafeInteger(v)&&v>0,keys=(v,list)=>object(v)&&Object.keys(v).sort().join()===list;
+  need(keys(g,GROUND_KEYS.join()),'unexpected or missing top-level fields');
+  need(g.schemaVersion===1&&g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
+  need(hash(g.baseSceneSha256)&&keys(g.protocol,'bytes,path,readOnlyExternal,sha256')&&hash(g.protocol.sha256)&&text(g.protocol.path)&&count(g.protocol.bytes),'protocol record');
+  // Every source is a relative read-only record; only the annotations may be absent (null), and then no cuboids exist.
+  const source=s=>keys(s,'bytes,path,readOnlyExternal,sha256')&&hash(s.sha256)&&text(s.path)&&!s.path.startsWith('/')&&count(s.bytes)&&s.readOnlyExternal===true;
+  need(keys(g.sources,SOURCE_KEYS)&&Object.entries(g.sources).every(([k,s])=>k==='annotations'&&s===null||source(s))&&
+    g.baseSceneSha256===g.sources.assembledScene.sha256&&(g.sources.annotations===null)===(g.cuboids?.available===false),'source records');
+  need(object(g.processingCodeHashes)&&Object.values(g.processingCodeHashes).every(hash)&&object(g.dependencies)&&Object.values(g.dependencies).every(text),'processing provenance');
+  need(keys(g.frame,'cityOrigin,convention,worldFromCity')&&finite3(g.frame.cityOrigin)&&g.frame.cityOrigin.every((n,i)=>n===scene.transform.cityOrigin[i])&&
+    JSON.stringify(g.frame.worldFromCity)==='[[1,0,0],[0,0,1],[0,-1,0]]','frame must equal the scene city frame');
+  need(['roadToleranceMeters','supportHeightAgreementMeters','supportRadiusMeters','boundaryEpsilonMeters'].every(k=>finite(g[k])&&g[k]>0&&g[k]<=5)&&
+    finite(g.maxRangeMeters)&&g.maxRangeMeters>0&&g.maxRangeMeters<=1000,'tolerances and range');
+  const t=g.terrain,sim=t?.sim2,R=sim?.R;
+  need(keys(t,TERRAIN_KEYS)&&t.file==='terrain.bin'&&t.dtype==='float32'&&t.byteOrder==='little'&&hash(t.sha256)&&positiveInt(t.columns)&&positiveInt(t.rows)&&
+    t.bytes===t.rows*t.columns*4&&t.bytes<=16*1024*1024&&count(t.column0)&&count(t.row0)&&Array.isArray(t.rasterShape)&&t.rasterShape.length===2&&t.rasterShape.every(positiveInt)&&
+    t.row0+t.rows<=t.rasterShape[0]&&t.column0+t.columns<=t.rasterShape[1]&&count(t.finiteCells)&&count(t.nanCells)&&t.finiteCells+t.nanCells===t.rows*t.columns&&
+    finite(t.cellMeters)&&t.cellMeters>0,'terrain descriptor');
+  need(keys(sim,'R,s,t')&&Array.isArray(R)&&R.length===4&&R.every(finite)&&Array.isArray(sim.t)&&sim.t.length===2&&sim.t.every(finite)&&finite(sim.s)&&sim.s>0&&
+    Math.abs(R[0]*R[0]+R[2]*R[2]-1)<=1e-9&&Math.abs(R[1]*R[1]+R[3]*R[3]-1)<=1e-9&&Math.abs(R[0]*R[1]+R[2]*R[3])<=1e-9&&Math.abs(R[0]*R[3]-R[1]*R[2]-1)<=1e-9,'terrain Sim2 must be a proper similarity');
+  need(Array.isArray(g.drivableAreas)&&g.drivableAreas.length>0&&g.drivableAreas.every(a=>keys(a,'id,outline')&&text(a.id)&&Array.isArray(a.outline)&&a.outline.length>=3&&
+    a.outline.every(p=>Array.isArray(p)&&p.length===2&&p.every(finite))),'drivable areas');
+  const edge=e=>Array.isArray(e)&&e.length>=2&&e.every(finite3);
+  need(keys(g.crossing,'edge1,edge2,id')&&g.crossing.id===scene.measurements.provenance.crossingId&&edge(g.crossing.edge1)&&edge(g.crossing.edge2),'crossing');
+  const lane=g.egoLane;
+  need(keys(lane,'id,laneType,leftBoundary,leftMarkType,rightBoundary,rightMarkType')&&['id','laneType','leftMarkType','rightMarkType'].every(k=>text(lane[k]))&&
+    edge(lane.leftBoundary)&&edge(lane.rightBoundary),'ego lane');
+  const mid=(l,r)=>[(l[0]+r[0])/2,(l[2]+r[2])/2],a=mid(lane.leftBoundary[0],lane.rightBoundary[0]),b=mid(lane.leftBoundary.at(-1),lane.rightBoundary.at(-1));
+  need(Math.hypot(b[0]-a[0],b[1]-a[1])>1e-6,'ego lane chord is degenerate');
+  const c=g.cuboids;
+  need(keys(c,'available,frame,items,timestampNs')&&typeof c.available==='boolean'&&text(c.frame)&&typeof c.timestampNs==='string'&&/^[0-9]{1,32}$/.test(c.timestampNs)&&
+    Array.isArray(c.items)&&(c.available||c.items.length===0),'cuboids');
+  for(const box of c.items) {
+    const M=box?.worldFromBox,ok=keys(box,CUBOID_KEYS)&&text(box.track)&&text(box.category)&&finite3(box.center)&&['length','width','height'].every(k=>finite(box[k])&&box[k]>0)&&
+      count(box.numInteriorPoints)&&(box.motion===null||object(box.motion)&&Object.values(box.motion).every(finite))&&Array.isArray(M)&&M.length===3&&M.every(finite3);
+    need(ok,'cuboid item');
+    const det=M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])-M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])+M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
+    need([0,1,2].every(i=>[0,1,2].every(j=>Math.abs(M[0][i]*M[0][j]+M[1][i]*M[1][j]+M[2][i]*M[2][j]-(i===j?1:0))<=1e-6))&&Math.abs(det-1)<=1e-6,'cuboid rotation must be proper orthonormal');
+  }
+  const s=g.support,m=scene.measurements;
+  need(object(s)&&Array.isArray(s.rows)&&s.count===s.rows.length&&s.rows.every((r,i)=>Number.isSafeInteger(r)&&r>=0&&r<m.count&&(i===0||r>s.rows[i-1])&&m.referenceEligible[r]===1&&
+    Number.isFinite(m.referencePositions[r*3])&&Number.isFinite(m.referencePositions[r*3+2])),'support rows must be ascending camera-eligible source rows');
+  need(keys(g.license,'attribution,changes,id,source')&&g.license.id==='CC-BY-NC-SA-4.0'&&['attribution','changes','source'].every(k=>text(g.license[k])),'license');
+  need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');
+}
+// The scene's descriptor {file,bytes,sha256} for ground.json and the catalog's caller pin {file,sha256} must agree.
+function validGroundDescriptor(descriptor,pin) {
+  const plain=v=>v!==null&&typeof v==='object'&&!Array.isArray(v);
+  return plain(descriptor)&&Object.keys(descriptor).sort().join()==='bytes,file,sha256'&&descriptor.file==='ground.json'&&
+    Number.isSafeInteger(descriptor.bytes)&&descriptor.bytes>0&&descriptor.bytes<=1024*1024&&typeof descriptor.sha256==='string'&&/^[a-f0-9]{64}$/.test(descriptor.sha256)&&
+    plain(pin)&&Object.keys(pin).sort().join()==='file,sha256'&&pin.file===descriptor.file&&pin.sha256===descriptor.sha256;
+}
+
 // suggestions: the catalog entry's {file,sha256} descriptor, or undefined when the entry has none.
-export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSignal,suggestions) {
+// ground: the catalog entry's {file,sha256} pin for a mapped-ground scene's ground.json, or undefined.
+export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSignal,suggestions,ground) {
   const controller=new AbortController(),signal=controller.signal,deadline=performance.now()+LOAD_TIMEOUT_MS;
   const abort=()=>controller.abort(callerSignal.reason);
   const interrupted=new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
@@ -63,12 +129,12 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSi
     return checkResponse(response,signal,deadline);
   };
   try {
-    return await Promise.race([loadSceneData(fetchScoped,id,expectedMetadataSha256,signal,deadline,suggestions),interrupted]);
+    return await Promise.race([loadSceneData(fetchScoped,id,expectedMetadataSha256,signal,deadline,suggestions,ground),interrupted]);
   }catch(error){controller.abort(error);throw error;}
   finally{clearTimeout(timer);callerSignal?.removeEventListener('abort',abort);}
 }
 
-async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,deadline,suggestions) {
+async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,deadline,suggestions,ground) {
   if(typeof id!=='string'||!/^[a-zA-Z0-9_-]+$/.test(id))throw new Error('Invalid scene identifier.');
   const hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s),
     digest=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),n=>n.toString(16).padStart(2,'0')).join('');
@@ -82,7 +148,11 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
   const indexed=Object.hasOwn(scene,'measurements'),measurement=scene.measurements,
     cameraOrigin=indexed?scene.transform?.cameraOrigin:scene.transform?.cameraOriginGround;
   if(indexed&&!hash(expectedMetadataSha256))throw new Error('Indexed scene requires a caller-pinned metadata checksum.');
-  if(indexed&&(measurement?.kind!=='indexedSparse'||measurement.evidence!=='geometricallyProjected'||measurement.groundPolicy!=='unvalidated'||
+  // 'unvalidated' stays read-only. 'mappedGround' needs a hash-pinned ground.json named by both the pinned scene and the catalog.
+  const mapped=indexed&&measurement?.groundPolicy==='mappedGround';
+  if(mapped?!validGroundDescriptor(measurement.ground,ground):ground!==undefined||(indexed&&Object.hasOwn(measurement??{},'ground')))
+    throw new Error('Invalid mapped ground descriptor.');
+  if(indexed&&(measurement?.kind!=='indexedSparse'||measurement.evidence!=='geometricallyProjected'||!['unvalidated','mappedGround'].includes(measurement.groundPolicy)||
     measurement.pixelCellPolicy!=='nearestIntegerCenterRejectCollisions'||measurement.binaryEncoding!=='littleEndian'||!integer(measurement.count)||measurement.count>1_000_000||scene.triangleCount!==0||
     scene.transform?.originRole!=='leftCamera'||!finite3(scene.transform.cityOrigin)||Object.hasOwn(scene.transform,'cameraOriginGround')||
     JSON.stringify(scene.transform.worldFromCity)!=='[[1,0,0],[0,0,1],[0,-1,0]]'||
@@ -178,6 +248,24 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
       scene.pixelRows[pixel]=scene.pixelRows[pixel]===-1?i:-2;
     }
     if(rendered!==scene.pointCount||min.some((n,k)=>n!==scene.bounds.min[k])||max.some((n,k)=>n!==scene.bounds.max[k]))throw new Error('Indexed render population or bounds mismatch.');
+    if(mapped) {
+      // Any failure rejects the whole scene: no read-only fallback and no partial ground.
+      const descriptor=measurement.ground,r=await fetchResource(base+descriptor.file);
+      if(!r.ok)throw new Error(`Mapped ground unavailable (${r.status}).`);
+      const bytes=await boundedBytes(r,descriptor.bytes,true,signal,deadline);
+      if(await digest(bytes)!==descriptor.sha256)throw new Error('Mapped ground checksum mismatch.');
+      let parsed;
+      try{parsed=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new Error('Invalid mapped ground: not UTF-8 JSON.');}
+      validateGround(parsed,scene);
+      const t=parsed.terrain,tr=await fetchResource(base+t.file);
+      if(!tr.ok)throw new Error(`Mapped ground terrain unavailable (${tr.status}).`);
+      const terrain=await boundedBytes(tr,t.bytes,true,signal,deadline);
+      if(await digest(terrain)!==t.sha256)throw new Error('Mapped ground terrain checksum mismatch.');
+      const heights=new Float32Array(terrain),finiteCells=heights.reduce((n,h)=>n+Number.isFinite(h),0);
+      if(heights.some(h=>!Number.isFinite(h)&&!Number.isNaN(h))||finiteCells!==t.finiteCells)throw new Error('Invalid mapped ground terrain values.');
+      scene.ground=parsed;scene.terrainHeights=heights;
+      scene.groundSupportXZ=Float64Array.from(parsed.support.rows.flatMap(row=>[measurement.referencePositions[row*3],measurement.referencePositions[row*3+2]]));
+    }
   }
   if(Object.hasOwn(scene,'reconstruction')) {
     const estimate=scene.reconstruction,hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
@@ -302,10 +390,17 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
     let raw;
     try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new Error('Invalid placement suggestions: not UTF-8 JSON.');}
     validateSuggestions(raw,scene);
+    const inputs=raw.inputs,metadataDigest=await digest(metadataBytes);
+    if(mapped) {
+      // Mapped suggestions name every pinned input they were computed from, including the frozen protocol.
+      if(inputs['scene.json']!==metadataDigest||inputs['ground.json']!==measurement.ground.sha256||inputs['terrain.bin']!==scene.ground.terrain.sha256||
+        inputs['recorded.png']!==scene.recordedImage.sha256||inputs['referencepositions.bin']!==measurement.artifactHashes.referencePositions||
+        inputs['referenceeligible.bin']!==measurement.artifactHashes.referenceEligible||inputs['protocol.json']!==scene.ground.protocol.sha256)
+        throw new Error('Placement suggestions were prepared from different scene inputs.');
     // recorded.jpg is a byte copy of the declared left source image (prepare-scene.py); this compares the file's
     // recorded input hash with scene.json's source hash, not the displayed image bytes themselves.
-    if(raw.inputs['scene.json']!==await digest(metadataBytes)||raw.inputs['depth.bin']!==scene.artifactHashes?.depth||
-      (scene.sourceHashes?.left!==undefined&&raw.inputs['recorded.jpg']!==scene.sourceHashes.left))
+    }else if(inputs['scene.json']!==metadataDigest||inputs['depth.bin']!==scene.artifactHashes?.depth||
+      (scene.sourceHashes?.left!==undefined&&inputs['recorded.jpg']!==scene.sourceHashes.left))
       throw new Error('Placement suggestions were prepared from different scene inputs.');
     scene.suggestions=raw;
   }

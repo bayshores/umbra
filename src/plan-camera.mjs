@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { whatIfBox } from './geometry.mjs';
 
 // Frame the entire allowed movement once, so dragging never moves the map.
 export function planCamera(scene, scenario, aspect) {
@@ -11,9 +12,14 @@ export function planCamera(scene, scenario, aspect) {
   if (scenario) {
     points.push(scenario.crossing, scenario.target, scene.camera.eye);
     points.push(scene.camera.eye.map((v, i) => v + axis.getComponent(i) * (scenario.limits.minimumDriverDistance - scenario.limits.captureDistance)));
-    for (const setback of [scenario.baselineSetback, 0, scenario.limits.maximumSetback]) {
-      for (const sign of [-1, 1]) for (const end of [0, scenario.vehicle.length]) {
-        points.push(scenario.crossing.map((v, i) => v + axis.getComponent(i) * (setback + end) + side.getComponent(i) * sign * scenario.vehicle.width / 2));
+    // Frame the corners of the boxes actually drawn: the current vehicle and the what-if at both ends of its movement
+    // (setback 0 to the maximum; it moves in a straight line, so every setback between is inside). geometry.mjs whatIfBox
+    // places each one: a declared box on its own line (on mapped scenes through its own front, not the crossing), an
+    // annotated pose with its own heading and size.
+    for (const b of [scenario.baseline, whatIfBox(scenario.whatIf, 0), whatIfBox(scenario.whatIf, scenario.limits.maximumSetback)]) {
+      const along = new THREE.Vector3(b.axis[0], 0, b.axis[2]).normalize(), across = new THREE.Vector3(along.z, 0, -along.x);
+      for (const sign of [-1, 1]) for (const end of [-1, 1]) {
+        points.push(b.center.map((v, i) => v + along.getComponent(i) * end * b.vehicle.length / 2 + across.getComponent(i) * sign * b.vehicle.width / 2));
       }
     }
   } else {

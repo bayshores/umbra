@@ -46,6 +46,9 @@ test('a complete suggestion validates through roadPoint and createScenario with 
   const scenario=createScenario(scene,setup.input);
   assert.equal(setup.input.pixels,setup.pixels);
   assert.equal(scenario.proposedSetback,scenario.baselineSetback);
+  // Measured-depth scenes have no annotated pose: current and what-if are the declared box on the crossing axis.
+  assert.deepEqual(scenario.proposed,scenario.baseline);
+  assert.deepEqual([scenario.proposed.pose,scenario.proposed.axis,scenario.proposed.vehicle],['declared',scenario.axis,scenario.vehicle]);
   assert.equal(setup.input.driverDistance,scenario.limits.captureDistance);
   // The nearest measured-road vehicle front lands within 0.1 m of the declared 20 ft default.
   assert.ok(Math.abs(scenario.baselineSetback-6.096)<.1,`baseline ${scenario.baselineSetback}`);
@@ -205,4 +208,43 @@ test('the prepared catalog suggestions load and open a valid comparison with no 
   assert.equal(setup.error,'');
   assert.deepEqual(Object.keys(setup.pixels).sort(),['crossing','parking','target']);
   createScenario(loaded,setup.input);
+});
+
+test('an optional crossCheck block (a second detector that agreed) validates like detection and is named in the hover text',async()=>{
+  // Test fixture: NV-Grounding-DINO as the detector with RF-DETR as its cross-check; hashes are placeholders.
+  const checked=()=>{
+    const raw=fixture();
+    raw.detection={status:'ran',model:'NV-Grounding-DINO',package:'nvidia/tao/grounding_dino',license:'NVIDIA Open Model License',weightsSha256:'c'.repeat(64),detectionsSha256:'d'.repeat(64),curbLaneParked:0};
+    raw.crossCheck={status:'ran',model:'RF-DETR Medium',package:'rfdetr 1.11.2',license:'Apache-2.0',weightsSha256:'b'.repeat(64),detectionsSha256:'e'.repeat(64),curbLaneParked:0};
+    raw.limitations=[...raw.limitations,'Vehicle detections were cross-checked against RF-DETR Medium; the two detectors\' scores are not calibrated against each other.'];
+    return raw;
+  };
+  const raw=checked();
+  assert.equal(validateSuggestions(raw,scene),raw);
+  const setup=suggestedSetup(scene,raw),status=suggestionStatus(raw,setup,{pixels:setup.pixels,vehicle:setup.vehicle,targetHeight:setup.targetHeight});
+  assert.deepEqual(status.parts.map(p=>p.text),['crosswalk detected ±0.5 m','SUV at 20 ft (default, no parked vehicle)','child 1.1 m (default)']);
+  assert.equal(status.parts[1].title,'No parked vehicle detected in the curb lane; 20 ft default. · cross-checked with RF-DETR Medium');
+  // Without a crossCheck the hover text is unchanged.
+  assert.equal(suggestionStatus(fixture(),suggestedSetup(scene,fixture()),{pixels:setup.pixels,vehicle:setup.vehicle,targetHeight:setup.targetHeight}).parts[1].title,fixture().vehicle.reason);
+  const cases={
+    'not run':r=>{r.crossCheck={status:'not-run'};},
+    'null':r=>{r.crossCheck=null;},
+    'without a primary run':r=>{r.detection={status:'not-run'};},
+    'missing weights':r=>{delete r.crossCheck.weightsSha256;},
+    'bad output hash':r=>{r.crossCheck.detectionsSha256='E'.repeat(64);},
+    'same detections file':r=>{r.crossCheck.detectionsSha256=r.detection.detectionsSha256;},
+    'negative parked count':r=>{r.crossCheck.curbLaneParked=-1;},
+    'extra field':r=>{r.crossCheck.timing=1.2;},
+    'missing model':r=>{r.crossCheck.model='';},
+  };
+  for(const [name,mutate] of Object.entries(cases)){const r=checked();mutate(r);assert.throws(()=>validateSuggestions(r,scene),/^Error: Invalid placement suggestions: /,name);}
+  for(const [mutate,message] of [[r=>{r.crossCheck.weightsSha256=r.detection.weightsSha256;},/crossCheck must come from different detector weights/],
+    [r=>{r.crossCheck.curbLaneParked=1;},/crossCheck must count the same curb-lane vehicles as detection/],
+    // Agreement means the same curbLaneParked count (the preparation script's own rule); different non-zero counts fail too.
+    [r=>{r.detection.curbLaneParked=2;r.crossCheck.curbLaneParked=1;},/crossCheck must count the same curb-lane vehicles as detection/]])
+    {const r=checked();mutate(r);assert.throws(()=>validateSuggestions(r,scene),message);}
+  const counts=checked();counts.detection.curbLaneParked=1;counts.crossCheck.curbLaneParked=1;
+  assert.equal(validateSuggestions(counts,scene),counts);
+  const bytes=encode(raw),loaded=await loadScene(serving(bytes),scene.id,undefined,undefined,{file:'suggestions.json',sha256:sha(bytes)});
+  assert.deepEqual(loaded.suggestions.crossCheck,raw.crossCheck);
 });

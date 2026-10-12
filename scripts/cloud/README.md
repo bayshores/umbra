@@ -209,3 +209,128 @@ query ownership, and missing ground evidence stays unvalidated. Ordinary draggin
 and comparisons remain local. Analytic transport and attachment tests establish
 these code paths, not genuine sponsor execution, provider output signatures,
 physical accuracy, usable crossing coverage or hackathon eligibility.
+
+## One NV-Grounding-DINO job (TAO 7.2.0 container)
+
+Status: this job never ran, and no NV-Grounding-DINO boxes, placements or
+other outputs exist. The tooling below was prepared and self-tested locally
+only. The one create attempt on October 12, 2026 was rejected by Nebius before
+any job or VM existed, so it cost nothing: a 65,282-byte image chunk plus
+encoding overhead went over the 65,536-byte (64 KiB) KMS plaintext limit. The
+job was then closed without running. The shipped suggestions use RF-DETR only.
+
+These three standard-library scripts prepare, run and check one NV-Grounding-DINO
+inference on the scene's `recorded.jpg`, as a single Nebius AI Cloud Serverless
+Job using NVIDIA's official TAO Toolkit 7.2.0 container, pinned by digest. None
+of them creates cloud resources, reads credentials or spends money. Only a
+separately approved coordinator submits the job, and it does so exactly once.
+The app never calls the model; it would only reuse saved boxes.
+
+- `prepare_nvdino_job.py` writes a new directory and refuses to overwrite one.
+  The directory holds the injected files, `plan.json`, `infer.yaml`,
+  `create-argv.json` and `prepared-manifest.json`. Every injected file must be
+  1 to 65,536 bytes. Known limitation: this guard is too loose. Nebius rejected
+  the 65,282-byte chunks because they exceed the 64 KiB KMS plaintext limit
+  once encoded, so a working job would need smaller chunks (the code is
+  unchanged). The image goes in as three pinned chunks. The weights
+  (2,070,860,191 bytes) and five BERT files are downloaded inside the job.
+  `infer.yaml` copies the `model:` block from NGC `experiment.yaml` (sha256
+  `b6c1f211…`) with two edits: `pretrained_backbone_path: null`, and
+  `text_encoder_type` nested under `model`. It has no `use_dn` override. The
+  prompt is `car . truck . bus . person .` and `conf_threshold` is 0.25. The
+  project id and SSH public key are passed as arguments and never stored in
+  this file.
+- `--retrieval-window {0,300}` (default 300) sets how long the wrapper waits
+  for the retrieval acknowledgement. 300 lets the coordinator copy the bundle
+  over SSH, and the log block stays as the second channel. 0 makes the log
+  block the only channel. Use 0 when port 22 cannot be reached, so the job
+  does not wait for an acknowledgement that cannot arrive and then end as
+  FAILED. The value is recorded in `plan.json` (`retrieval`), in the job
+  arguments, in `create-argv.json` and in the manifest. The plan's
+  `limits.retrievalWindowSeconds` stays 300 because it is the wrapper's
+  maximum.
+- Container command. The docs describe `--container-command` as the container
+  entrypoint and `--args` as the arguments passed to it. The TAO image's own
+  entrypoint, `/opt/nvidia/nvidia_entrypoint.sh`, runs NVIDIA's container
+  start-up and then runs its arguments. Naming that same script as the command,
+  with `python3 -B /workload/input/run_nvdino_job.py ...` as the arguments,
+  keeps that start-up however the two are combined. A bare `python3` would skip
+  it, and an empty command would fall back to the image CMD, which starts a TAO
+  microservice. The arguments contain no quotes, so splitting them on
+  whitespace always gives the same argv.
+- `run_nvdino_job.py` runs inside the job. It must stay under 64 KiB.
+  - It refuses to run without `--execute`. It checks the plan's sha256 and every
+    injected file, rebuilds the image and checks its sha256.
+  - Before any download it checks that `/workload` is writable, that there is
+    enough free disk, `nvidia-smi`, and a small `torch.cuda` operation. It also
+    requires `TELEMETRY_OPT_OUT=yes` and that weights-only loading is not
+    overridden.
+  - It checks the spec's `log_scale: auto`, `class_embed_bias: True`, null
+    backbone path and local BERT folder.
+  - It downloads each pinned file once over https, with size and sha256 checks.
+    The time limits are 900 s for the weights and 300 s for BERT. There are no
+    retries.
+  - It runs `grounding_dino inference` once (900 s limit) with
+    `TELEMETRY_OPT_OUT=yes HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1`.
+  - It parses TAO's label lines strictly. TAO keeps the top 100 (box, label)
+    pairs without merging them, so lines with identical printed coordinates
+    count as one box. The highest score keeps its label. A tie goes to the
+    earlier caption, then the earlier line. The other labels are recorded as
+    `mergedLabels`.
+  - It writes exactly `plan.json`, `infer.yaml`, `labels.txt`, `annotated.jpg`,
+    `boxes.json`, `env.json`, `tao-stdout.log` (at most 1 MiB) and
+    `job-result.json` (at most 8 MiB in total). It then prints `boxes.json`,
+    `labels.txt` and `job-result.json` as numbered base64 lines with a sha256,
+    as a second retrieval channel through `ai job logs`.
+  - It waits up to the prepared retrieval window (300 s, or none at all when
+    prepared with `--retrieval-window 0`) for the empty acknowledgement file
+    `/output/.<submission-id>-retrieved`. The whole wrapper is limited to
+    1,800 s.
+  - Any failure prints one `NVDINO-JOB-FAILED step=<step>` line and exits
+    non-zero.
+- `consume_nvdino_result.py` accepts either the retrieved bundle or a saved log
+  block.
+  - The bundle must contain exactly the allowlisted files, total at most 8 MiB,
+    and match its hashes.
+  - It checks both against the prepared plan's sha256 and the submission id. It
+    parses the labels again, applies the duplicate rule again, and requires the
+    result to equal `boxes.json`.
+  - It writes `nvdino-boxes.json` (kind `sightline-external-boxes`) and refuses
+    to overwrite it. That file holds the boxes, the model block and
+    provenance, and no timings.
+  - Test-only plans are refused unless `--allow-test` is passed.
+
+`scripts/detect-vehicles.py --boxes <nvdino-boxes.json> --output <file>` puts
+those boxes through the existing measured-depth placement and curb-lane rules.
+The output carries the supplied model block (NV-Grounding-DINO, NGC version,
+weights sha256, NVIDIA Open Model License) and no timings.
+`scripts/suggest-placements.py --detections <nv-dino> --cross-check <rf-detr>`
+records the preferred detector as `detection` and the second one as
+`crossCheck`, using the same fields. Each block records a `curbLaneParked`
+count: the eligible curb-lane candidates between the camera and the crossing,
+decided by the same rule `detect-vehicles.py` uses (car, truck or bus, score
+0.5 or higher, measured lower point inside the curb lane). Both detections
+files must use the same curb-lane rule and measured curb. If the two counts
+differ, the script writes nothing and exits non-zero, so a person decides
+which detector sets the suggestion.
+
+License notes:
+
+- NV-Grounding-DINO is licensed by NVIDIA Corporation under the NVIDIA Open
+  Model License.
+- The TAO container is NVIDIA software under the NVIDIA Software License
+  Agreement and the Product-Specific Terms. It is not redistributed.
+- BERT (`google-bert/bert-base-uncased`) is Apache-2.0.
+- NVIDIA's terms forbid publishing benchmark or performance results. TAO
+  timings, performance data and NV-DINO-vs-RF-DETR comparison numbers therefore
+  stay in private records. Only boxes and placements may be published.
+- The result covers one frame with no ground truth, so it makes no accuracy
+  claim. The two detectors' scores are not calibrated against each other.
+
+Offline tests use a fake `grounding_dino`, `nvidia-smi` and `torch`, plus tiny
+test-pinned files served over `file://`. They exercise the real wrapper path,
+not NVIDIA software or the model:
+
+```sh
+python3 -m unittest discover -s tests/cloud -p 'test_*.py'
+```

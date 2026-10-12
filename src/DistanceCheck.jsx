@@ -18,7 +18,8 @@ function segments(rows) {
   return out;
 }
 
-export default function DistanceCheck({results,vehicle,setback,disabled,reveal,onRevealed,onApply}) {
+// codeNote: false on mapped-ground scenes, whose current vehicle is a stationary annotated vehicle (no parking reference).
+export default function DistanceCheck({results,vehicle,setback,codeNote=true,disabled,reveal,onRevealed,onApply}) {
   const panel=useRef(null);
   // A finished check brings the panel into view once; focus stays on the control that started it.
   useEffect(()=>{
@@ -44,6 +45,6 @@ export default function DistanceCheck({results,vehicle,setback,disabled,reveal,o
         <span className="distance-result distance-marks">{sweepMarks(r)}</span>
       </button>;
     })}</div>
-    <p className="distance-note">20 ft: California Vehicle Code §22500(n) parking distance near crosswalks, reference only</p>
+    {codeNote&&<p className="distance-note">20 ft: California Vehicle Code §22500(n) parking distance near crosswalks, reference only</p>}
   </section>;
 }
