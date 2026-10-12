@@ -80,7 +80,7 @@ function addVehicle(center, dimensions, axis, group, baseline = false) {
   return fill;
 }
 
-export default function StreetView({ scene, scenario, preview, eye, mode = 'driver', split = .5, onSetbackChange, onError }) {
+export default function StreetView({ scene, scenario, preview, eye, mode = 'driver', split = .5, baselineLabel = 'Current vehicle', onSetbackChange, onError }) {
   const host = useRef(null), api = useRef(null), labels = useRef({}), latest = useRef(null);
   latest.current = { scene, scenario, preview, eye, mode, split, onSetbackChange, onError };
 
@@ -289,7 +289,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
   }, [split]);
 
   const tags = scenario && mode === 'plan' ? [
-    ['baseline', 'Current vehicle', Truck],
+    ['baseline', baselineLabel, Truck],
     ['proposed', 'Proposed vehicle', Truck],
     ['target', 'Person', PersonSimple],
   ] : [];

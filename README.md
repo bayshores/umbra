@@ -1,6 +1,6 @@
 # Sightline
 
-A local, single-workspace parking visibility comparison using real DrivingStereo images, sparse reference-depth data and an explicitly estimated NVIDIA reconstruction. The runtime contains no procedural street, preset actor coordinates, built-in actor dimension tables, fabricated unknown volume, or demo response. Dimensions suggested by the optional NVIDIA Nemotron assistant appear as declared, editable what-if values. Missing assets and invalid inputs stop the comparison explicitly.
+A local, single-workspace parking visibility comparison using real DrivingStereo images, sparse reference-depth data and an explicitly estimated NVIDIA reconstruction. The runtime contains no procedural street, built-in actor dimension tables, fabricated unknown volume, or demo response. A scene may ship a prepared, hash-pinned `suggestions.json` that pre-places the crossing, vehicle and person; each suggestion is labeled detected or declared default and stays editable. Dimensions suggested by the optional NVIDIA Nemotron assistant also appear as declared, editable what-if values. Missing assets and invalid inputs stop the comparison explicitly.
 
 ## Run and verify
 
@@ -25,9 +25,27 @@ Enter vehicle width, height and length, and target height in meters. These descr
 
 Placements retain their selected measured 3D coordinates, including local height, rather than flattening them onto the estimated road plane. The vehicle's front midpoint and person's foot therefore remain registered to their selected pixels at the recorded camera. Parking distances and movement use a horizontal axis; the proposed vehicle keeps the measured starting height. This is a declared pose, not validated contact across the vehicle footprint or tracking of terrain at its proposed position. Pixel registration does not establish physical depth accuracy.
 
+## Automatic placement suggestions
+
+When a scene ships `suggestions.json`, it opens already set up in the comparison view. The status line under the header says what was suggested and where it came from, for example `Suggested · crosswalk detected ±0.5 m · SUV at 20 ft (default, no parked vehicle) · child 1.1 m (default)`. Choose Edit placements, then click the image, use the arrow keys or type pixel values to move a point, and type to change sizes; drag or type to move the proposed vehicle. Edited items lose their Suggested label, and Reset to suggested restores the prepared setup.
+
+The suggestions are prepared once per scene, never guessed at runtime:
+
+- `scripts/suggest-placements.py` (numpy and Pillow, the preparation environment) finds the right curb as the measured road-to-sidewalk height step and the zebra crosswalk as periodic bright bars on a bird's-eye view resampled on the depth-registered ground plane. The crossing point sits on the crosswalk's near edge in the curb-side lane, with about ±0.5 m uncertainty along the road because the sparse reference depth clusters about 1 m apart at that distance.
+- `scripts/detect-vehicles.py` runs RF-DETR Medium (`rfdetr==1.11.2`, Apache-2.0, weights sha256 `749ff6071828aaffac63e204c4f4135ed3d6cdae4d702e086c360edc3b5768c8`) on the recorded image and records cars, trucks and buses with their measured-depth ground positions; `suggest-placements.py` then keeps only those parked in the curb lane between the camera and the crossing. Install its pinned environment from `scripts/requirements-detection.txt` in a separate virtual environment.
+- When no parked vehicle is detected, the vehicle is a declared default SUV (1.9 × 1.8 × 4.9 m) 20 ft (6.096 m) from the crossing, the distance California Vehicle Code §22500(n) uses near crosswalks. The person is a declared default child target (1.1 m) at the curb end of the crossing. Defaults are data in `suggestions.json`, not code, and are always labeled.
+- Every suggested pixel must have measured depth and pass the same road-surface check as a click; anything that cannot be established is written as unknown and left unplaced. The loader verifies the catalog's sha256 for `suggestions.json` and its recorded input hashes before applying it.
+
+```sh
+.local/venv-detect/bin/python -I scripts/detect-vehicles.py public/scenes/<scene-id>
+.local/venv-preparation/bin/python -I scripts/suggest-placements.py public/scenes/<scene-id> --detections public/scenes/<scene-id>/detections.json
+```
+
+The suggestion script writes the catalog entry's `suggestions` hash and refuses to overwrite an existing file unless `--replace` is given. Its unit tests run with `.local/venv-preparation/bin/python -I -B -m unittest discover -s tests -p 'test_suggest_placements.py'`. These suggestions were checked on one scene against a hand test annotation, not against independent ground truth.
+
 ## NVIDIA Nemotron assistant (Nebius Token Factory)
 
-After you place the crossing, vehicle and person, the assistant row under the header accepts a plain-English what-if, such as "box truck 10 ft back, child". NVIDIA Nemotron 3.5 Lightning, called at runtime through the Nebius Token Factory chat API with tool calling, declares the vehicle size, person height and distance. Sightline applies them to the normal fields and computes Blocked or Unknown with its own geometry. Nemotron then writes a short answer from those computed results.
+Once the crossing, vehicle and person are placed (by suggestion or by hand), the assistant row under the header accepts a plain-English what-if, such as "box truck 10 ft back, child". NVIDIA Nemotron 3.5 Lightning, called at runtime through the Nebius Token Factory chat API with tool calling, declares the vehicle size, person height and distance. Sightline applies them to the normal fields and computes Blocked or Unknown with its own geometry. Nemotron then writes a short answer from those computed results.
 
 Check distances asks Nemotron to pick your vehicle plus up to three common parked vehicle types. Sightline tests each one locally at every 0.25 m of setback and shows where the declared vehicle stops blocking the line from the driver eye to the person's height point. The 15 ft and 20 ft marks are shown as reference. California Vehicle Code §22500(n) uses 20 ft for parking near crosswalks. Sightline does not decide legal compliance. Click a row to apply that vehicle and distance.
 

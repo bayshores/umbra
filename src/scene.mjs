@@ -1,3 +1,5 @@
+import { validateSuggestions } from './suggestions.mjs';
+
 const LOAD_TIMEOUT_MS=30_000;
 const timeoutError=()=>new Error('Scene loading exceeded 30 seconds. Retry loading to try again.');
 function checkActive(signal,deadline) {
@@ -47,7 +49,8 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
-export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSignal) {
+// suggestions: the catalog entry's {file,sha256} descriptor, or undefined when the entry has none.
+export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSignal,suggestions) {
   const controller=new AbortController(),signal=controller.signal,deadline=performance.now()+LOAD_TIMEOUT_MS;
   const abort=()=>controller.abort(callerSignal.reason);
   const interrupted=new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}));
@@ -60,12 +63,12 @@ export async function loadScene(fetchResource,id,expectedMetadataSha256,callerSi
     return checkResponse(response,signal,deadline);
   };
   try {
-    return await Promise.race([loadSceneData(fetchScoped,id,expectedMetadataSha256,signal,deadline),interrupted]);
+    return await Promise.race([loadSceneData(fetchScoped,id,expectedMetadataSha256,signal,deadline,suggestions),interrupted]);
   }catch(error){controller.abort(error);throw error;}
   finally{clearTimeout(timer);callerSignal?.removeEventListener('abort',abort);}
 }
 
-async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,deadline) {
+async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,deadline,suggestions) {
   if(typeof id!=='string'||!/^[a-zA-Z0-9_-]+$/.test(id))throw new Error('Invalid scene identifier.');
   const hash=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s),
     digest=async bytes=>Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes)),n=>n.toString(16).padStart(2,'0')).join('');
@@ -287,6 +290,24 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
       !estimate.colors.every(n=>Number.isFinite(n)&&n>=0&&n<=1)||!estimate.triangles.every(n=>n<estimate.pointCount)||
       !estimate.positions.every((n,i)=>n>=estimate.bounds.min[i%3]-2e-5&&n<=estimate.bounds.max[i%3]+2e-5)||!matchingBounds(estimate.positions,estimate.bounds))
       throw new Error('Invalid estimated reconstruction buffers.');
+  }
+  if(suggestions!==undefined) {
+    // Prepared placement suggestions are a pinned scene asset: a bad, missing or stale file fails the load.
+    if(suggestions===null||typeof suggestions!=='object'||Object.keys(suggestions).sort().join()!=='file,sha256'||
+      typeof suggestions.file!=='string'||!/^[a-z][a-z0-9-]*\.json$/.test(suggestions.file)||!hash(suggestions.sha256))
+      throw new Error('Invalid placement suggestions descriptor.');
+    const r=await fetchResource(base+suggestions.file);if(!r.ok)throw new Error(`Placement suggestions unavailable (${r.status}).`);
+    const bytes=await boundedBytes(r,64*1024,false,signal,deadline);
+    if(await digest(bytes)!==suggestions.sha256)throw new Error('Placement suggestions checksum mismatch.');
+    let raw;
+    try{raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new Error('Invalid placement suggestions: not UTF-8 JSON.');}
+    validateSuggestions(raw,scene);
+    // recorded.jpg is a byte copy of the declared left source image (prepare-scene.py); this compares the file's
+    // recorded input hash with scene.json's source hash, not the displayed image bytes themselves.
+    if(raw.inputs['scene.json']!==await digest(metadataBytes)||raw.inputs['depth.bin']!==scene.artifactHashes?.depth||
+      (scene.sourceHashes?.left!==undefined&&raw.inputs['recorded.jpg']!==scene.sourceHashes.left))
+      throw new Error('Placement suggestions were prepared from different scene inputs.');
+    scene.suggestions=raw;
   }
   checkActive(signal,deadline);
   return scene;

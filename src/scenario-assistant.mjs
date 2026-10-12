@@ -37,7 +37,7 @@ const FORBIDDEN=[/\bclear(?:ly|ed|er|est|ance|s)?\b/i,/\b(?:in|non-?)?visib\w*/i
   /\b(?:is|are|stays?|remains?|becomes?)\s+open\b/i,/\bun(?:obstructed|blocked|impeded|hindered)\b/i,
   /\bnothing\s+(?:blocks|obstructs|is\s+in\s+the\s+way)\b/i,/\bno\s+(?:obstructions?|blockage)\b/i,
   /\b(?:obstruction|obstacle|blockage)s?[-\s]*free\b/i,/\bfield\s+of\s+view\b/i,/\b(?:within|out\s+of)\s+(?:the\s+)?(?:driver'?s?\s+)?(?:view|sight)\b/i,
-  /\blines?\s+of\s+sight\b/i,/\bnothing\s+in\s+the\s+way\b/i,/\bin\s+the\s+open\b/i,/\b(?:appears?|appeared|appearing)\b/i,
+  /\blines?\s+of\s+sight\b(?![^.;]*\bblocked\b)/i,/\bnothing\s+in\s+the\s+way\b/i,/\bin\s+the\s+open\b/i,/\b(?:appears?|appeared|appearing)\b/i,
   /\b(?:restored|unaffected)\b/i,/\b(?:is|are)\s+free\b/i,/\b(?:fine|ok|okay|good|safe)\s+to\s+park\b/i,/\bcan\s+(?:still\s+)?park\b/i,/\bfree\s+(?:of|from)\s+(?:any\s+)?(?:obstruct|obstacl|block)\w*/i,
   /(?:\bnot|n't|\bnever|\bno\s+longer)\s+(?:be\s+|being\s+|been\s+)?blocked\b(?!\s+by\s+the\s+vehicle\b)/i];
 const withheld=text=>FORBIDDEN.map(p=>text.match(p)).find(Boolean)?.[0];
@@ -242,6 +242,12 @@ export function runTool(scene,mode,w,name,args) {
     const res=applyDeclaration(scene,w.pixels,w.input,args);
     if(res.error)return {error:res.error};
     const d=res.declared,v=res.input.vehicle,before=w.input?.vehicle??w.vehicle;
+    // Small models tend to copy the on-screen size for a newly named vehicle type; ask once per run for that type's size.
+    const prior=typeof w.vehicleLabel==='string'?w.vehicleLabel.trim().toLowerCase():'';
+    if(w.run&&!w.run.sizeChecked&&prior&&d.vehicleLabel.trim().toLowerCase()!==prior&&DIMS.every(k=>Number(before?.[k])===v[k])) {
+      w.run.sizeChecked=true;
+      return {error:`Those are the ${w.vehicleLabel}'s dimensions. Declare typical dimensions for a ${d.vehicleLabel}, or repeat the call if the user gave these sizes.`};
+    }
     return {result:res.facts,facts:res.facts,input:res.input,
       fields:{vehicle:{width:String(v.width),height:String(v.height),length:String(v.length)},targetHeight:String(res.input.targetHeight)},
       parts:[vehiclePart(d.vehicleLabel,d.vehicle),{key:'person',text:`${d.targetLabel} ${fmt(d.targetHeight)} m`,value:d.targetHeight},

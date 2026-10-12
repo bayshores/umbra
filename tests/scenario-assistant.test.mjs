@@ -405,3 +405,20 @@ test('the distance check always includes the vehicle on screen',()=>{
   assert.deepEqual(ask.sweep.results.map(r=>r.label),['SUV']);
 });
 
+test('a newly named vehicle that copies the on-screen size is sent back once per run',()=>{
+  const p=placementFromPixels(scene,input.pixels),from={...input,vehicle:{width:1.9,height:1.8,length:4.9},targetHeight:1.1,proposedSetback:p.baselineSetback,driverDistance:p.captureDistance};
+  const args={vehicle_label:'delivery van',vehicle_width_m:1.9,vehicle_height_m:1.8,vehicle_length_m:4.9,target_label:'child',target_height_m:1.1};
+  const run={},w={pixels:input.pixels,input:from,vehicle:from.vehicle,vehicleLabel:'SUV',run};
+  assert.match(runTool(scene,'ask',w,'declare_scenario',args).error,/typical dimensions for a delivery van/);
+  assert.equal(runTool(scene,'ask',w,'declare_scenario',args).error,undefined);
+  const same={...args,vehicle_label:'SUV'};
+  assert.equal(runTool(scene,'ask',{...w,run:{}},'declare_scenario',same).error,undefined);
+  assert.equal(runTool(scene,'ask',{...w,run:{},vehicleLabel:null},'declare_scenario',args).error,undefined);
+});
+
+test('line of sight is allowed only when the clause says it is blocked',()=>{
+  assert.equal(checkAnswer("The line of sight from the driver's eye to the child is blocked at the current setback of 6.15 m.",[6.15]).ok,true);
+  for(const claim of ['The driver has a line of sight to the child.','The line of sight to the child is restored.','Line of sight: fine. The van is blocked.'])
+    assert.equal(checkAnswer(claim,[]).ok,false,claim);
+});
+
