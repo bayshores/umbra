@@ -26,8 +26,23 @@ per-site evidence frozen in split.json. A held-out, control or reserve log runs 
 protocol-lock.json beside split.json (the M6 lock: it must name the split sha256, this builder protocol sha256 and the
 same code hashes) whose own sha256 is given as --protocol-lock-sha256; everything is checked before any of that log's
 files is opened.
+
+Builder version 4 (a development-only candidate for the M6 lock; the protocol's builderVersion selects the rules, and a
+version 3 protocol runs the version 3 rules unchanged):
+  * current vehicle - a near-crossing stationary cluster also qualifies at a frame where the split rule's pose test
+                      (ahead > 2 m within 31 deg, between ego and crossing, right side) holds at THAT frame's ego pose,
+                      not only at the 20 m reference pose; the split rule itself and its cross-check are unchanged;
+  * default spot    - when no vehicle qualifies and a real annotated vehicle occupies the declared default footprint,
+                      the frame is Unknown ('a real vehicle occupies the default spot', recorded); a site whose window
+                      has only such frames (and other infeasible ones) is reported Unknown instead of no-feasible-frame;
+  * frame target    - a protocol parameter (measure, target distance, minimum anchor distance); one frozen protocol
+                      file carries named variants (--protocol-variant), e.g. v4-12 (the v3 order) and v4-18.5 (the
+                      app's capture distance along the lane, every anchor at least 12 m from the camera);
+  * freeze guards   - scripts/rectified_calibration.py is hashed, imported modules must come from the hashed files,
+                      and the held-out lock sits at one fixed path and must name the variant and an approval.
 """
 import argparse
+import copy
 import hashlib
 import importlib.util
 import inspect
@@ -57,16 +72,30 @@ ground_tool = suggest_tool.ground_tool  # the prepare_av2_ground module instance
 # v2: ego-lane chord must lie within 20 deg of the ego heading (v1 let a turn lane win).
 # v3: freeze guards (frozen code hashes, pinned split and placement protocol, split-evidence cross-check, lock-gated
 #     held-out mode) and --sensor-dir; no selection rule changed.
-BUILDER_VERSION = 3
+# v4: candidate-frame vehicle eligibility, Unknown when a real vehicle occupies the default spot, frame target as a
+#     protocol parameter with named variants, rectified_calibration.py hashed, module origins checked, fixed lock path.
+#     A protocol with builderVersion 3 runs the v3 rules and writes the v3 outputs (only this file's own hash differs).
+BUILDER_VERSION = 4  # the newest version this file runs
+SUPPORTED_VERSIONS = (3, 4)
 MAX_FILE = 16_000_000
 S3 = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 SIDES = ('left', 'right')
 SENSOR_ROLES = ('left', 'right', 'lidar')
 LOCK_NAME = 'protocol-lock.json'  # the M6 lock, beside split.json (.local/evaluation/pao-accuracy/protocol-lock.json)
+# v4: the lock is read from this one path, whatever --split names (audit: a lock beside a scratch split copy passed).
+LOCK_PATH_V4 = REPO / '.local/evaluation/pao-accuracy' / LOCK_NAME
 # Every code file that runs when the builder runs (repository-relative). The frozen protocol must name each one's sha256.
-RUNTIME_CODE = ('scripts/california/build_av2_scene.py', 'scripts/california/prepare_av2.py', 'scripts/california/prepare_av2_ground.py',
-                'scripts/california/suggest_av2_placements.py', 'scripts/remap_support.py', 'scripts/sponsors/common.py',
-                'scripts/prepare-stereo-crop.py')
+RUNTIME_CODE_V3 = ('scripts/california/build_av2_scene.py', 'scripts/california/prepare_av2.py', 'scripts/california/prepare_av2_ground.py',
+                   'scripts/california/suggest_av2_placements.py', 'scripts/remap_support.py', 'scripts/sponsors/common.py',
+                   'scripts/prepare-stereo-crop.py')
+# v4 adds rectified_calibration.py (imported by prepare-stereo-crop.py when the output is published; audit finding).
+RUNTIME_CODE = RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',)
+RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE}
+# v4: modules imported by name must be the hashed files (a same-named file earlier on sys.path would run unhashed code).
+MODULE_FILES = {'common': 'scripts/sponsors/common.py', 'prepare_av2': 'scripts/california/prepare_av2.py',
+                'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py'}
+OCCUPIED = 'unknown-real-vehicle-occupies-default-spot'
+OCCUPIED_REASON = 'a real vehicle occupies the default spot'
 # Every number the rules use. The frozen builder protocol must carry exactly this object (checked at run time),
 # so the code and the frozen protocol cannot drift apart.
 PARAMETERS = {
@@ -86,44 +115,123 @@ PARAMETERS = {
     # from its frozen record by up to half of that on each axis.
     'splitCheck': {'cityXYToleranceM': 0.05},
 }
+PARAMETERS_V3 = PARAMETERS
+# v4 frame target (the only parameter block a v4 protocol may choose; every other v4 parameter equals v3):
+#   measure framesNearEdgeFromEgoOrigin - the frozen frames.py near edge (ego origin to the nearer edge-vertex mean,
+#                                          along the ego yaw), rounded; the v3 order when targetM is 12;
+#   measure captureDistanceAlongLane    - the app's captureDistance: the crossing anchor (near edge on the current
+#                                          vehicle centre line) forward of the left camera along the ego-lane chord;
+#   minAnchorDistanceM                  - null, or every anchor (crossing, vehicle front, person) at least this far
+#                                          (horizontal) from the left camera, else the frame is not feasible.
+FRAME_MEASURES = ('framesNearEdgeFromEgoOrigin', 'captureDistanceAlongLane')
+V4_VARIANTS = {
+    'v4-12': {'measure': 'framesNearEdgeFromEgoOrigin', 'targetM': 12.0, 'roundingDecimals': 2, 'minAnchorDistanceM': None},
+    'v4-18.5': {'measure': 'captureDistanceAlongLane', 'targetM': 18.5, 'roundingDecimals': 2, 'minAnchorDistanceM': 12.0},
+}
+
+
+def v4_parameters(target):
+    """The full v4 parameter object for one frame target: the v3 parameters with frame.nearEdgeTargetM replaced by the
+    frame.target block (validated). Raises ValueError for a malformed target."""
+    params = copy.deepcopy(PARAMETERS_V3); frame = params['frame']; del frame['nearEdgeTargetM']
+    require(isinstance(target, dict) and set(target) == {'measure', 'targetM', 'roundingDecimals', 'minAnchorDistanceM'},
+            'v4 frame target needs exactly measure, targetM, roundingDecimals and minAnchorDistanceM')
+    require(target['measure'] in FRAME_MEASURES, 'Unknown v4 frame target measure')
+    require(type(target['targetM']) is float and math.isfinite(target['targetM']) and
+            frame['windowMinM'] <= target['targetM'] <= frame['windowMaxM'], 'v4 frame target must lie inside the frame window')
+    require(type(target['roundingDecimals']) is int and 0 <= target['roundingDecimals'] <= 6, 'v4 rounding must be 0-6 decimals')
+    mad = target['minAnchorDistanceM']
+    require(mad is None or (type(mad) is float and math.isfinite(mad) and 0 <= mad <= 30), 'v4 minimum anchor distance must be null or 0-30 m')
+    frame['target'] = copy.deepcopy(target)
+    return params
 
 
 def _sha(path):
     return digest(Path(path).read_bytes())
 
 
-def runtime_code_hashes():
-    """sha256 of every runtime code file, by repository-relative path (what the frozen protocol must name)."""
-    return {name: _sha(REPO / name) for name in RUNTIME_CODE}
+def runtime_code_hashes(version=BUILDER_VERSION):
+    """sha256 of every runtime code file of a builder version, by repository-relative path (what its frozen protocol
+    must name)."""
+    return {name: _sha(REPO / name) for name in RUNTIME_CODE_BY_VERSION[version]}
 
 
 # ------------------------------------------------------------------ freeze guards
-def check_frozen_protocol(protocol, split_sha, placement_sha):
-    """The frozen builder protocol (already read by its pinned sha256) must match this code exactly: parameters,
-    builder version, every runtime code hash on disk, the split it was frozen against and the placement protocol."""
-    require(protocol.get('parameters') == PARAMETERS and protocol.get('builderVersion') == BUILDER_VERSION,
+def protocol_rules(protocol, variant):
+    """(version, parameters) of the frozen builder protocol: version 3 carries exactly PARAMETERS_V3 (no variant);
+    version 4 carries named variants (parametersByVariant) and --protocol-variant picks one."""
+    version = protocol.get('builderVersion')
+    require(version in SUPPORTED_VERSIONS, f'Builder protocol version must be one of {SUPPORTED_VERSIONS}')
+    if version == 3:
+        require(variant is None, 'A builder version 3 protocol has no variants')
+        require(protocol.get('parameters') == PARAMETERS_V3, 'Builder protocol parameters differ from this builder')
+        return version, PARAMETERS_V3
+    variants = protocol.get('parametersByVariant')
+    require(isinstance(variants, dict) and variants and 'parameters' not in protocol, 'A builder version 4 protocol needs parametersByVariant')
+    require(isinstance(variant, str) and variant in variants,
+            'Choose one of the protocol variants with --protocol-variant: ' + ', '.join(sorted(variants)))
+    params = variants[variant]
+    require(isinstance(params, dict) and params == v4_parameters((params.get('frame') or {}).get('target')),
             'Builder protocol parameters differ from this builder')
+    return version, params
+
+
+def check_frozen_protocol(protocol, split_sha, placement_sha, variant=None):
+    """The frozen builder protocol (already read by its pinned sha256) must match this code exactly: parameters,
+    builder version, every runtime code hash on disk, the split it was frozen against and the placement protocol.
+    Returns (version, parameters)."""
+    version, params = protocol_rules(protocol, variant)
     code = protocol.get('code')
-    require(isinstance(code, dict) and set(code) == set(RUNTIME_CODE), 'Builder protocol must name the sha256 of every runtime code file')
-    changed = sorted(name for name, value in runtime_code_hashes().items() if code[name] != value)
+    require(isinstance(code, dict) and set(code) == set(RUNTIME_CODE_BY_VERSION[version]),
+            'Builder protocol must name the sha256 of every runtime code file')
+    changed = sorted(name for name, value in runtime_code_hashes(version).items() if code[name] != value)
     require(not changed, 'Frozen code hash mismatch (a code change needs a new builder protocol version): ' + ', '.join(changed))
     require((protocol.get('split') or {}).get('sha256') == split_sha, 'Builder protocol was frozen against another split.json')
     require((protocol.get('placementProtocol') or {}).get('sha256') == placement_sha,
             'Placement protocol sha256 differs from the one pinned in the builder protocol')
+    if version >= 4:
+        check_module_origins()
+    return version, params
 
 
-def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code):
-    """M7 only. protocol-lock.json beside split.json, read by its pinned sha256, must name this split, this builder
-    protocol and the same runtime code hashes. Called before any held-out, control or reserve log file is opened."""
-    path = Path(split_path).resolve().parent / LOCK_NAME
+def check_module_origins():
+    """v4: every module the builder imports by name, and the two shared scripts it loads by path, are the hashed
+    repository files (a same-named file earlier on sys.path would otherwise run code no protocol names).
+    rectified_calibration is imported only when the output is published, by prepare-stereo-crop.py right after
+    common.load_script puts scripts/ first on sys.path; if it is already loaded it must be the hashed file."""
+    loaded = {name: getattr(sys.modules.get(name), '__file__', None) for name in MODULE_FILES}
+    loaded['suggest_av2_placements (by path)'] = suggest_tool.__file__; loaded['prepare_av2_ground (by path)'] = ground_tool.__file__
+    expected = {**MODULE_FILES, 'suggest_av2_placements (by path)': 'scripts/california/suggest_av2_placements.py',
+                'prepare_av2_ground (by path)': 'scripts/california/prepare_av2_ground.py'}
+    for name, path in loaded.items():
+        if path is None and name == 'rectified_calibration':
+            continue
+        require(path is not None and Path(path).resolve() == (REPO / expected[name]).resolve(),
+                f'Module {name} was loaded from {path}, not from the hashed {expected[name]}')
+
+
+def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code, version=3, variant=None):
+    """M7 only. protocol-lock.json, read by its pinned sha256, must name this split, this builder protocol and the
+    same runtime code hashes. Called before any held-out, control or reserve log file is opened.
+    v3: the lock beside split.json. v4: the lock at LOCK_PATH_V4 only, which must also name the variant
+    (sceneBuilder.variant) and an approval block (approval.by and approval.utc, non-empty strings)."""
+    path = Path(split_path).resolve().parent / LOCK_NAME if version == 3 else LOCK_PATH_V4
     require(isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256),
             f'Held-out runs need --protocol-lock-sha256 (the sha256 of {LOCK_NAME} recorded at the M6 lock)')
-    require(path.is_file(), f'Held-out runs need {LOCK_NAME} beside split.json (written at the M6 lock); it does not exist')
+    if version == 3:
+        require(path.is_file(), f'Held-out runs need {LOCK_NAME} beside split.json (written at the M6 lock); it does not exist')
+    else:
+        require(path.is_file(), f'Held-out runs need {LOCK_NAME} at {path} (written at the M6 lock); it does not exist')
     lock = parse(snapshot(path, lock_sha256))
     builder = lock.get('sceneBuilder') if isinstance(lock.get('sceneBuilder'), dict) else {}
     require((lock.get('split') or {}).get('sha256') == split_sha, f'{LOCK_NAME} does not name this split.json sha256')
     require(builder.get('protocolSha256') == protocol_sha, f'{LOCK_NAME} does not name this builder protocol sha256')
     require(builder.get('code') == code, f'{LOCK_NAME} does not name the same runtime code hashes')
+    if version >= 4:
+        require(builder.get('variant') == variant, f'{LOCK_NAME} does not name this builder protocol variant')
+        approval = lock.get('approval') if isinstance(lock.get('approval'), dict) else {}
+        require(all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('by', 'utc')),
+                f'{LOCK_NAME} needs an approval block (approval.by and approval.utc)')
     return {'path': str(path), 'sha256': lock_sha256}
 
 
@@ -288,6 +396,26 @@ def site_vehicles(poses, edges, clusters, params):
     return {'view': view_out, 'referencePose': reference}, rows, None
 
 
+def frame_vehicle_rows(poses, t, centroid, rows, params):
+    """v4 rule 1: the split rule's pose test (ahead > 2 m within 31 deg, 0 < forward < crossing forward + 2 m, lateral
+    < -1.5 m) evaluated at the ego pose of camera frame t, for the near-crossing stationary clusters of site_vehicles
+    (category, stationary, near-crossing and view-overlap criteria unchanged). Same arithmetic as relgeom.py."""
+    i = poses['index'][t]; xy, yw = poses['xy'][i], poses['yaw'][i]
+    rel = np.asarray(centroid, float) - xy; fc = rel[0] * math.cos(yw) + rel[1] * math.sin(yw)
+    out = []
+    for r in rows:
+        p = np.asarray(r['cityXY'], float) - xy; f = p[0] * math.cos(yw) + p[1] * math.sin(yw); lat = -p[0] * math.sin(yw) + p[1] * math.cos(yw)
+        in_view = f > params['minForwardM'] and abs(math.degrees(math.atan2(lat, f))) < params['viewHalfAngleDeg']
+        between = 0 < f < fc + params['betweenMarginM']
+        side = 'right' if lat < params['rightLateralM'] else ('left' if lat > -params['rightLateralM'] else 'ego-lane')
+        out.append({'cityXY': r['cityXY'], 'tracks': r['tracks'], 'category': r['category'],
+                    'atFrame': {'vehFwdM': float(f), 'vehLatM': float(lat), 'bearingDeg': float(math.degrees(math.atan2(lat, f))),
+                                'crossingFwdM': float(fc), 'inStereoFov': bool(in_view), 'betweenEgoAndCrossing': bool(between), 'side': side},
+                    'matchesAtReferencePose': r['matchesSelectionRule'],
+                    'matchesAtFrame': bool(in_view and between and side == 'right')})
+    return out
+
+
 # ------------------------------------------------------------------ frozen frame window (frames.py)
 def frame_window(poses, edges, left, right, lidar, params):
     """frames.py: camera frames whose nearer crossing edge (edge-vertex mean, ego-origin forward) is 8-25 m ahead
@@ -315,8 +443,27 @@ def frame_window(poses, edges, left, right, lidar, params):
         rounded = float(round(np.float64(near), params['nearRoundingDecimals']))
         window.append({'cameraTimestampNs': t, 'lidarTimestampNs': sweep, 'lidarMinusCameraMs': (sweep - t) / 1e6,
                        'nearEdgeM': rounded, 'nearEdgeName': ('edge1', 'edge2')[j], 'nearEdgeBearingDeg': bs[j]})
-    window.sort(key=lambda w: (abs(w['nearEdgeM'] - params['nearEdgeTargetM']), w['cameraTimestampNs']))
+    if 'nearEdgeTargetM' in params:  # v3
+        window.sort(key=lambda w: (abs(w['nearEdgeM'] - params['nearEdgeTargetM']), w['cameraTimestampNs']))
+    elif params['target']['measure'] == 'framesNearEdgeFromEgoOrigin':  # v4: the same order with the protocol's target
+        target = params['target']
+        window.sort(key=lambda w: (abs(round(w['nearEdgeM'], target['roundingDecimals']) - target['targetM']), w['cameraTimestampNs']))
+    else:  # v4 captureDistanceAlongLane: ordered after evaluation (target_order); time order until then
+        window.sort(key=lambda w: w['cameraTimestampNs'])
     return window, excluded
+
+
+def target_order(evaluated, target):
+    """v4 order of evaluated frames for a captureDistanceAlongLane target: |round(captureDistanceM) - targetM|, then
+    timestamp; frames without a capture distance (they failed before a crossing anchor existed) come last, in time
+    order. For framesNearEdgeFromEgoOrigin the window order already is the target order."""
+    if target['measure'] != 'captureDistanceAlongLane':
+        return list(evaluated)
+    def key(e):
+        d = e.get('captureDistanceM')
+        return (0, abs(round(d, target['roundingDecimals']) - target['targetM']), int(e['cameraTimestampNs'])) if d is not None else \
+            (1, 0.0, int(e['cameraTimestampNs']))
+    return sorted(evaluated, key=key)
 
 
 # ------------------------------------------------------------------ calibration and rectification (prepare_av2.py)
@@ -420,6 +567,33 @@ def choose_lane(lanes_world, heading_xz, max_heading_deg):
              'lane': item[1]} for item in found]
 
 
+def occupant_record(c, chosen, geo, ctx, rows_at_frame):
+    """v4 rule 2 record: an annotated object inside the declared default footprint, and why it is not the current vehicle."""
+    track = c['track']; vehicle = c['category'] in PARAMETERS['vehicle']['splitCategories']
+    row = next((r for r in rows_at_frame if track in r['tracks']), None)
+    dims = ctx['placementProtocol']['declaredDefaults']['vehicle']['dimensions']
+    rel = np.asarray(c['center'], float)[[0, 2]] - (np.asarray(chosen['front'], float) - dims['length'] / 2 * geo.a)
+    rec = {'track': track, 'category': c['category'], 'vehicleCategory': vehicle, 'inStationaryCluster': track in ctx['clusterTracks'],
+           'nearCrossingStationaryCluster': row is not None,
+           'centreFromDefaultCentreM': {'alongLane': float(rel @ geo.a), 'right': float(rel @ geo.r)},
+           'dimensionsM': {k: float(c[k]) for k in ('length', 'width')}}
+    if not vehicle:
+        rec['whyNotQualifying'] = ['not a vehicle category']
+    elif row is None:
+        rec['whyNotQualifying'] = ['not a stationary annotated vehicle cluster within 12 m of the crossing (split rule)']
+    else:
+        at = row['atFrame']; why = []
+        if not at['inStereoFov']:
+            why.append(f"outside the split rule's stereo view at this frame (forward {at['vehFwdM']:.2f} m, bearing {at['bearingDeg']:.1f} deg)")
+        if not at['betweenEgoAndCrossing']:
+            why.append('not between the ego and the crossing at this frame')
+        if at['side'] != 'right':
+            why.append(f"{at['side']} side at this frame")
+        rec.update({'matchesAtReferencePose': row['matchesAtReferencePose'], 'matchesAtFrame': row['matchesAtFrame'], 'atFrame': at,
+                    'whyNotQualifying': why or ['qualifies at this frame']})
+    return rec
+
+
 def front_face(box):
     m = np.asarray(box['worldFromBox'], float); c = np.asarray(box['center'], float)
     return [c + m @ np.array([box['length'] / 2, sw * box['width'] / 2, sh * box['height'] / 2]) for sw in (-1, 1) for sh in (-1, 1)]
@@ -467,9 +641,18 @@ def evaluate_frame(frame, ctx, site_tracks):
             out['reasons'].append('No curb proxy on the near edge right of the ego lane.')
         return out
     curb_point = start + s * eu
+    v4 = ctx.get('version', 3) >= 4
     # Current vehicle: the site's selection-rule tracks that pass the placement protocol checks at this sweep.
+    # v4 (rule 1): plus the near-crossing stationary clusters whose split-rule pose test holds at this frame.
+    qualifying = site_tracks
+    if v4:
+        rows_at_frame = frame_vehicle_rows(poses, t, ctx['viewCentroid'], ctx['siteRows'], PARAMETERS['vehicle'])
+        frame_tracks = sorted({track for r in rows_at_frame if r['matchesAtFrame'] for track in r['tracks']})
+        qualifying = sorted(set(site_tracks) | set(frame_tracks))
+        out['vehicleRuleAtFrame'] = {'referencePoseTracks': sorted(site_tracks), 'frameTracks': frame_tracks, 'qualifyingTracks': qualifying,
+                                     'rows': rows_at_frame}
     defaults = ctx['placementProtocol']['declaredDefaults']; vehicle = None; checks = {}
-    present = sorted(track for track in site_tracks if any(c['track'] == track for c in cuboids))
+    present = sorted(track for track in qualifying if any(c['track'] == track for c in cuboids))
     for track in present:
         try:
             averaged = ground_tool.cuboids_from_annotations(ctx['annotationsData'], poses['rigid'], sweep, origin, average_prefix=track)
@@ -481,6 +664,8 @@ def evaluate_frame(frame, ctx, site_tracks):
         if v is not None and (vehicle is None or (v['gap'], track) < (vehicle['gap'], vehicle['box']['track'])):
             vehicle = v; cuboids = averaged
     out['vehicleChecks'] = {'siteTracks': sorted(site_tracks), 'presentAtSweep': present, 'failures': checks}
+    if v4 and qualifying and vehicle is None:
+        out['reasons'].append('No qualifying stationary vehicle passes the placement protocol checks at this sweep.'); return out
     if site_tracks and vehicle is None:
         out['reasons'].append('No selection-rule vehicle passes the placement protocol checks at this sweep.'); return out
     if vehicle is not None:
@@ -500,17 +685,34 @@ def evaluate_frame(frame, ctx, site_tracks):
         if chosen is not None:
             dims = defaults['vehicle']['dimensions']; side = np.array([-geo.a[1], geo.a[0]])
             footprint = {'center': chosen['front'] - dims['length'] / 2 * geo.a, 'axes': [geo.a, side], 'half': [dims['length'] / 2, dims['width'] / 2]}
+            occupants = []
             for c in cuboids:
                 h = suggest_tool.unit(np.asarray(c['worldFromBox'], float)[[0, 2], 0])
                 other = {'center': np.asarray(c['center'], float)[[0, 2]], 'axes': [h, np.array([-h[1], h[0]])], 'half': [c['length'] / 2, c['width'] / 2]}
                 if suggest_tool.rectangles_overlap(footprint, other):
-                    chosen, reason = None, f"Annotated {c['category']} occupies the declared default footprint."
-                    break
+                    occupants.append(c)
+                    if not v4:
+                        break
+            if v4 and occupants:
+                out['defaultSpotOccupants'] = [occupant_record(c, chosen, geo, ctx, rows_at_frame) for c in occupants]
+            real = [c for c in occupants if c['category'] in PARAMETERS['vehicle']['splitCategories']]
+            if v4 and real:  # rule 2: a real vehicle in the default spot that does not qualify -> Unknown, recorded
+                out['captureDistanceM'] = float(np.asarray(chosen['crossing']) @ geo.a)
+                out['outcome'] = OCCUPIED; out['result'] = {'state': 'Unknown', 'reason': OCCUPIED_REASON}
+                out['reasons'].append(f"Unknown: {OCCUPIED_REASON} (annotated {', '.join(sorted({c['category'] for c in real}))}, "
+                                      f"tracks {', '.join(c['track'][:8] for c in real)}; no vehicle qualifies at this frame).")
+                return out
+            if occupants:
+                chosen, reason = None, f"Annotated {occupants[0]['category']} occupies the declared default footprint."
         if chosen is None:
             out['reasons'].append(reason or 'Declared default vehicle unavailable.'); return out
         crossing_xz = chosen['crossing']; front_xz = chosen['front']
         out['currentVehicle'] = {'status': 'declared-default', 'reason': 'No stationary vehicle matches the frozen split selection rule.'}
+        if v4:
+            out['currentVehicle']['reason'] = 'No stationary vehicle qualifies (split rule at the reference pose or at this frame).'
         face = None
+    if v4:  # the app's captureDistance: crossing anchor forward of the left camera along the ego-lane chord
+        out['captureDistanceM'] = float(np.asarray(crossing_xz) @ geo.a)
     person_xz = curb_point - defaults['person']['curbOffsetMeters'] * eu
     anchors = {}
     for name, xz in (('crossing', crossing_xz), ('vehicleFront', front_xz), ('person', person_xz)):
@@ -520,6 +722,13 @@ def evaluate_frame(frame, ctx, site_tracks):
         anchors[name] = np.array([xz[0], float(h) - origin[2], xz[1]])
         if math.hypot(xz[0], xz[1]) > ctx['rangeLimit']:
             out['reasons'].append(f"The {name} anchor is beyond the {ctx['rangeLimit']:g} m placement range."); return out
+    if v4:
+        out['anchorDistancesM'] = {n: float(math.hypot(a[0], a[2])) for n, a in anchors.items()}
+        minimum = ctx['target']['minAnchorDistanceM']
+        close = [n for n, d in out['anchorDistancesM'].items() if minimum is not None and d < minimum]
+        if close:
+            out['reasons'].append(f'Anchor closer than the {minimum:g} m minimum to the camera: ' +
+                                  ', '.join(f"{n} {out['anchorDistancesM'][n]:.2f} m" for n in close)); return out
     extents = {'personTop': anchors['person'] + [0, defaults['person']['heightMeters'], 0]}
     if face is None:  # declared default: front face of the default box on the lane axis
         dims = defaults['vehicle']['dimensions']; f0 = anchors['vehicleFront']; side = np.array([geo.r[0], 0, geo.r[1]])
@@ -662,13 +871,14 @@ def build(args):
     protocol_raw = snapshot(args.protocol, args.protocol_sha256); protocol = parse(protocol_raw)  # pinned literal sha256
     split_raw = snapshot(args.split, max_bytes=1_000_000); lock = parse(snapshot(args.split_lock))
     require(digest(split_raw) == lock['sha256'], 'split.json differs from split.lock.json')
-    check_frozen_protocol(protocol, digest(split_raw), args.placement_protocol_sha256)
+    variant = getattr(args, 'protocol_variant', None)
+    version, params = check_frozen_protocol(protocol, digest(split_raw), args.placement_protocol_sha256, variant)
     split = parse(split_raw)
     log, crossing = args.log_id, args.crossing_id
     require(str(UUID(log)) == log and re.fullmatch('[0-9]+', crossing), 'Canonical log UUID and decimal crossing id required')
     site, lock_record = site_entry(split, log, crossing, args.held_out_run,  # before any log file is opened
                                    lambda: check_protocol_lock(args.split, args.protocol_lock_sha256, digest(split_raw),
-                                                               args.protocol_sha256, protocol['code']))
+                                                               args.protocol_sha256, protocol['code'], version, variant))
     placement_raw = snapshot(args.placement_protocol, args.placement_protocol_sha256); placement = parse(placement_raw)
     require(placement.get('protocolVersion') == 3 and placement['currentVehicle']['pose']['rule'] == 'averageAllAnnotations'
             and placement['pixelSelection']['rule'] == 'exactProjection', 'Placement protocol v3 (averaged pose, exact projection) required')
@@ -717,7 +927,7 @@ def build(args):
         cross_check['status'] = 'no-evidence-development-site'
     else:
         cross_check['status'] = 'mismatch'
-    window, excluded = frame_window(poses, edges, listings['left'], listings['right'], listings['lidar'], PARAMETERS['frame'])
+    window, excluded = frame_window(poses, edges, listings['left'], listings['right'], listings['lidar'], params['frame'])
     if args.diagnostic_camera_timestamp is not None:
         forced = [w for w in window if w['cameraTimestampNs'] == args.diagnostic_camera_timestamp]
         require(forced, 'Diagnostic frame is not in the frozen frame window')
@@ -728,19 +938,28 @@ def build(args):
         order = []
     ctx = {'poses': poses, 'rect': rect, 'edges': edges, 'drivable': drivable, 'lanes': lanes, 'annotationsData': ann_raw,
            'placementProtocol': placement, 'epsilon': epsilon, 'rangeLimit': range_limit, 'maxRange': max_range, 'terrain': None}
+    if version >= 4:
+        ctx.update({'version': version, 'target': params['frame']['target'], 'siteRows': site_rows,
+                    'viewCentroid': np.nanmean(np.vstack([edges['edge1'], edges['edge2']])[:, :2], 0),  # analyze.py centroid
+                    'clusterTracks': {track for cl in clusters for track in cl['tracks']}})
     evaluated = []
     for frame in order:
         origin = (poses['rigid'][frame['cameraTimestampNs']] @ rect['egoFromLeft'])[:3, 3] if frame['cameraTimestampNs'] in poses['rigid'] else np.zeros(3)
         ctx['terrain'] = ground_tool.Terrain(raster, 0, 0, raster.shape, sim2, origin)
         evaluated.append(evaluate_frame(frame, ctx, site_tracks))
+    if version >= 4:
+        evaluated = target_order(evaluated, params['frame']['target'])
+        for rank, e in enumerate(evaluated, 1):
+            e['rankInTargetOrder'] = rank
+            e.setdefault('outcome', 'feasible' if e['feasible'] else 'infeasible')
     chosen = next((e for e in evaluated if e['feasible']), None)
     files = {}
     selection = {
         'schemaVersion': 1, 'kind': 'av2SceneBuilderSelection',
         'mode': 'diagnostic-forced-frame' if args.diagnostic_camera_timestamp is not None else 'rule',
         'site': {'logId': log, 'crossingId': crossing, 'role': site['role']},
-        'builder': {'script': 'scripts/california/build_av2_scene.py', 'sha256': _sha(__file__), 'version': BUILDER_VERSION,
-                    'runtimeCode': runtime_code_hashes(), 'runtimeCodeMatchesFrozenProtocol': True,
+        'builder': {'script': 'scripts/california/build_av2_scene.py', 'sha256': _sha(__file__), 'version': version,
+                    'runtimeCode': runtime_code_hashes(version), 'runtimeCodeMatchesFrozenProtocol': True,
                     # Module attributes, not package metadata: opencv-python-headless/contrib or a missing dist-info
                     # must not stop a finished run.
                     'python': sys.version.split()[0],
@@ -768,18 +987,43 @@ def build(args):
                         'Anchors follow placement protocol v3: the current vehicle is the average of all its annotations; the '
                         'crossing point lies on its centre line; the person is 0.30 m inside the curb proxy on the near edge.',
                         'Stationary means only that the annotation stayed in place; no reason for stopping is stated or implied.']}
+    if version >= 4:
+        v4_selection_fields(selection, params, variant, window, evaluated)
     if cross_check['status'] == 'mismatch':
         selection['status'] = 'split-rule-mismatch'
     elif chosen is None:
         selection['status'] = 'no-feasible-frame' if window else 'no-frame-in-window'
+        occupied = [e for e in evaluated if e.get('outcome') == OCCUPIED]
+        if version >= 4 and occupied:  # rule 2: the site is reported Unknown with the reason, never silently dropped
+            first = occupied[0]
+            selection['status'] = OCCUPIED
+            selection['result'] = {'state': 'Unknown', 'reason': OCCUPIED_REASON,
+                                   'reportedFrame': {'cameraTimestampNs': str(first['cameraTimestampNs']), 'lidarTimestampNs': str(first['lidarTimestampNs']),
+                                                     'nearEdgeM': first['nearEdgeM'], 'captureDistanceM': first.get('captureDistanceM'),
+                                                     'rankInTargetOrder': first['rankInTargetOrder']},
+                                   'occupants': first.get('defaultSpotOccupants'), 'framesWithThisOutcome': len(occupied),
+                                   'note': 'No window frame is feasible; the first frame in target order with this outcome is reported. '
+                                           'No plan is written: a declared default would overlap a real vehicle.'}
     else:
         sources, missing = find_sources(log_dir, args.map_dir or [], log, chosen['cameraTimestampNs'], chosen['lidarTimestampNs'],
                                         args.license, listings, args.sensor_dir or [])
         vehicle = chosen['currentVehicle']
         selection['chosen'] = {'cameraTimestampNs': str(chosen['cameraTimestampNs']), 'lidarTimestampNs': str(chosen['lidarTimestampNs']),
                                'nearEdgeM': chosen['nearEdgeM'],
-                               'rankInWindow': [w['cameraTimestampNs'] for w in window].index(chosen['cameraTimestampNs']) + 1,
+                               'rankInWindow': chosen['rankInTargetOrder'] if version >= 4 else
+                               [w['cameraTimestampNs'] for w in window].index(chosen['cameraTimestampNs']) + 1,
                                'egoLaneId': chosen['egoLaneId'], 'crop': chosen['crop'], 'currentVehicle': vehicle}
+        if version >= 4:
+            selection['chosen'].update({'captureDistanceM': chosen['captureDistanceM'], 'anchorDistancesM': chosen['anchorDistancesM'],
+                                        'vehicleRuleAtFrame': {k: chosen['vehicleRuleAtFrame'][k] for k in
+                                                               ('referencePoseTracks', 'frameTracks', 'qualifyingTracks')}})
+            before = evaluated[:chosen['rankInTargetOrder'] - 1]
+            selection['framesBeforeChosen'] = {'count': len(before),
+                                               'outcomes': {o: sum(e['outcome'] == o for e in before) for o in sorted({e['outcome'] for e in before})},
+                                               'firstDefaultSpotOccupied': next(({'cameraTimestampNs': str(e['cameraTimestampNs']),
+                                                                                  'rankInTargetOrder': e['rankInTargetOrder'],
+                                                                                  'captureDistanceM': e.get('captureDistanceM')}
+                                                                                 for e in before if e['outcome'] == OCCUPIED), None)}
         selection['protocolSceneValues'] = {
             'scene': {'logId': log, 'cameraTimestampNs': str(chosen['cameraTimestampNs']), 'lidarTimestampNs': str(chosen['lidarTimestampNs']),
                       'annotationTimestampNs': str(chosen['lidarTimestampNs']), 'crossingId': crossing,
@@ -804,6 +1048,39 @@ def build(args):
     return selection
 
 
+def v4_selection_fields(selection, params, variant, window, evaluated):
+    """v4 additions to selection.json: the variant and frame target, the frames.py 12 m choice (diagnostic; it is the
+    split.json listingCandidateFrame), the first frame in target order and the v4 limitations."""
+    target = params['frame']['target']
+    selection['builder']['variant'] = variant
+    first12 = min(window, key=lambda w: (abs(w['nearEdgeM'] - 12.0), w['cameraTimestampNs'])) if window else None
+    selection['frameWindow'] = {'candidates': len(window), 'excluded': selection['frameWindow']['excluded'], 'target': target,
+                                'order': ('window order (frames.py near edge vs targetM, then time)' if target['measure'] == 'framesNearEdgeFromEgoOrigin'
+                                          else '|round(captureDistanceM) - targetM|, then time; frames without a crossing anchor last'),
+                                'framesPy12mChoice': None if first12 is None else {**first12, 'cameraTimestampNs': str(first12['cameraTimestampNs']),
+                                                                                    'lidarTimestampNs': str(first12['lidarTimestampNs'])}}
+    selection['firstInTargetOrder'] = None if not evaluated else {
+        'cameraTimestampNs': str(evaluated[0]['cameraTimestampNs']), 'outcome': evaluated[0]['outcome'],
+        'captureDistanceM': evaluated[0].get('captureDistanceM'), 'nearEdgeM': evaluated[0]['nearEdgeM'], 'reasons': evaluated[0]['reasons']}
+    measure = ('the frozen frames.py near edge (ego-vehicle origin to the mean of the nearer edge polyline), not the camera along the lane'
+               if target['measure'] == 'framesNearEdgeFromEgoOrigin' else
+               "the app's captureDistance: the crossing anchor (near edge on the current vehicle centre line) forward of the left camera "
+               'along the ego-lane chord')
+    selection['limitations'] = [
+        'Choices use metadata only (poses, calibration, map, ground raster, annotations, public listings); images and '
+        'LiDAR are hashed into the plan, never inspected to choose.',
+        f"Variant {variant}: the {target['targetM']:g} m frame target is measured as {measure}"
+        + ('' if target['minAnchorDistanceM'] is None else f"; every anchor must be at least {target['minAnchorDistanceM']:g} m from the camera") + '.',
+        'The driver eye is the recording camera, so the frame target also sets the first-load driver distance.',
+        'Current vehicle (builder v4): a near-crossing stationary cluster qualifies at a frame when the split rule pose test holds at '
+        'the 20 m reference pose or at that frame; the split rule and its cross-check against split.json are unchanged.',
+        'A frame where no vehicle qualifies and a real annotated vehicle occupies the declared default footprint is Unknown '
+        f'({OCCUPIED_REASON}); it is never built as a declared-default scene.',
+        'Anchors follow placement protocol v3: the current vehicle is the average of all its annotations; the '
+        'crossing point lies on its centre line; the person is 0.30 m inside the curb proxy on the near edge.',
+        'Stationary means only that the annotation stayed in place; no reason for stopping is stated or implied.']
+
+
 def _jsonable(value):
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -825,6 +1102,7 @@ def main():
     parser.add_argument('--sensor-dir', action='append',
                         help='Extra directory (publisher layout sensors/...) searched for the chosen images and LiDAR sweep')
     parser.add_argument('--diagnostic-camera-timestamp', type=int, help='Diagnostic only: evaluate the rules at this window frame')
+    parser.add_argument('--protocol-variant', help='Builder version 4 only: the frozen protocol variant to run (e.g. v4-12, v4-18.5)')
     parser.add_argument('--held-out-run', action='store_true', help='M7 only: needs protocol-lock.json beside split.json')
     parser.add_argument('--protocol-lock-sha256', help='M7 only: sha256 of protocol-lock.json recorded at the M6 lock')
     args = parser.parse_args()
@@ -833,9 +1111,13 @@ def main():
     except (ValueError, OSError, KeyError, TypeError) as error:
         parser.exit(1, f'AV2 scene builder rejected: {error}\n')
     chosen = selection['chosen'] or {}
-    print(canonical({'status': selection['status'], 'mode': selection['mode'], 'camera': chosen.get('cameraTimestampNs'),
-                     'crop': chosen.get('crop'), 'lane': chosen.get('egoLaneId'),
-                     'vehicle': (chosen.get('currentVehicle') or {}).get('track'), 'missing': len(selection['missingSources'])}).decode())
+    summary = {'status': selection['status'], 'mode': selection['mode'], 'camera': chosen.get('cameraTimestampNs'),
+               'crop': chosen.get('crop'), 'lane': chosen.get('egoLaneId'),
+               'vehicle': (chosen.get('currentVehicle') or {}).get('track'), 'missing': len(selection['missingSources'])}
+    if selection['builder']['version'] >= 4:
+        summary.update({'variant': selection['builder']['variant'], 'captureDistanceM': chosen.get('captureDistanceM'),
+                        'result': (selection.get('result') or {}).get('state')})
+    print(canonical(summary).decode())
 
 
 if __name__ == '__main__':
