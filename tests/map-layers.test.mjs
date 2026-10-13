@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {markStyle,footprint,mapLayers,rulerDots,rulerPoint,setbackAt} from '../src/map-layers.mjs';
+import {markStyle,footprint,mapLayers,rulerDots,rulerPoint,setbackAt,approachDistance} from '../src/map-layers.mjs';
 import {GLYPHS,dotLayout} from '../src/dot-matrix.mjs';
 import {createScenario} from '../src/geometry.mjs';
 import {setbackSweep} from '../src/scenario-assistant.mjs';
@@ -79,6 +79,18 @@ test('map layers: ruler colours only checked distances, each from the nearest ch
   assert.ok(rulerDots(synthetic(),[]).every(d=>d.state===null));
 });
 
+test('approach replay: the driver moves from far to exactly near, never back, slowing down, within the limits',()=>{
+  const far=17.4412,closest=.2187,steps=50,d=Array.from({length:steps+1},(_,i)=>approachDistance(i,steps,far,closest));
+  near(d[0],far,.005,'first step');
+  assert.equal(d.at(-1),closest,'the last step is the nearest allowed distance');
+  assert.equal(approachDistance(steps+3,steps,far,closest),closest);
+  d.forEach((v,i)=>{
+    assert.ok(v>=closest&&v<=far,`step ${i}: ${v} m`);
+    if(i)assert.ok(v<=d[i-1],`step ${i} moves nearer`);
+  });
+  assert.ok(d[0]-d[1]>d[steps-1]-d[steps],'faster at the start than at the end');
+});
+
 test('dot lettering: every glyph is a 7-row grid and the on-screen words are fully lettered',()=>{
   for(const [ch,rows] of Object.entries(GLYPHS)) {
     assert.equal(rows.length,7,ch);
@@ -96,6 +108,15 @@ test('dot lettering: every glyph is a 7-row grid and the on-screen words are ful
 
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
 const skip=devDataPresent()?false:'AV2 8c development data is local-only and not present';
+
+test('approach replay on AV2 8c: every step is a valid comparison from the recorded position to the nearest',{skip},async()=>{
+  const {scene}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions),s=createScenario(scene,setup.input);
+  const {captureDistance:far,minimumDriverDistance:near}=s.limits;
+  for(let i=0;i<=50;i++){
+    const driverDistance=approachDistance(i,50,far,near),step=createScenario(scene,{...setup.input,driverDistance});
+    assert.equal(step.driverDistance,driverDistance);
+  }
+});
 
 test('map layers on AV2 8c: real map layers and a ruler that agrees with the comparison',{skip},async()=>{
   const {scene}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions),s=createScenario(scene,setup.input);

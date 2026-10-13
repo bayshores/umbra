@@ -84,3 +84,11 @@ export function setbackAt(scenario, point) {
   const d = sub(point, f.origin);
   return d[0] * f.axis[0] + d[2] * f.axis[2];
 }
+
+// The approach replay's driver distance at `step` of `steps`: from `far` (step 0) to exactly `near` (the last step),
+// slowing towards the end like a car nearing a crossing. Rounded to centimetres and kept within [near, far].
+export function approachDistance(step, steps, far, near) {
+  if (step >= steps) return near;
+  const t = step / steps, d = far + (near - far) * (1 - (1 - t) ** 2);
+  return Math.min(far, Math.max(near, Math.round(d * 100) / 100));
+}

@@ -64,7 +64,11 @@ figure { margin:0; }
 .place-name { color:var(--muted); font-size:13px; }
 .place-select { max-width:220px; padding:2px 0; border-radius:0; background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
 .place-select option { color:#111; }
-.stage .stage-switch { position:absolute; z-index:6; left:16px; bottom:16px; }
+.stage-controls { position:absolute; z-index:6; left:16px; bottom:16px; display:flex; align-items:center; gap:8px; }
+.approach-replay { display:inline-flex; align-self:stretch; align-items:center; gap:6px; padding:7px 11px 7px 9px; border-radius:11px; background:rgba(6,7,22,.8); color:var(--muted); font-size:12px; font-weight:600; line-height:1; }
+.stage-controls .approach-replay:hover:not(:disabled) { background:rgba(6,7,22,.8); color:var(--text); }
+/* The chat's Distance check while the approach replay plays (App.jsx): it describes the position that comes back. */
+.distance-paused { opacity:.45; transition:opacity .2s ease; }
 .stage-credits { position:absolute; z-index:6; right:18px; bottom:14px; max-width:48%; }
 .stage-credits .credits { justify-content:flex-end; text-align:right; }
 .map-tick { position:absolute; z-index:3; color:var(--muted); font-size:11px; white-space:nowrap; pointer-events:none; padding:3px 7px; background:radial-gradient(closest-side,rgba(6,7,22,.92) 55%,rgba(6,7,22,0)); text-shadow:0 0 3px #060716,0 0 6px #060716; }

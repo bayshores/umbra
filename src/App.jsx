@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { RoadHorizon, Cube, PersonSimple, CrosshairSimple, XCircle, ArrowCounterClockwise, CaretDown } from '@phosphor-icons/react';
+import { RoadHorizon, Cube, PersonSimple, CrosshairSimple, XCircle, ArrowCounterClockwise, CaretDown, Play, Stop } from '@phosphor-icons/react';
 import '@fontsource/overpass-mono/400.css';
 import '@fontsource/overpass-mono/600.css';
 import '@fontsource/overpass-mono/700.css';
@@ -8,6 +8,8 @@ import AssistantBar from './AssistantBar.jsx';
 import DistanceCheck, { sweepText } from './DistanceCheck.jsx';
 import Bloop from './Bloop.jsx';
 import DotText from './DotText.jsx';
+import { useReducedMotion } from './motion.mjs';
+import { approachDistance } from './map-layers.mjs';
 import { roadPoint, comparisonStart, placementPreview, createScenario, isMappedGround, mappedGroundHit, annotatedVehicle } from './geometry.mjs';
 import { runTool, scenarioFacts, supportFacts, checkAnswer, allowedNumbersFrom, withheldNote, declaredLine, vehiclePart, sameVehicle, dims } from './scenario-assistant.mjs';
 import { runAssistant } from './nemotron-client.mjs';
@@ -59,6 +61,11 @@ function imagePixel(event,scene) {
 // Opened details may sit below the visible part of a scrolling case column; bring them into view once, when they open.
 const revealOnOpen=el=>{ el?.scrollIntoView({block:'nearest'}); };
 
+// Approach replay: REPLAY_STEPS driver positions over REPLAY_MS, then the last one stays for REPLAY_HOLD_MS.
+const REPLAY_MS=5000,REPLAY_HOLD_MS=800,REPLAY_STEPS=50,REPLAY_STEP_MS=REPLAY_MS/REPLAY_STEPS;
+// Input that stops the replay, except keys that only move focus or modify another key.
+const REPLAY_STOPS=['pointerdown','keydown','click','change'],REPLAY_KEEP_KEYS=['Tab','Shift','Control','Alt','Meta'];
+
 // One screen per case: the same camera and scene, with only that case's vehicle drawn (split 1 = current, 0 = proposed).
 function CaseView({scene,scenario,which,name,onError}) {
   const result=which==='current'?scenario.currentVisibility:scenario.proposedVisibility;
@@ -108,6 +115,9 @@ export function App() {
   const labelOf=a=>a.key==='parking'?BASELINE[baselineKind(pixels,vehicle,vehicleDeclared)][2]:a.label;
   // runRef: the one in-flight Nemotron run. work: latest scenario values for synchronous tool calls during a run.
   const runRef=useRef(null),work=useRef({});
+  // replay: the approach replay while it plays ({from: the comparison input it replaces until it ends, far and near:
+  // the driver distances it moves between}). stopReplay ends the one playing.
+  const [replay,setReplay]=useState(null),stopReplay=useRef(null),reduced=useReducedMotion();
   useEffect(()=>{
     let live=true;
     fetch('/scenes/index.json').then(async r=>{if(!r.ok)throw new Error('Scene catalog unavailable ('+r.status+').');return r.json();})
@@ -118,7 +128,7 @@ export function App() {
   useEffect(()=>{
     if(!sceneId||!catalog)return;
     let live=true;const controller=new AbortController();setScene(null);setInput(null);setPixels({});setEditing(true);setActive('crossing');setCursor(['','']);setMessage('');setFatal('');
-    runRef.current=null;setRunning(null);setReply(null);setSweep(null);setDeclared([]);setVehicleDeclared(false);setSuggestion(null);setMessages([]);
+    runRef.current=null;setRunning(null);setReply(null);setSweep(null);setDeclared([]);setVehicleDeclared(false);setSuggestion(null);setMessages([]);setReplay(null);
     const entry=catalog.find(entry=>entry.id===sceneId);
     loadScene(fetch,sceneId,entry.metadataSha256,controller.signal,entry.suggestions,entry.ground).then(s=>{
       if(!live)return;
@@ -132,6 +142,42 @@ export function App() {
     const url=URL.createObjectURL(scene.recordedImageBlob);setRecordedImage({scene,url});
     return ()=>URL.revokeObjectURL(url);
   },[scene,fatal]);
+  // The driver moves from the recorded camera position to the nearest one allowed, slowing like a car nearing the
+  // crossing; each step is a new comparison input, so the driver views and results are computed for it. When it ends,
+  // or on any other click or key, the input on screen before comes back. Its clock is wall time minus the time the tab
+  // was hidden, so it pauses while hidden and keeps its length on a slow screen; turning on Reduce Motion stops it.
+  useEffect(()=>{
+    if(!replay)return undefined;
+    const {from,far,near}=replay;
+    let timer=0,start=performance.now(),hiddenAt=0,shown=-1,over=false;
+    const end=()=>{if(over)return;over=true;clearTimeout(timer);setInput(from);setReplay(null);};
+    if(reduced){end();return undefined;}
+    stopReplay.current=end;
+    // One timer per step; the last step stays until the hold is over.
+    const tick=()=>{
+      if(over||hiddenAt)return;
+      const elapsed=performance.now()-start;
+      if(elapsed>=REPLAY_MS+REPLAY_HOLD_MS){end();return;}
+      const step=Math.min(REPLAY_STEPS,Math.floor(elapsed/REPLAY_STEP_MS));
+      if(step!==shown){
+        shown=step;
+        setInput({...from,driverDistance:approachDistance(step,REPLAY_STEPS,far,near)});
+      }
+      timer=setTimeout(tick,(step<REPLAY_STEPS?(step+1)*REPLAY_STEP_MS:REPLAY_MS+REPLAY_HOLD_MS)-elapsed);
+    };
+    const visibility=()=>{
+      const now=performance.now();
+      if(document.hidden){if(!hiddenAt){hiddenAt=now;clearTimeout(timer);}}
+      else if(hiddenAt){start+=now-hiddenAt;hiddenAt=0;tick();}
+    };
+    if(document.hidden)hiddenAt=start;else tick();
+    // Clicks and changes count too: screen-reader activation and native select popups send no pointerdown or keydown.
+    const interrupt=e=>{if(!e.target?.closest?.('.approach-replay')&&!REPLAY_KEEP_KEYS.includes(e.key))end();};
+    REPLAY_STOPS.forEach(type=>document.addEventListener(type,interrupt,true));
+    document.addEventListener('visibilitychange',visibility);
+    return ()=>{over=true;clearTimeout(timer);stopReplay.current=null;document.removeEventListener('visibilitychange',visibility);
+      REPLAY_STOPS.forEach(type=>document.removeEventListener(type,interrupt,true));};
+  },[replay,reduced]);
   const setup=useMemo(()=>{
     if(!scene||anchors.some(a=>!pixels[a.key])||Object.values(vehicle).some(v=>!filled(v))||!filled(targetHeight))return {scenario:null,input:null,error:''};
     try {
@@ -184,6 +230,10 @@ export function App() {
   function compare() {if(setup.scenario){if(!scenario)setInput(setup.input);setEditing(false);setMessage('');}}
   function moveVan(value) {setInput(previous=>({...previous,proposedSetback:value}));setMessage('');}
   function moveDriver(value) {setInput(previous=>({...previous,driverDistance:value}));setMessage('');}
+  function playApproach() {
+    if(stopReplay.current){stopReplay.current();return;}
+    if(scenario&&!running)setReplay({from:input,far:scenario.limits.captureDistance,near:scenario.limits.minimumDriverDistance});
+  }
   // A distance-check row is a declared what-if: its vehicle and Sightline's computed stop distance go into the editable
   // fields. A row matching the checked vehicle (to the 2 decimals Nemotron was given) restores its exact sizes and credit.
   function applySweepRow(r) {
@@ -204,7 +254,7 @@ export function App() {
   }
   // Explicit Ask/Check only; never from effects, drags, sliders or numeric edits. One run at a time, no retry.
   async function runNemotron(mode) {
-    if(running||(mode==='ask'?askHint||!question.trim():checkHint))return;
+    if(running||replay||(mode==='ask'?askHint||!question.trim():checkHint))return;
     // run.basis is the comparison input the reply describes; the reply is hidden once the input changes.
     const s=scene,controller=new AbortController(),base=input??setup.input,run={basis:input,facts:null,sweep:null,toolError:null,parts:[]};
     say({from:'you',text:mode==='ask'?question.trim():'Check distances'});
@@ -286,7 +336,8 @@ export function App() {
   const checkHint=!placed?'Place crossing, vehicle and person to check distances':input||setup.scenario?''
     :setup.error?`Check distances needs a vehicle and person that fit the ${surface}`:'Enter vehicle size and person height to check distances';
   // Distance results stay tied to the scene, points, person height and driver position they were computed with.
-  const sweepShown=!editing&&input&&sweep?.scene===scene&&sweep.pixels===input.pixels&&sweep.targetHeight===Number(input.targetHeight)&&sweep.driverDistance===Number(input.driverDistance);
+  const sweepFor=i=>!editing&&i&&sweep?.scene===scene&&sweep.pixels===i.pixels&&sweep.targetHeight===Number(i.targetHeight)&&sweep.driverDistance===Number(i.driverDistance);
+  const sweepShown=sweepFor(input);
   const overridden=[...(vehicleDeclared?['vehicle']:[]),...(declared.some(d=>d.key==='person')?['targetHeight']:[])];
   const suggested=suggestion&&suggestionStatus(scene.suggestions,suggestion,{pixels,vehicle,targetHeight,overridden});
   // Label of the vehicle on screen: the latest Nemotron declaration still in the fields, else a still-suggested default.
@@ -314,7 +365,10 @@ export function App() {
   // The map ruler shows the checked distances for the vehicle on screen, while those results still apply.
   const rulerRows=sweepShown?sweep.results.find(r=>!r.error&&sameVehicle(r.vehicle,input.vehicle))?.rows??null:null;
   const lastSweep=messages.findLast(m=>m.kind==='sweep')?.id;
-  const renderSweep=m=>m.id===lastSweep&&sweepShown?<DistanceCheck results={sweep.results} vehicle={input.vehicle} setback={input.proposedSetback} codeNote={!mapped} disabled={!!running} reveal={false} onRevealed={()=>{}} onApply={applySweepRow}/>:null;
+  // While the approach replay plays, the chat's Distance check stays in place, dimmed and inactive: it describes the
+  // input that comes back when the replay ends (the map ruler follows the moving driver and hides).
+  const chatInput=replay?.from??input;
+  const renderSweep=m=>m.id===lastSweep&&sweepFor(chatInput)?<div className={replay?'distance-paused':undefined} inert={replay?true:undefined}><DistanceCheck results={sweep.results} vehicle={chatInput.vehicle} setback={chatInput.proposedSetback} codeNote={!mapped} disabled={!!running||!!replay} reveal={false} onRevealed={()=>{}} onApply={applySweepRow}/></div>:null;
   // The one Bloop on screen (in the chat): bouncing while he works, sleepy after a failed request (until the comparison
   // changes), reacting to the proposed result, idle while placing.
   const last=messages.at(-1);
@@ -353,10 +407,16 @@ export function App() {
         <a className="brand" href="/" aria-label="Sightline home"><DotText text="Sightline" pitch={3.4}/></a>
         {catalog.length>1?<select className="place-select" aria-label="Measured scene" value={sceneId} onChange={e=>setSceneId(e.target.value)}>{catalog.map(e=><option key={e.id} value={e.id} title={e.label}>{placeName(e.label)}</option>)}</select>:<span className="place-name">{placeLabel}</span>}
       </div>
-      {!editing&&<div className="segmented segmented--small stage-switch" role="tablist" aria-label="Stage view" data-active={inset==='map'?0:1}>
-        <span className="segmented-thumb" aria-hidden="true"/>
-        <button type="button" role="tab" aria-selected={inset==='map'} aria-pressed={inset==='map'} onClick={()=>setInset('map')}>Map</button>
-        <button type="button" role="tab" aria-selected={inset==='photo'} aria-pressed={inset==='photo'} onClick={()=>setInset('photo')}>Photo</button>
+      {!editing&&<div className="stage-controls">
+        <div className="segmented segmented--small" role="tablist" aria-label="Stage view" data-active={inset==='map'?0:1}>
+          <span className="segmented-thumb" aria-hidden="true"/>
+          <button type="button" role="tab" aria-selected={inset==='map'} aria-pressed={inset==='map'} onClick={()=>setInset('map')}>Map</button>
+          <button type="button" role="tab" aria-selected={inset==='photo'} aria-pressed={inset==='photo'} onClick={()=>setInset('photo')}>Photo</button>
+        </div>
+        {!reduced&&(replay||scenario&&!running)&&<button type="button" className="approach-replay" aria-label={replay?'Stop the approach':undefined}
+          title={replay?undefined:'Move the driver from the recorded camera position to the nearest one'} onClick={playApproach}>
+          {replay?<Stop size={12} weight="fill" aria-hidden="true"/>:<Play size={12} weight="fill" aria-hidden="true"/>}<span>{replay?'Stop':'Approach'}</span>
+        </button>}
       </div>}
       <div className="stage-credits">{credits}</div>
     </section>
