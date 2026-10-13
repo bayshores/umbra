@@ -43,6 +43,11 @@ figure { margin:0; }
 .app--loading { display:grid; place-items:center; grid-template-columns:1fr; }
 .loading { display:flex; flex-direction:column; align-items:center; gap:14px; color:var(--muted); font-size:13px; }
 .bloop { display:block; flex:none; overflow:visible; }
+/* The live chat Bloop (Bloop.jsx): the face eases toward a glance; each blink squeezes the eyes shut for a moment. */
+.bloop-look { transition:transform .3s cubic-bezier(.3,.7,.3,1); }
+.bloop-eye { transform-box:fill-box; transform-origin:center; }
+.bloop-eye--blink { animation:bloop-blink .18s ease-in-out; }
+@keyframes bloop-blink { 45%,55% { transform:scaleY(.12); } }
 .inline-error { padding:10px 14px; border-radius:12px; background:rgba(60,20,24,.82); color:#ffc4b6; font-size:13px; }
 .unavailable { display:grid; place-items:center; align-content:center; gap:10px; min-height:200px; padding:24px; border-radius:16px; background:var(--screen); color:var(--muted); font-size:14px; text-align:center; }
 
@@ -156,6 +161,8 @@ figure { margin:0; }
 .chat-source { color:var(--faint); font-size:11px; }
 .chat-log { display:flex; flex:1; flex-direction:column; gap:12px; min-height:0; margin:0; padding:10px 16px 12px; overflow-y:auto; list-style:none; scrollbar-width:thin; }
 .chat-empty { margin:auto 0; color:var(--faint); font-size:12.5px; text-align:center; }
+.chat-example { display:block; animation:example-in .6s ease-out; }
+@keyframes example-in { from { opacity:0; } }
 .msg { display:flex; flex-direction:column; gap:4px; max-width:88%; }
 .msg--you { align-self:flex-end; align-items:flex-end; }
 .msg--bloop { align-self:flex-start; }

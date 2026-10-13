@@ -1,11 +1,30 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowUp, Ruler } from '@phosphor-icons/react';
 import Bloop from './Bloop.jsx';
 import DotText from './DotText.jsx';
+import { usePageVisible, useReducedMotion } from './motion.mjs';
 
 const STATUS = { ask: 'Bloop is setting up…', check: 'Bloop is checking distances…' };
 export const SOURCE = 'NVIDIA Nemotron · Nebius Token Factory';
 const STATE_TITLE = { blocked: 'Blocked', unknown: 'Unknown', overlap: 'Overlap' };
+// Requests Bloop can set up (declare_scenario, or sweep_setbacks for "how far back"), shown one at a time in the empty chat.
+const EXAMPLES = ['box truck 10 ft back, child', 'SUV 6 m back, adult', 'how far back must a delivery van be?', 'pickup 20 ft back, wheelchair user'];
+
+// The empty chat's suggestion changes every few seconds while the tab is visible; with Reduce Motion it stays on the
+// first one. Screen readers get the first one only, so the polite live log is not re-read on every change.
+function ExampleRequest() {
+  const reduced = useReducedMotion(), visible = usePageVisible(), [shown, setShown] = useState(0);
+  useEffect(() => {
+    if (reduced || !visible) return undefined;
+    const timer = setTimeout(() => setShown(n => (n + 1) % EXAMPLES.length), 4200);
+    return () => clearTimeout(timer);
+  }, [shown, reduced, visible]);
+  const i = reduced ? 0 : shown;
+  return <li className="chat-empty">
+    <span className="sr-only">Try “{EXAMPLES[0]}”</span>
+    <span key={i} className="chat-example" aria-hidden="true">Try “{EXAMPLES[i]}”</span>
+  </li>;
+}
 
 // The chat with Bloop, Sightline's assistant persona. Bloop's words come from NVIDIA Nemotron through Nebius Token
 // Factory (named in the header); Nemotron only declares what-if values, and Sightline computes every result, which the
@@ -27,11 +46,11 @@ export default function AssistantBar({ messages, question, onQuestion, askHint, 
   const send = () => { if (ready && question.trim()) onAsk(); };
   return <section className="chat" aria-label="Chat with Bloop">
     <header className="chat-head">
-      <Bloop key={mood.key} mood={mood.name} loop={mood.loop} size={64} className="chat-bloop"/>
+      <Bloop key={mood.key} mood={mood.name} loop={mood.loop} size={64} className="chat-bloop" alive/>
       <div className="chat-title"><h2>Bloop</h2><p className="chat-source">runs on {SOURCE}</p></div>
     </header>
     <ol className="chat-log" ref={log} aria-live="polite" aria-label="Messages">
-      {!messages.length && !running && <li className="chat-empty">Try “box truck 10 ft back, child”</li>}
+      {!messages.length && !running && <ExampleRequest/>}
       {messages.map(m => <li key={m.id} className={'msg msg--' + m.from + (m.kind ? ' msg--' + m.kind : '')}>
         <span className="msg-author">{m.from === 'you' ? 'You' : m.from === 'bloop' ? 'Bloop' : 'Sightline'}</span>
         {m.kind === 'result' ? <p className="msg-result">
