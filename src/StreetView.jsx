@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Truck, PersonSimple, Eye } from '@phosphor-icons/react';
+import { PersonSimple, Eye } from '@phosphor-icons/react';
 import * as THREE from 'three';
 import { planCamera } from './plan-camera.mjs';
 import { driverViewport, comparisonScissors, calibrationCamera } from './driver-viewport.mjs';
@@ -19,8 +19,12 @@ const UP = new THREE.Vector3(0, 1, 0);
 const MAP = { road: 0x141a2c, curb: 0x8a90b8, yellow: 0xcdb36a, white: 0xeceaf6, crossing: 0xe9e4f2, context: 0xb9b6cc, cyclist: 0xa9c7e8 };
 const RULER = { blocked: new THREE.Color(0xff7a9a), unknown: new THREE.Color(0xe9e4f2), overlap: new THREE.Color(0xa9c7e8), none: new THREE.Color(0x646a8c) };
 const TICKS = [0, 5, 10, 15];
+// Vehicles this long or longer are drawn as a cab and a cargo box; shorter ones as a car.
+const TRUCK_LENGTH_M = 6;
 const metres = n => Number(n).toFixed(2);
 const finite3 = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+const flat = v => { const n = Math.hypot(v[0], v[2]); return [v[0] / n, 0, v[2] / n]; };
+const overlaps = (r, others, pad = 3) => others.some(o => o && r.left < o.right + pad && r.right > o.left - pad && r.top < o.bottom + pad && r.bottom > o.top - pad);
 
 function validate(scene, eye, scenario) {
   const c = scene?.camera;
@@ -126,20 +130,15 @@ function pointMaterial() {
     vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
 }
-// Vehicles are opaque near-black volumes with bright edges (the plan's baseline stays a see-through reference outline).
-function addVehicle(center, dimensions, axis, group, baseline = false, top = false) {
+// Vehicles are opaque near-black volumes with bright edges.
+function addVehicle(center, dimensions, axis, group) {
   const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
   const yaw = Math.atan2(axis[0], axis[2]);
-  const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
-    color: baseline ? 0xffffff : top ? 0x262836 : VIEW_BACKGROUND, transparent: baseline,
-    opacity: baseline ? 0.05 : 1, depthWrite: !baseline, side: THREE.DoubleSide,
-  }));
+  const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: VIEW_BACKGROUND, side: THREE.DoubleSide }));
   fill.position.set(...center);
   fill.rotation.y = yaw;
   group.add(fill);
-  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({
-    color: baseline ? 0x9a9cb0 : 0xf4f2ff, transparent: true, opacity: baseline ? 0.7 : 1,
-  }));
+  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({ color: 0xf4f2ff }));
   edge.position.copy(fill.position);
   edge.rotation.copy(fill.rotation);
   group.add(edge);
@@ -200,8 +199,10 @@ function buildMapBase(layers) {
   const dots = [];
   for (const o of layers.objects) {
     if (o.kind === 'person' || o.kind === 'other') { dots.push(o); continue; }
-    const loop = o.corners.map(([x, z]) => new THREE.Vector3(x, o.ground + .05, z));
-    order(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(loop), lineMaterial(o.kind === 'cyclist' ? MAP.cyclist : MAP.context, o.kind === 'cyclist' ? .55 : .32)), -15);
+    const loop = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(o.corners.map(([x, z]) => new THREE.Vector3(x, o.ground + .05, z))),
+      lineMaterial(o.kind === 'cyclist' ? MAP.cyclist : MAP.context, o.kind === 'cyclist' ? .55 : .32));
+    loop.userData.center = o.center;
+    order(loop, -15);
   }
   if (dots.length) {
     const geometry = new THREE.BufferGeometry();
@@ -236,7 +237,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     if (invalid) { onError?.(invalid); return undefined; }
     const world = new THREE.Scene();
     world.background = mode === 'recorded' ? null : new THREE.Color(VIEW_BACKGROUND);
-    let renderer, observer, removePointer, removeResolution, dots = null;
+    let renderer, observer, removePointer, removeResolution, dots = null, mapBase = null;
     const contextLost = () => latest.current.onError?.('Measured scene rendering failed: WebGL context lost.');
     try {
       // Transparent outside the calibrated image: a driver view letterboxed in a wider stage shows the page behind it.
@@ -264,7 +265,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         world.add(new THREE.Points(pointGeometry, dots));
         // The night map: real publisher map layers and annotated objects under the scan points.
         const layers = mode === 'plan' ? mapLayers(scene.ground) : null;
-        if (layers) world.add(buildMapBase(layers));
+        if (layers) world.add(mapBase = buildMapBase(layers));
       }
       const draw = () => {
         const config = latest.current, width = element.clientWidth, height = element.clientHeight;
@@ -316,7 +317,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         renderer.setScissorTest(false);
         return camera;
       };
-      api.current = { world, renderer, draw, plane: new THREE.Plane(UP, 0), ray: new THREE.Raycaster(), proposed: null };
+      api.current = { world, renderer, draw, mapBase, plane: new THREE.Plane(UP, 0), ray: new THREE.Raycaster() };
       const redraw = () => { try { api.current.camera = draw(); placeLabels(); } catch (error) { latest.current.onError?.(error.message); } };
       const watchResolution = () => {
         removeResolution?.();
@@ -357,21 +358,22 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
   }, [scene, mode]);
 
   function pointerDown(event) {
-    const a = api.current, config = latest.current;
-    if (!a?.proposed || config.mode !== 'plan' || !config.onSetbackChange || event.button !== 0 || event.target.closest?.('.map-handle')) return;
+    const a = api.current, config = latest.current, vehicle = event.target.closest?.('.map-vehicle--proposed');
+    if (!a?.camera || !vehicle || config.mode !== 'plan' || !config.onSetbackChange || event.button !== 0) return;
     const rect = event.currentTarget.getBoundingClientRect();
     a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
-    if (!a.ray.intersectObject(a.proposed, false).length) return;
     // Mapped-ground scenes have the camera at the origin, so drag on the vehicle's ground height rather than Y 0.
     a.plane.constant = config.scenario.vehicleOrigin ? -config.scenario.vehicleGroundHeight : 0;
     const point = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
     if (!point) return;
     // The what-if moves along the lane axis: the setback changes by the pointer's movement along it from the grab point.
     const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
-    a.grab = { along: point.dot(axis), setback: s.proposedSetback };
+    a.grab = { along: point.dot(axis), setback: s.proposedSetback, vehicle };
     a.dragging = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
+    vehicle.focus({ focusVisible: false });
+    vehicle.classList.add('is-dragging');
   }
   function pointerMove(event) {
     const a = api.current, config = latest.current;
@@ -387,37 +389,77 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     // nearer front corner) keeps the road tolerance from the crossing, and its rear stays inside the captured road.
     if (Number.isFinite(setback)) config.onSetbackChange(clampTo(setback, s.limits.minimumSetback, s.limits.maximumSetback));
   }
-  function pointerUp(event) { if (api.current?.dragging === event.pointerId) api.current.dragging = null; }
+  function pointerUp(event) {
+    const a = api.current;
+    if (a?.dragging !== event.pointerId) return;
+    a.dragging = null;
+    a.grab?.vehicle.classList.remove('is-dragging');
+  }
   function placeLabels() {
-    const a = api.current, s = latest.current.scenario;
-    if (!a?.camera || latest.current.mode !== 'plan' || !s) return;
-    const rect = host.current.getBoundingClientRect();
-    for (const [name, point] of [['baseline', s.baseline.center], ['proposed', s.proposed.center], ['target', s.target]]) {
-      const node = labels.current[name];
-      if (!node) continue;
-      const anchor = new THREE.Vector3(...point);
-      const p = anchor.project(a.camera);
-      const proposed = new THREE.Vector3(...s.proposed.center).project(a.camera);
-      const sameFootprint = name === 'baseline' && Math.hypot((p.x - proposed.x) * rect.width / 2, (p.y - proposed.y) * rect.height / 2) < Number.parseFloat(getComputedStyle(node).width);
-      node.style.display = !sameFootprint && p.z > -1 && p.z < 1 && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 ? 'grid' : 'none';
-      node.style.left = `${(p.x + 1) * rect.width / 2}px`;
-      node.style.top = `${(1 - p.y) * rect.height / 2}px`;
-      node.style.transform = 'translate(-50%, -50%)';
-    }
-    // Ruler labels and the two handles sit on the projected ruler line; the driver handle at the driver's ground point.
-    const place = (name, point, show = true) => {
-      const node = labels.current[name];
-      if (!node) return;
-      const p = new THREE.Vector3(...point).project(a.camera);
-      node.style.display = show && p.z > -1 && p.z < 1 && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 ? '' : 'none';
-      node.style.left = `${(p.x + 1) * rect.width / 2}px`;
-      node.style.top = `${(1 - p.y) * rect.height / 2}px`;
+    const a = api.current, s = latest.current.scenario, nodes = labels.current;
+    if (!a?.camera || latest.current.mode !== 'plan' || !s?.whatIf) return;
+    const rect = host.current.getBoundingClientRect(), camera = a.camera, perMetre = rect.height / (camera.top - camera.bottom);
+    const screen = point => {
+      const p = new THREE.Vector3(...point).project(camera);
+      return { x: (p.x + 1) * rect.width / 2, y: (1 - p.y) * rect.height / 2, inside: p.z > -1 && p.z < 1 && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 };
     };
-    if (s.whatIf) {
-      // A tick label gives way to a handle's own value label when they would overlap.
-      for (const m of TICKS) place('tick-' + m, rulerPoint(s, m, 1.6), m <= s.limits.captureDistance && Math.abs(m - s.proposedSetback) > 1.3 && Math.abs(m - s.driverDistance) > 1.3);
-      place('setback', rulerPoint(s, s.proposedSetback));
-      place('driver', [s.eye[0], rulerPoint(s, 0)[1], s.eye[2]]);
+    const put = (node, at, show = true) => {
+      if (!node) return;
+      node.style.display = show && at.inside ? '' : 'none';
+      node.style.left = `${at.x}px`;
+      node.style.top = `${at.y}px`;
+    };
+    // A vehicle is drawn as its exact footprint (width by length on the ground) at its own heading, nose toward the crossing.
+    const footprint = (node, box, show = true) => {
+      const along = flat(box.axis), at = screen(box.center), nose = screen(box.center.map((v, i) => v - along[i] * box.vehicle.length / 2));
+      const turn = Math.atan2(nose.x - at.x, at.y - nose.y);
+      put(node, at, show);
+      if (!node) return at;
+      node.style.width = `${box.vehicle.width * perMetre}px`;
+      node.style.height = `${box.vehicle.length * perMetre}px`;
+      node.style.transform = `translate(-50%, -50%) rotate(${turn}rad)`;
+      node.style.setProperty('--corner', `${Math.min(box.vehicle.length >= TRUCK_LENGTH_M ? .28 : .42, box.vehicle.width * .3) * perMetre}px`);
+      // The shadow falls toward the bottom of the screen at any heading (box-shadow offsets turn with the box).
+      node.style.setProperty('--shadow-x', `${(3 * Math.sin(turn)).toFixed(2)}px`);
+      node.style.setProperty('--shadow-y', `${(3 * Math.cos(turn)).toFixed(2)}px`);
+      return at;
+    };
+    const b = s.baseline, p = s.proposed;
+    const sameFootprint = Math.hypot(b.center[0] - p.center[0], b.center[2] - p.center[2]) < .05 && ['width', 'length'].every(k => Math.abs(b.vehicle[k] - p.vehicle[k]) < .01);
+    footprint(nodes.baseline, b, !sameFootprint);
+    const at = footprint(nodes.setback, p);
+    put(nodes.target, screen(s.target));
+    put(nodes.driver, screen([s.eye[0], rulerPoint(s, 0)[1], s.eye[2]]));
+    // Ruler labels sit just beyond the ruler on the driver's right, reading away from it.
+    const zero = screen(rulerPoint(s, 0)), outward = screen(rulerPoint(s, 0, 1)), dx = outward.x - zero.x, dy = outward.y - zero.y, n = Math.hypot(dx, dy) || 1;
+    for (const m of TICKS) {
+      const node = nodes['tick-' + m], tick = screen(rulerPoint(s, m));
+      put(node, { ...tick, x: tick.x + dx / n * 4, y: tick.y + dy / n * 4 }, m <= s.limits.captureDistance);
+      if (node) node.style.transform = `translate(${(dx / n - 1) * 50}%, ${(dy / n - 1) * 50}%)`;
+    }
+    // The distance reads under the proposed vehicle; above it when that would cover the person or the driver, or leave the map.
+    // Labels collide by their text, not the soft pool around it (7 by 3 px of padding).
+    const value = nodes.value, seen = (node, text = false) => {
+      if (!node || node.style.display === 'none') return null;
+      const r = node.getBoundingClientRect(), x = text ? 7 : 0, y = text ? 3 : 0;
+      return { left: r.left + x, right: r.right - x, top: r.top + y, bottom: r.bottom - y };
+    };
+    if (value) {
+      const along = flat(p.axis), across = [along[2], 0, -along[0]];
+      const ys = [-1, 1].flatMap(e => [-1, 1].map(w => screen(p.center.map((v, i) => v + along[i] * e * p.vehicle.length / 2 + across[i] * w * p.vehicle.width / 2)).y));
+      put(value, { ...at, y: Math.max(...ys) });
+      value.style.transform = 'translate(-50%, 0)';
+      const box = seen(value, true), avoid = [seen(nodes.target), seen(nodes.driver)];
+      if (box && (overlaps(box, avoid) || box.bottom > rect.bottom - 4)) {
+        put(value, { ...at, y: Math.min(...ys) });
+        value.style.transform = 'translate(-50%, -100%)';
+      }
+    }
+    // A ruler label gives way to the person, the driver, the distance and the vehicles.
+    const keep = [seen(nodes.target), seen(nodes.driver), seen(value, true), seen(nodes.setback), seen(nodes.baseline)];
+    for (const m of TICKS) {
+      const node = nodes['tick-' + m], box = seen(node, true);
+      if (box && overlaps(box, keep)) node.style.display = 'none';
     }
   }
   // Handles drag along the setback axis (the ruler), or step with the arrow keys (Shift: 1 m), within the limits.
@@ -468,7 +510,6 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     try {
       if (previousOverlay) a.world.remove(previousOverlay);
       const group = new THREE.Group();
-      a.proposed = null;
       a.currentOverlay = null;
       a.proposedOverlay = null;
       // Plan mode looks down; the driver views face the eye.
@@ -484,15 +525,15 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
           addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, a.currentOverlay);
           addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, a.proposedOverlay);
           group.add(a.currentOverlay, a.proposedOverlay);
+        } else if (mode === 'plan') {
+          // The top-down view draws its vehicles and the person above the map (placeLabels), so lane paint never crosses them.
+          // The annotated box the current vehicle is drawn from is not outlined a second time.
+          const own = scenario.baseline.pose === 'annotated' ? scenario.baseline.center : null;
+          a.mapBase?.children.forEach(o => { if (o.userData.center) o.visible = !own || Math.hypot(o.userData.center[0] - own[0], o.userData.center[2] - own[2]) > .05; });
+          if (scenario.whatIf) group.add(rulerObject(rulerDots(scenario, ruler), a.renderer.getPixelRatio()));
         } else {
           addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group, hiddenGround, facing);
-          if (mode === 'plan') {
-            addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, group, true);
-            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group, false, true);
-            if (scenario.whatIf) group.add(rulerObject(rulerDots(scenario, ruler), a.renderer.getPixelRatio()));
-          } else {
-            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
-          }
+          addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
         }
       } else if (preview) {
         if (preview.vehicle) addVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group);
@@ -514,27 +555,30 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     catch (error) { latest.current.onError?.(error.message); }
   }, [split]);
 
-  const tags = scenario && mode === 'plan' ? [
-    ['baseline', baselineLabel, Truck],
-    ['proposed', 'Proposed vehicle', Truck],
-    ['target', 'Person', PersonSimple],
-  ] : [];
   const sourceLabel = scene.reconstruction ? 'Estimated street reconstruction' : 'Measured street scene';
   const plan = scenario && mode === 'plan' && scenario.whatIf;
-  const slider = (kind, label, Icon) => {
+  const sliderProps = (kind, label) => {
     const [value, min, max] = limitsFor(kind, scenario);
-    return <div ref={node => { labels.current[kind] = node; }} className={'map-handle map-handle--' + kind} role="slider" tabIndex={0} aria-label={label}
-      aria-valuemin={Number(metres(min))} aria-valuemax={Number(metres(max))} aria-valuenow={Number(metres(value))} aria-valuetext={metres(value) + ' metres from the crossing'}
-      onPointerDown={handleDrag(kind)} onKeyDown={handleKeys(kind)}>
-      <span className="map-handle-chip"><Icon size={13} weight="bold" aria-hidden="true"/></span><span className="map-handle-value">{metres(value)} m</span>
-    </div>;
+    return { ref: node => { labels.current[kind] = node; }, role: 'slider', tabIndex: 0, 'aria-label': label,
+      'aria-valuemin': Number(metres(min)), 'aria-valuemax': Number(metres(max)), 'aria-valuenow': Number(metres(value)),
+      'aria-valuetext': metres(value) + ' metres from the crossing', onKeyDown: handleKeys(kind) };
   };
+  const truck = plan && scenario.proposed.vehicle.length >= TRUCK_LENGTH_M;
+  const blocked = plan && scenario.proposedVisibility.state === 'blocked';
+  const personLabel = 'Person' + (scenario?.support?.target?.supportLabel ? ': ' + scenario.support.target.supportLabel : '');
   return <div ref={host} role={plan ? 'group' : 'img'} aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 160, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
-    {tags.map(([name, text, Icon]) => <div key={name} ref={node => { labels.current[name] = node; }} className={'map-object-marker map-object-marker--'+name} title={text} aria-label={text}><Icon size={18} weight="bold" aria-hidden="true"/></div>)}
     {plan && <>
+      <div ref={node => { labels.current.baseline = node; }} className="map-vehicle map-vehicle--baseline" title={baselineLabel}/>
+      <div {...sliderProps('setback', 'Proposed vehicle distance from crossing')} className={'map-vehicle map-vehicle--proposed' + (truck ? ' map-vehicle--truck' : '')}>
+        {truck ? <><i className="map-vehicle-cab"><i className="map-vehicle-glass"/></i><i className="map-vehicle-cargo"/></>
+          : <><i className="map-vehicle-glass"/><i className="map-vehicle-glass map-vehicle-glass--rear"/></>}
+      </div>
+      <span ref={node => { labels.current.value = node; }} className="map-vehicle-value" aria-hidden="true">{metres(scenario.proposedSetback)} m</span>
+      <div ref={node => { labels.current.target = node; }} className={'map-person' + (blocked ? ' map-person--blocked' : '')} role="img" aria-label={personLabel} title={personLabel}><PersonSimple size={14} weight="bold" aria-hidden="true"/></div>
       {TICKS.filter(m => m <= scenario.limits.captureDistance).map(m => <span key={m} ref={node => { labels.current['tick-' + m] = node; }} className="map-tick" aria-hidden="true">{m} m</span>)}
-      {slider('setback', 'Proposed vehicle distance from crossing', Truck)}
-      {slider('driver', 'Driver distance from crossing', Eye)}
+      <div {...sliderProps('driver', 'Driver distance from crossing')} className="map-handle" onPointerDown={handleDrag('driver')}>
+        <span className="map-handle-chip"><Eye size={14} weight="bold" aria-hidden="true"/></span><span className="map-handle-value">{metres(scenario.driverDistance)} m</span>
+      </div>
     </>}
   </div>;
 }
