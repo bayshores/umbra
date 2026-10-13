@@ -19,6 +19,9 @@ test('every dot is whole, inside the ring, and lights up from the middle outward
   const middle = DOTS.find(d => d.x === CENTER && d.y === CENTER), far = DOTS.reduce((a, b) => (a.delay > b.delay ? a : b));
   assert.equal(middle?.delay, 0);
   assert.ok(Math.hypot(far.x - CENTER, far.y - CENTER) > 35);
+  // A dot never lights up before one nearer the middle.
+  const reach = d => Math.hypot(d.x - CENTER, d.y - CENTER), byReach = [...DOTS].sort((a, b) => reach(a) - reach(b));
+  byReach.forEach((d, i) => assert.ok(!i || d.delay >= byReach[i - 1].delay, `${d.x},${d.y} lights before a nearer dot`));
   assert.equal(new Set(DOTS.map(d => d.x + ',' + d.y)).size, DOTS.length);
 });
 

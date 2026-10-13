@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { usePageVisible, useReducedMotion } from './motion.mjs';
 import { CENTER, DISC, DOTS, EYE, EYES, GAP, MOODS, RING, inGap } from './peri-shape.mjs';
 
-// Peri, Sightline's mascot, drawn in code: LiDAR-style dots inside a thin ring, with two capsule eyes (the geometry is in
+// Peri, the app's mascot, drawn in code: LiDAR-style dots inside a thin ring, with two capsule eyes (the geometry is in
 // peri-shape.mjs). A change of mood recolours the dots from the middle outward: rose for Blocked, a gap with no dots
 // for Unknown, dimmed with shut eyes for sleepy. While working, a bright band sweeps across the dots like a LiDAR scan.
 // The chat's Peri is alive: it blinks now and then, glances toward a drag or the field you type in, and dozes off after
@@ -110,9 +110,10 @@ export default function Peri({ mood = 'idle', size = 44, className = '', label, 
     {sweep && <g clipPath={`url(#peri-dots-${id})`}><rect className="peri-sweep" x="-24" y="0" width="22" height="100"/></g>}
     <g ref={look} className="peri-look">
       {EYE.x.map((x, i) => {
-        // Unknown leaves the right eye as a dashed outline: half of what Peri would see is missing.
+        // Unknown leaves the right eye as a dashed outline: half of what Peri would see is missing. Both eyes keep the
+        // blink class once Peri has blinked, so a mood change never adds it to one eye alone and replays it as a wink.
         const unseen = gap && i === 1;
-        return <rect key={i + '-' + blink} className={'peri-eye' + (unseen ? ' peri-eye--unknown' : blink ? ' peri-eye--blink' : '')}
+        return <rect key={i + '-' + blink} className={'peri-eye' + (unseen ? ' peri-eye--unknown' : '') + (blink ? ' peri-eye--blink' : '')}
           x={x} y={eye.y} width={EYE.w} height={eye.h} rx={Math.min(EYE.w, eye.h) / 2}/>;
       })}
     </g>

@@ -1,8 +1,8 @@
-// Peri, Sightline's mascot (src/Peri.jsx): a ball of LiDAR-style dots inside a thin ring, with two capsule eyes. This
+// Peri, the app's mascot (src/Peri.jsx): a ball of LiDAR-style dots inside a thin ring, with two capsule eyes. This
 // module holds the drawing's geometry in a 100 × 100 viewBox, so tests can check it without React.
 export const CENTER = 50, RING = 46, DISC = 47;
 // Peri's moods. working: a request is running. blocked and unknown: the proposed result. sleepy: a failed request, an
-// unavailable scene, or a minute with no input. There is no "sees clearly" mood, because Sightline never reports Clear.
+// unavailable scene, or a minute with no input. There is no "sees clearly" mood, because the app never reports Clear.
 export const MOODS = ['idle', 'working', 'blocked', 'unknown', 'sleepy'];
 
 // The dots: a 7-unit grid, keeping only whole dots that sit inside the ring. Each dot's delay grows with its distance
