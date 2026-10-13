@@ -34,7 +34,7 @@ figure { margin:0; }
   box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 1px 2px rgba(0,0,0,.3),0 18px 48px rgba(0,0,0,.3); }
 
 
-/* Chart and chat: the street map is the stage on the left; the two case screens and the chat with Bloop on the right. */
+/* Chart and chat: the street map is the stage on the left; the two case screens and the chat with Peri on the right. */
 .app { display:grid; grid-template-columns:minmax(0,1fr) clamp(440px,36vw,600px); grid-template-rows:minmax(0,1fr); gap:16px; height:100vh; height:100dvh; min-height:640px;
   max-width:1900px; margin:auto; padding:16px; overflow:clip; }
 .app > * { animation:rise .5s cubic-bezier(.2,.7,.2,1) both; }
@@ -42,12 +42,23 @@ figure { margin:0; }
 @keyframes rise { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 .app--loading { display:grid; place-items:center; grid-template-columns:1fr; }
 .loading { display:flex; flex-direction:column; align-items:center; gap:14px; color:var(--muted); font-size:13px; }
-.bloop { display:block; flex:none; overflow:visible; }
-/* The live chat Bloop (Bloop.jsx): the face eases toward a glance; each blink squeezes the eyes shut for a moment. */
-.bloop-look { transition:transform .3s cubic-bezier(.3,.7,.3,1); }
-.bloop-eye { transform-box:fill-box; transform-origin:center; }
-.bloop-eye--blink { animation:bloop-blink .18s ease-in-out; }
-@keyframes bloop-blink { 45%,55% { transform:scaleY(.12); } }
+/* Peri, the mascot (Peri.jsx): LiDAR-style dots in a thin ring. A mood change recolours the dots from the middle out
+   (each dot's transition-delay); working sweeps a bright band across them; the eyes ease toward a glance and blink. */
+.peri { display:block; flex:none; --peri-dot:#A9C7E8; --peri-rim:var(--text); --peri-disc:rgba(169,199,232,.09); }
+.peri--blocked { --peri-dot:var(--accent); --peri-rim:var(--accent); --peri-disc:rgba(255,122,154,.1); }
+.peri-disc { fill:var(--peri-disc); transition:fill .4s; }
+.peri-ring { fill:none; stroke:var(--peri-rim); stroke-width:2; transition:stroke .4s,opacity .4s; }
+.peri-ring--gap { stroke-dasharray:3 4; opacity:.5; }
+.peri-dot { fill:var(--peri-dot); transition:fill .3s,opacity .3s; }
+.peri--unknown .peri-dot--gap { opacity:0; }
+.peri--sleepy .peri-dot,.peri--sleepy .peri-ring { opacity:.45; }
+.peri-sweep { fill:#fff; animation:peri-sweep 1.8s linear infinite; }
+@keyframes peri-sweep { to { transform:translateX(126px); } }
+.peri-look { transition:transform .3s cubic-bezier(.3,.7,.3,1); }
+.peri-eye { fill:var(--text); stroke:var(--page); stroke-width:3.2; paint-order:stroke; transform-box:fill-box; transform-origin:center; }
+.peri-eye--unknown { fill:none; stroke:var(--text); stroke-width:1.6; stroke-dasharray:2.5 2.5; }
+.peri-eye--blink { animation:peri-blink .18s ease-in-out; }
+@keyframes peri-blink { 45%,55% { transform:scaleY(.12); } }
 .inline-error { padding:10px 14px; border-radius:12px; background:rgba(60,20,24,.82); color:#ffc4b6; font-size:13px; }
 .unavailable { display:grid; place-items:center; align-content:center; gap:10px; min-height:200px; padding:24px; border-radius:16px; background:var(--screen); color:var(--muted); font-size:14px; text-align:center; }
 
@@ -156,11 +167,10 @@ figure { margin:0; }
 @keyframes dot-on { 0% { opacity:0; } 35% { opacity:1; fill:#fff; } }
 @keyframes state-in { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:none; } }
 
-/* Chat with Bloop */
+/* Chat with Peri */
 .chat { display:flex; flex:1 0 260px; flex-direction:column; min-height:0; overflow:hidden; border-radius:18px; background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,0) 30%),rgba(15,15,27,.74);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 18px 48px rgba(0,0,0,.3); }
 .chat-head { display:flex; align-items:center; gap:12px; padding:12px 16px 6px 12px; }
-.chat-bloop { margin:-6px -2px -8px 0; }
 .chat-title h2 { font-size:15px; font-weight:700; letter-spacing:-.02em; }
 .chat-source { color:var(--faint); font-size:11px; }
 .chat-log { display:flex; flex:1; flex-direction:column; gap:12px; min-height:0; margin:0; padding:10px 16px 12px; overflow-y:auto; list-style:none; scrollbar-width:thin; }
@@ -169,13 +179,13 @@ figure { margin:0; }
 @keyframes example-in { from { opacity:0; } }
 .msg { display:flex; flex-direction:column; gap:4px; max-width:88%; }
 .msg--you { align-self:flex-end; align-items:flex-end; }
-.msg--bloop { align-self:flex-start; }
+.msg--peri { align-self:flex-start; }
 .msg--sightline { align-self:center; align-items:center; max-width:100%; }
 .msg--sweep { align-self:stretch; align-items:stretch; }
 .msg-author { color:var(--faint); font-size:10.5px; }
 .msg-bubble { padding:9px 12px; border-radius:14px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
 .msg--you .msg-bubble { border-bottom-right-radius:4px; background:#E9E4F2; color:#12141C; }
-.msg--bloop .msg-bubble { border:1px dotted rgba(244,242,255,.5); border-bottom-left-radius:4px; background:rgba(255,255,255,.03); }
+.msg--peri .msg-bubble { border:1px dotted rgba(244,242,255,.5); border-bottom-left-radius:4px; background:rgba(255,255,255,.03); }
 .msg--sightline .msg-bubble { padding:0; color:var(--muted); font-size:12px; text-align:center; }
 .msg--note .msg-bubble { color:var(--muted); }
 .msg--error .msg-bubble { color:#ffc4b6; }

@@ -6,7 +6,7 @@ import '@fontsource/overpass-mono/700.css';
 import StreetView from './StreetView.jsx';
 import AssistantBar from './AssistantBar.jsx';
 import DistanceCheck, { sweepText } from './DistanceCheck.jsx';
-import Bloop from './Bloop.jsx';
+import Peri from './Peri.jsx';
 import DotText from './DotText.jsx';
 import { useReducedMotion } from './motion.mjs';
 import { approachDistance } from './map-layers.mjs';
@@ -40,8 +40,8 @@ const ASSISTANT_ERRORS={assistant_unavailable:'Nemotron isn\'t configured on thi
 const STATE_WORDS={blocked:'blocked',unknown:'not blocked by the vehicle (rest unknown)',overlap:'vehicle overlaps person or driver'};
 // The result words shown on screen (never Clear).
 const STATE_TITLE={blocked:'Blocked',unknown:'Unknown',overlap:'Overlap'};
-// Bloop's reaction to a result. There is no happy "sees clearly" mood: Sightline never reports Clear.
-const MOOD={blocked:'blocked',unknown:'unsure',overlap:'unsure'};
+// Peri's reaction to a result. There is no happy "sees clearly" mood: Sightline never reports Clear.
+const MOOD={blocked:'blocked',unknown:'unknown',overlap:'unknown'};
 let messageId=0;
 const unwrapNote=note=>(note??'').replace(/^\((.*)\)$/,'$1').replace(/; /g,', ');
 // The app's own one-line result for a run, shown when Nemotron's wording is withheld. baseline: the left badge's word.
@@ -100,7 +100,7 @@ export function App() {
   // The suggested default vehicle front is a declared what-if with no parked vehicle measured, so it is not "current".
   const defaultFront=pixel=>suggestion?.provenance.parking?.status==='default'&&isStillSuggested('parking',pixel,suggestion.provenance);
   const [question,setQuestion]=useState(''),[running,setRunning]=useState(null),[reply,setReply]=useState(null),[sweep,setSweep]=useState(null),[declared,setDeclared]=useState([]);
-  // The chat log: your messages, Bloop's replies (Nemotron's words) and Sightline's own computed lines, oldest first.
+  // The chat log: your messages, Peri's replies (Nemotron's words) and Sightline's own computed lines, oldest first.
   const [messages,setMessages]=useState([]);
   const say=(...items)=>setMessages(list=>[...list,...items.filter(Boolean).map(m=>({id:++messageId,...m}))]);
   // A Nemotron declaration or an applied distance-check vehicle replaced the vehicle on screen (it stays replaced until
@@ -288,9 +288,9 @@ export function App() {
       setReply({mode,basis:run.basis,...r});
       const set=run.parts.length&&run.basis?declaredLine(run.parts,run.basis):'';
       const first=run.sweep?.find(v=>!v.error);
-      // Bloop speaks only Nemotron's own answer (or, without one, the values it declared). A withheld answer, an error and
-      // every computed result are Sightline's lines. basis: an error leaves Bloop sleepy while the comparison is unchanged.
-      say(r.text?{from:'bloop',text:r.text,declared:set}:set&&{from:'bloop',text:`Set ${set}`},
+      // Peri speaks only Nemotron's own answer (or, without one, the values it declared). A withheld answer, an error and
+      // every computed result are Sightline's lines. basis: an error leaves Peri sleepy while the comparison is unchanged.
+      say(r.text?{from:'peri',text:r.text,declared:set}:set&&{from:'peri',text:`Set ${set}`},
         r.error&&{from:'sightline',kind:'error',text:r.error,basis:run.basis},
         r.note&&{from:'sightline',kind:'note',text:r.note},
         r.computed&&{from:'sightline',text:r.computed},
@@ -310,8 +310,8 @@ export function App() {
       if(runRef.current===controller){runRef.current=null;setRunning(null);}
     }
   }
-  if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><Bloop mood="sleepy" size={96}/><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
-  if(!scene)return <main className="app app--loading"><div className="backdrop" aria-hidden="true"><i/><i/><i/></div><div className="loading" role="status"><Bloop mood="bounce" size={120}/><span>Loading measured scene…</span></div></main>;
+  if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><Peri mood="sleepy" size={88}/><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
+  if(!scene)return <main className="app app--loading"><div className="backdrop" aria-hidden="true"><i/><i/><i/></div><div className="loading" role="status"><Peri mood="working" size={96}/><span>Loading measured scene…</span></div></main>;
   const mapped=isMappedGround(scene),placementUnavailable=scene.measurements?.kind==='indexedSparse'&&!mapped;
   const surface=mapped?'mapped ground':'measured road';
   const supportText=key=>support[key]?support[key].supportLabel+(support[key].hidden?', hidden':''):'';
@@ -369,10 +369,10 @@ export function App() {
   // input that comes back when the replay ends (the map ruler follows the moving driver and hides).
   const chatInput=replay?.from??input;
   const renderSweep=m=>m.id===lastSweep&&sweepFor(chatInput)?<div className={replay?'distance-paused':undefined} inert={replay?true:undefined}><DistanceCheck results={sweep.results} vehicle={chatInput.vehicle} setback={chatInput.proposedSetback} codeNote={!mapped} disabled={!!running||!!replay} reveal={false} onRevealed={()=>{}} onApply={applySweepRow}/></div>:null;
-  // The one Bloop on screen (in the chat): bouncing while he works, sleepy after a failed request (until the comparison
+  // The one Peri on screen (in the chat): scanning while it works, sleepy after a failed request (until the comparison
   // changes), reacting to the proposed result, idle while placing.
   const last=messages.at(-1);
-  const mood=running?{name:'bounce',loop:true,key:'run-'+running}:last?.kind==='error'&&last.basis===input?{name:'sleepy',loop:false,key:'error-'+last.id}:!editing&&scenario?{name:MOOD[scenario.proposedVisibility.state],loop:false,key:'result-'+scenario.proposedVisibility.state}:{name:'idle',loop:true,key:'idle'};
+  const mood=running?'working':last?.kind==='error'&&last.basis===input?'sleepy':!editing&&scenario?MOOD[scenario.proposedVisibility.state]:'idle';
   return <main className={'app'+(editing?' app--placing':' app--comparing')} style={{'--scene-aspect':scene.camera.width+' / '+scene.camera.height}}>
     <div className="backdrop" aria-hidden="true"><i/><i/><i/></div>
     <section className="stage" aria-label={editing?(placementUnavailable?'Recorded observation':'Place comparison actors'):'Street map'}>
