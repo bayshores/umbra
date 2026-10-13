@@ -1,4 +1,4 @@
-import { Sparkle, ArrowRight, Ruler } from '@phosphor-icons/react';
+import { ArrowRight, Ruler } from '@phosphor-icons/react';
 
 const STATUS={ask:'Nemotron is setting up…',check:'Nemotron is checking distances…'};
 export const SOURCE='NVIDIA Nemotron · Nebius Token Factory';
@@ -11,13 +11,13 @@ export default function AssistantBar({question,onQuestion,askHint,checkHint,runn
   const source=<span className="assistant-source"> · {SOURCE}</span>;
   return <section className="assistant" aria-label="Nemotron assistant">
     <div className={'assistant-bar'+(ready?' assistant-bar--ready':'')}>
-      <span className="assistant-label"><Sparkle size={16} weight="fill" aria-hidden="true"/>Nemotron</span>
       <form className="assistant-form" onSubmit={e=>{e.preventDefault();if(ready&&question.trim())onAsk();}}>
-        <input type="text" aria-label="Describe a what-if for Nemotron" maxLength={500} value={question} disabled={!!askHint} readOnly={busy} aria-disabled={busy||undefined}
+        <label className="assistant-label" htmlFor="assistant-question">Nemotron</label>
+        <input id="assistant-question" type="text" aria-label="Describe a what-if for Nemotron" maxLength={500} value={question} disabled={!!askHint} readOnly={busy} aria-disabled={busy||undefined}
           placeholder={askHint||'e.g. box truck 10 ft back, child'} title={askHint||undefined} onChange={e=>onQuestion(e.target.value)}/>
         <button className="assistant-submit" type="submit" aria-label="Ask Nemotron" title={askHint||'Ask Nemotron'} disabled={!!askHint||!question.trim()} aria-disabled={busy||undefined}><ArrowRight size={17} weight="bold"/></button>
       </form>
-      <button className="assistant-check" type="button" title={checkHint||'Check distances with Nemotron'} disabled={!!checkHint} aria-disabled={busy||undefined} onClick={()=>{if(!busy)onCheck();}}><Ruler size={16}/>Check distances</button>
+      <button className="assistant-check" type="button" title={checkHint||'Check distances with Nemotron'} disabled={!!checkHint} aria-disabled={busy||undefined} onClick={()=>{if(!busy)onCheck();}}><Ruler size={16} aria-hidden="true"/>Check distances</button>
     </div>
     <div className="assistant-output" role="status">
       {running?<p>{STATUS[running]}</p>:<>

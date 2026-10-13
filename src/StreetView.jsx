@@ -5,7 +5,14 @@ import { planCamera } from './plan-camera.mjs';
 import { driverViewport, comparisonScissors, calibrationCamera } from './driver-viewport.mjs';
 import { renderGeometry } from './scene.mjs';
 
-const STATES = { clear: 0x9dc8ba, blocked: 0xd39276, unknown: 0xd1c38e };
+// Person marker colour per result: only Blocked carries the accent; Unknown stays neutral.
+const STATES = { clear: 0xf4f2ff, blocked: 0xff7a9a, unknown: 0xf4f2ff };
+const VIEW_BACKGROUND = 0x060716;
+// Dot diameter in metres before the per-pixel clamp: near points read larger, far points smaller.
+const POINT_SIZE_M = 0.045;
+// Each dot's stored colour is the recorded camera's (grayscale) brightness at its pixel. Dots are shaded by that
+// brightness and given a quiet grey ramp by distance from the driver (top-down view: by height above the ground).
+const RAMP = { near: new THREE.Color(0x9ea3b0), mid: new THREE.Color(0x7f8393), far: new THREE.Color(0x5f6271) };
 const UP = new THREE.Vector3(0, 1, 0);
 const finite3 = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
 
@@ -50,7 +57,7 @@ function disposeTree(root) {
   });
 }
 function addMarker(point, color, group) {
-  const marker = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), new THREE.MeshBasicMaterial({ color }));
+  const marker = new THREE.Mesh(new THREE.SphereGeometry(0.08, 14, 10), new THREE.MeshBasicMaterial({ color }));
   marker.position.set(...point);
   group.add(marker);
 }
@@ -70,18 +77,62 @@ function addTarget(point, ground, color, group, hiddenGround = false, facing = n
   if (hiddenGround) addHollowMarker(ground, color, group, facing ?? [ground[0], ground[1] + 1, ground[2]]);
   else addMarker(ground, color, group);
 }
-function addVehicle(center, dimensions, axis, group, baseline = false) {
+// The LiDAR points as soft round dots. Driver views size each dot by its distance (pixelsPerMetre / depth);
+// the top-down view uses one fixed size. Points never write depth, so opaque vehicles hide the points behind them.
+function pointMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { pixelsPerMetre: { value: 1 }, fixedSize: { value: 0 }, groundY: { value: 0 },
+      nearColor: { value: RAMP.near }, midColor: { value: RAMP.mid }, farColor: { value: RAMP.far } },
+    vertexShader: `
+      uniform float pixelsPerMetre;
+      uniform float fixedSize;
+      uniform float groundY;
+      uniform vec3 nearColor;
+      uniform vec3 midColor;
+      uniform vec3 farColor;
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        vec4 view = modelViewMatrix * vec4(position, 1.0);
+        float depth = max(-view.z, 0.1);
+        float t;
+        if (fixedSize > 0.0) {
+          t = 1.0 - clamp((position.y - groundY) / 6.0, 0.0, 1.0);
+          gl_PointSize = fixedSize;
+        } else {
+          t = clamp((depth - 4.0) / 26.0, 0.0, 1.0);
+          gl_PointSize = clamp(pixelsPerMetre / depth, 1.0, 7.0);
+        }
+        vec3 ramp = t < 0.5 ? mix(nearColor, midColor, t * 2.0) : mix(midColor, farColor, t * 2.0 - 1.0);
+        vColor = ramp * (0.5 + 0.9 * sqrt(dot(color, vec3(0.3333))));
+        vAlpha = fixedSize > 0.0 ? 0.9 : mix(1.0, 0.6, t);
+        gl_Position = projectionMatrix * view;
+      }`,
+    fragmentShader: `
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        float r = length(gl_PointCoord - 0.5);
+        if (r > 0.5) discard;
+        gl_FragColor = vec4(min(vColor, vec3(1.0)), smoothstep(0.5, 0.05, r) * vAlpha);
+        #include <colorspace_fragment>
+      }`,
+    vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+}
+// Vehicles are opaque near-black volumes with bright edges (the plan's baseline stays a see-through reference outline).
+function addVehicle(center, dimensions, axis, group, baseline = false, top = false) {
   const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
   const yaw = Math.atan2(axis[0], axis[2]);
   const fill = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
-    color: baseline ? 0x9aa5a2 : 0x9dc8ba, transparent: baseline,
-    opacity: baseline ? 0.08 : 1, depthWrite: !baseline, side: THREE.DoubleSide,
+    color: baseline ? 0xffffff : top ? 0x262836 : VIEW_BACKGROUND, transparent: baseline,
+    opacity: baseline ? 0.05 : 1, depthWrite: !baseline, side: THREE.DoubleSide,
   }));
   fill.position.set(...center);
   fill.rotation.y = yaw;
   group.add(fill);
   const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geometry), new THREE.LineBasicMaterial({
-    color: baseline ? 0x8b9693 : 0x9dc8ba, transparent: true, opacity: baseline ? 0.58 : 0.96,
+    color: baseline ? 0x9a9cb0 : 0xf4f2ff, transparent: true, opacity: baseline ? 0.7 : 1,
   }));
   edge.position.copy(fill.position);
   edge.rotation.copy(fill.rotation);
@@ -98,11 +149,13 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     if (!element) return undefined;
     if (invalid) { onError?.(invalid); return undefined; }
     const world = new THREE.Scene();
-    world.background = mode === 'recorded' ? null : new THREE.Color(0x151a1b);
-    let renderer, observer, removePointer, removeResolution;
+    world.background = mode === 'recorded' ? null : new THREE.Color(VIEW_BACKGROUND);
+    let renderer, observer, removePointer, removeResolution, dots = null;
     const contextLost = () => latest.current.onError?.('Measured scene rendering failed: WebGL context lost.');
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: mode === 'recorded' });
+      // Transparent outside the calibrated image: a driver view letterboxed in a wider stage shows the page behind it.
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setClearColor(0x000000, 0);
       renderer.domElement.addEventListener('webglcontextlost', contextLost);
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -121,7 +174,8 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         const pointGeometry = new THREE.BufferGeometry();
         pointGeometry.setAttribute('position', geometry.getAttribute('position'));
         pointGeometry.setAttribute('color', geometry.getAttribute('color'));
-        world.add(new THREE.Points(pointGeometry, new THREE.PointsMaterial({ vertexColors: true, size: 1.5, sizeAttenuation: false })));
+        dots = pointMaterial();
+        world.add(new THREE.Points(pointGeometry, dots));
       }
       const draw = () => {
         const config = latest.current, width = element.clientWidth, height = element.clientHeight;
@@ -132,8 +186,14 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         renderer.setViewport(0, 0, width, height);
         renderer.clear(true, true, true);
         let camera, viewport;
-        if (config.mode === 'plan') camera = planCamera(scene, config.scenario, width / height);
-        else {
+        if (config.mode === 'plan') {
+          camera = planCamera(scene, config.scenario, width / height);
+          if (dots) {
+            dots.uniforms.fixedSize.value = 2 * renderer.getPixelRatio();
+            // Mapped-ground scenes keep the ground at the vehicle's ground height; measured-depth scenes at Y 0.
+            dots.uniforms.groundY.value = config.scenario?.vehicleOrigin ? config.scenario.vehicleGroundHeight : 0;
+          }
+        } else {
           const viewEye = config.eye ?? scene.camera.eye;
           let far = 0;
           const surfaceBounds = renderGeometry(scene).bounds;
@@ -145,6 +205,8 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
           if (!(far > 0)) throw new Error('Measured scene bounds do not surround the selected camera.');
           camera = calibrationCamera(scene.camera, viewEye, far * 2);
           viewport = driverViewport(width, height, scene.camera);
+          // Device pixels per metre at 1 m depth for this calibrated view (focal length scaled to the drawn viewport).
+          if (dots) dots.uniforms.pixelsPerMetre.value = POINT_SIZE_M * scene.camera.fy * (viewport.height / scene.camera.height) * renderer.getPixelRatio();
           renderer.setViewport(viewport.left, viewport.bottom, viewport.width, viewport.height);
           renderer.setScissor(viewport.left, viewport.bottom, viewport.width, viewport.height);
           renderer.setScissorTest(true);
@@ -281,14 +343,14 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
           addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group, hiddenGround, facing);
           if (mode === 'plan') {
             addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, group, true);
-            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
+            a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group, false, true);
           } else {
             a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
           }
         }
       } else if (preview) {
         if (preview.vehicle) addVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group);
-        if (preview.target) addTarget(preview.target, preview.targetGround, 0x9dc8ba, group, preview.targetHidden === true, facing);
+        if (preview.target) addTarget(preview.target, preview.targetGround, STATES.unknown, group, preview.targetHidden === true, facing);
       }
       a.world.add(group);
       a.overlay = group;
@@ -312,7 +374,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     ['target', 'Person', PersonSimple],
   ] : [];
   const sourceLabel = scene.reconstruction ? 'Estimated street reconstruction' : 'Measured street scene';
-  return <div ref={host} role="img" aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 220, overflow: 'hidden', borderRadius: 8, background: mode === 'recorded' ? 'transparent' : '#151a1b' }}>
+  return <div ref={host} role="img" aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 160, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
     {tags.map(([name, text, Icon]) => <div key={name} ref={node => { labels.current[name] = node; }} className={'map-object-marker map-object-marker--'+name} title={text} aria-label={text}><Icon size={18} weight="bold" aria-hidden="true"/></div>)}
   </div>;
 }

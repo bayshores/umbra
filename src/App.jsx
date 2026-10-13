@@ -1,12 +1,15 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { SquaresFour, RoadHorizon, Cube, PersonSimple, CheckCircle, Eye, ArrowsHorizontal, CrosshairSimple, XCircle, ArrowCounterClockwise } from '@phosphor-icons/react';
-import '@fontsource/geist-mono/400.css';
-import '@fontsource/geist-mono/500.css';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { RoadHorizon, Cube, PersonSimple, CrosshairSimple, XCircle, ArrowCounterClockwise, CaretDown } from '@phosphor-icons/react';
+import '@fontsource/overpass-mono/400.css';
+import '@fontsource/overpass-mono/600.css';
+import '@fontsource/overpass-mono/700.css';
 import StreetView from './StreetView.jsx';
 import AssistantBar from './AssistantBar.jsx';
 import DistanceCheck, { sweepText } from './DistanceCheck.jsx';
+import LaneRuler from './LaneRuler.jsx';
+import Bloop from './Bloop.jsx';
 import { roadPoint, comparisonStart, placementPreview, createScenario, isMappedGround, mappedGroundHit, annotatedVehicle } from './geometry.mjs';
-import { runTool, scenarioFacts, supportFacts, checkAnswer, allowedNumbersFrom, withheldNote, declaredLine, vehiclePart, sameVehicle } from './scenario-assistant.mjs';
+import { runTool, scenarioFacts, supportFacts, checkAnswer, allowedNumbersFrom, withheldNote, declaredLine, vehiclePart, sameVehicle, dims } from './scenario-assistant.mjs';
 import { runAssistant } from './nemotron-client.mjs';
 import { loadScene } from './scene.mjs';
 import { suggestedSetup, isStillSuggested, suggestionStatus, supportSummary } from './suggestions.mjs';
@@ -33,6 +36,11 @@ const ASSISTANT_ERRORS={assistant_unavailable:'Nemotron isn\'t configured on thi
   busy:'Nemotron is busy with another request. Try again shortly.',upstream_timeout:'Nemotron didn\'t answer in time.',upstream_error:'Nemotron returned an error.',
   network:'The Nemotron server couldn\'t be reached.'};
 const STATE_WORDS={blocked:'blocked',unknown:'not blocked by the vehicle (rest unknown)',overlap:'vehicle overlaps person or driver'};
+// The result words shown on screen (never Clear).
+const STATE_TITLE={blocked:'Blocked',unknown:'Unknown',overlap:'Overlap'};
+// Bloop's reaction to a result. There is no happy "sees clearly" mood: Sightline never reports Clear.
+const MOOD={blocked:'blocked',unknown:'unsure',overlap:'unsure'};
+const unwrapNote=note=>(note??'').replace(/^\((.*)\)$/,'$1').replace(/; /g,', ');
 // The app's own one-line result for a run, shown when Nemotron's wording is withheld. baseline: the left badge's word.
 function computedLine(run,baseline) {
   const f=run.facts,parts=[];
@@ -47,22 +55,29 @@ function imagePixel(event,scene) {
   return [Math.floor((event.clientX-rect.left)/rect.width*scene.camera.width),Math.floor((event.clientY-rect.top)/rect.height*scene.camera.height)];
 }
 
-function DriverComparison({scene,scenario,baseline,onError}) {
-  const [split,setSplit]=useState(.5);
-  return <section className="comparison-view" aria-label={baseline+' and proposed comparison'}>
-    <StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="compare" split={split} onError={onError}/>
-    {split>0&&<div className="comparison-badge comparison-badge--current"><span>{baseline}</span><span className={'visibility-state visibility-state--'+scenario.currentVisibility.state} title={scenario.currentVisibility.reason}>{scenario.currentVisibility.state}</span></div>}
-    {split<1&&<div className="comparison-badge comparison-badge--proposed"><span>Proposed</span><span className={'visibility-state visibility-state--'+scenario.proposedVisibility.state} title={scenario.proposedVisibility.reason}>{scenario.proposedVisibility.state}</span></div>}
-    <div className="wipe-seam" style={{left:(split*100)+'%'}} aria-hidden="true"/>
-    <input className="wipe-control" type="range" aria-label="Comparison split" aria-valuetext={Math.round(split*100)+' percent '+baseline.toLowerCase()+', '+Math.round((1-split)*100)+' percent proposed'} min="0" max="100" step="1" value={split*100} onChange={e=>setSplit(Number(e.target.value)/100)}/>
-    <ArrowsHorizontal className="wipe-icon" size={20} weight="bold" style={{left:(split*100)+'%'}} aria-hidden="true"/>
-  </section>;
+// One screen per case: the same camera and scene, with only that case's vehicle drawn (split 1 = current, 0 = proposed).
+function CaseView({scene,scenario,which,name,onError}) {
+  const result=which==='current'?scenario.currentVisibility:scenario.proposedVisibility;
+  const setback=which==='current'?scenario.baselineSetback:scenario.proposedSetback;
+  return <figure className={'case case--'+which}>
+    <figcaption className="case-head">
+      <span className="case-name">{name}</span>
+      <span className="case-distance">{meters(setback)} m</span>
+      {which==='proposed'&&<Bloop key={'bloop-'+result.state} mood={MOOD[result.state]} size={54} loop={false} className="case-bloop"/>}
+      <span key={'state-'+result.state} className={'state state--'+result.state} title={result.reason}>{STATE_TITLE[result.state]}</span>
+    </figcaption>
+    <div className="case-screen"><StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="compare" split={which==='current'?1:0} onError={onError}/></div>
+  </figure>;
 }
 
 export function App() {
   const [catalog,setCatalog]=useState(null),[sceneId,setSceneId]=useState(''),[scene,setScene]=useState(null),[fatal,setFatal]=useState('');
   const [loadAttempt,setLoadAttempt]=useState(0);
   const [recordedImage,setRecordedImage]=useState(null);
+  // The corner window shows the top-down map (where the proposed vehicle can be dragged) or the recorded photo.
+  const [inset,setInset]=useState('map');
+  // The result card keeps the per-object evidence folded away until asked for.
+  const [showEvidence,setShowEvidence]=useState(false);
   const [pixels,setPixels]=useState({}),[active,setActive]=useState('crossing'),[cursor,setCursor]=useState(['','']);
   const [vehicle,setVehicle]=useState({width:'',height:'',length:''}),[targetHeight,setTargetHeight]=useState('');
   const [input,setInput]=useState(null),[editing,setEditing]=useState(true),[message,setMessage]=useState('');
@@ -220,20 +235,20 @@ export function App() {
       if(runRef.current===controller){runRef.current=null;setRunning(null);}
     }
   }
-  if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
-  if(!scene)return <main className="app"><h1>Sightline</h1><p role="status">Loading measured scene…</p></main>;
+  if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><Bloop mood="sleepy" size={96}/><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
+  if(!scene)return <main className="app app--loading"><div className="backdrop" aria-hidden="true"><i/><i/><i/></div><div className="loading" role="status"><Bloop mood="bounce" size={120}/><span>Loading measured scene…</span></div></main>;
   const mapped=isMappedGround(scene),placementUnavailable=scene.measurements?.kind==='indexedSparse'&&!mapped;
   const surface=mapped?'mapped ground':'measured road';
-  const supportText=key=>support[key]?support[key].supportLabel+(support[key].hidden?' · hidden':''):'';
+  const supportText=key=>support[key]?support[key].supportLabel+(support[key].hidden?', hidden':''):'';
   // Hover text only: the annotated stationary vehicle is drawn from its annotated pose.
-  const annotatedNote=key=>key==='parking'&&baselineKind(pixels,vehicle,vehicleDeclared)==='annotated'?' · annotated pose':'';
+  const annotatedNote=key=>key==='parking'&&baselineKind(pixels,vehicle,vehicleDeclared)==='annotated'?', annotated pose':'';
   const recordedUrl=recordedImage?.scene===scene?recordedImage.url:undefined;
   const recordedSource=scene.measurements?recordedUrl:'/scenes/'+scene.id+'/recorded.jpg';
   const ownsImage=image=>image.isConnected&&image.getAttribute('src')===recordedSource;
-  const evidence=scene.measurements?`${scene.reconstruction?'NVIDIA estimate · projected references':'Projected LiDAR'}${mapped?' · mapped ground':''}`:`${scene.reconstruction?'NVIDIA estimate · measured anchors':'Measured depth'} ${(scene.coverage*100).toFixed(1)}%`;
+  const evidence=scene.measurements?`${scene.reconstruction?'NVIDIA estimate from projected references':'Projected LiDAR'}${mapped?' on mapped ground':''}`:`${scene.reconstruction?'NVIDIA estimate from measured anchors':'Measured depth'} ${(scene.coverage*100).toFixed(1)}%`;
   // Mapped-ground (AV2) scenes carry their CC BY-NC-SA attribution in the evidence key.
   // The changes notice is in the hover text and, for screen readers, in the line itself.
-  const attribution=mapped?<span title={scene.ground.license.changes}>{scene.ground.license.source} · {scene.ground.license.attribution} · <a href={CC_BY_NC_SA} target="_blank" rel="noopener noreferrer">CC BY-NC-SA 4.0</a><span className="sr-only"> · {scene.ground.license.changes}</span></span>:null;
+  const attribution=mapped?<span className="attribution" title={scene.ground.license.changes}><span>{scene.ground.license.source}</span><span>{scene.ground.license.attribution}</span><a href={CC_BY_NC_SA} target="_blank" rel="noopener noreferrer">CC BY-NC-SA 4.0</a><span className="sr-only">{scene.ground.license.changes}</span></span>:null;
   const complete={crossing:!!pixels.crossing,parking:!!pixels.parking&&Object.values(vehicle).every(positive),target:!!pixels.target&&positive(targetHeight)};
   const point=pixels[active];
   const inImage=cursor.every((v,i)=>filled(v)&&Number.isInteger(Number(v))&&Number(v)>=0&&Number(v)<(i?scene.camera.height:scene.camera.width));
@@ -257,26 +272,44 @@ export function App() {
   const onScreenVehicleLabel=()=>{const w=work.current.input?.vehicle??work.current.vehicle,v=declared.findLast(d=>d.key==='vehicle');
     if(v&&sameVehicle(v.value,w))return v.label;
     return suggestion&&!overridden.includes('vehicle')&&isStillSuggested('vehicle',w,suggestion.provenance)?scene.suggestions.vehicle.label:null;};
-  const suggestedTag=(key,value)=>suggestion&&!overridden.includes(key)&&isStillSuggested(key,value,suggestion.provenance)?<span className="suggested-tag"><span className="sr-only">, </span>Suggested · {suggestion.provenance[key].status}</span>:null;
+  const suggestedTag=(key,value)=>suggestion&&!overridden.includes(key)&&isStillSuggested(key,value,suggestion.provenance)?<span className="suggested-tag"><span className="sr-only">, </span>Suggested, {suggestion.provenance[key].status}</span>:null;
   const selectedLabel=labelOf(selected);
-  // Mapped-ground comparison: the support of the points it was computed from, suggested or edited.
+  // Mapped-ground comparison: the support of the points it was computed from, suggested or edited (hover text).
   const compareSupport=mapped&&scenario?supportSummary(scenario.support):{text:'',title:''};
-  return <main className="app" style={{'--scene-aspect':scene.camera.width+' / '+scene.camera.height}}>
-    <header className="app-header">
-      <a className="brand" href="/" aria-label="Sightline home"><SquaresFour size={26} weight="fill"/><span>Sightline</span></a>
-      {placementUnavailable?<span className="scene-support-state" role="status">Ground unvalidated · placement unavailable</span>:<nav className="object-selectors" aria-label="Comparison objects">{anchors.map(({key,name,Icon})=><button key={key} aria-label={name} aria-pressed={active===key} onClick={()=>selectObject(key)}><Icon size={20}/><span>{name}</span>{complete[key]&&<CheckCircle className="completion-icon" size={13} weight="fill" aria-label="Complete"/>}</button>)}</nav>}
-      {!placementUnavailable&&<div className="header-action">{editing?<button className="compare-button" disabled={!setup.scenario} onClick={compare}>Compare positions</button>:<button onClick={()=>setEditing(true)}>Edit placements</button>}</div>}
+  const kindNow=input?baselineKind(input.pixels,input.vehicle,input.vehicleDeclared):baselineKind(pixels,vehicle,vehicleDeclared);
+  // One evidence line per placed object: the suggestion it still holds (or its size) and where its point comes from.
+  const evidenceRows=anchors.filter(a=>pixels[a.key]).map(({key,name})=>{
+    const part=suggested?.parts.find(p=>p.key===key),s=support[key],v=input?.vehicle??vehicle,h=input?.targetHeight??targetHeight;
+    const value=key==='parking'?`${BASELINE[kindNow][1]}, ${Object.values(v).every(positive)?dims(v):'size not set'}`
+      :part?.text??(key==='target'?(positive(h)?`${meters(Number(h))} m`:'height not set'):'placed');
+    const note=part?.note?unwrapNote(part.note):s?s.supportLabel+(s.hidden?', hidden':''):'';
+    return {key,name,value,note,title:part?.title??((supportText(key)+annotatedNote(key))||undefined)};
+  });
+  // The place is the catalog label's first part ("Palo Alto · AV2 …" shows as "Palo Alto").
+  const placeName=label=>label.split(' · ')[0];
+  const placeLabel=placeName(catalog.find(e=>e.id===sceneId)?.label??'');
+  const resetButton=suggested?.edited&&<button type="button" className="suggestion-reset" onClick={resetToSuggested}><ArrowCounterClockwise size={14} aria-hidden="true"/>Reset to suggested</button>;
+  const assistantEl=!placementUnavailable&&<AssistantBar question={question} onQuestion={setQuestion} askHint={askHint} checkHint={checkHint} running={running} onAsk={()=>runNemotron('ask')} onCheck={()=>runNemotron('check')} declared={declaredText} reply={shownReply}/>;
+  const credits=<p className="credits"><span>{evidence}{!scene.reconstruction&&!scene.measurements&&', dark gaps unknown'}</span><span title="This geometric comparison is not a safety assessment.">Declared what-if actors</span>{attribution}</p>;
+  return <main className={'app'+(editing?' app--placing':' app--comparing')} style={{'--scene-aspect':scene.camera.width+' / '+scene.camera.height}}>
+    <div className="backdrop" aria-hidden="true"><i/><i/><i/></div>
+    <header className="topbar">
+      <a className="brand" href="/" aria-label="Sightline home"><Bloop mood="idle" size={30} loop={false} className="brand-bloop"/>Sightline</a>
+      {catalog.length>1?<select className="place-select" aria-label="Measured scene" value={sceneId} onChange={e=>setSceneId(e.target.value)}>{catalog.map(e=><option key={e.id} value={e.id} title={e.label}>{placeName(e.label)}</option>)}</select>:<span className="place-name">{placeLabel}</span>}
+      {placementUnavailable?<span className="scene-support-state" role="status">Ground unvalidated · placement unavailable</span>
+        :<nav className="segmented" aria-label="Mode" data-active={editing?0:1}>
+          <span className="segmented-thumb" aria-hidden="true"/>
+          <button type="button" aria-pressed={editing} onClick={()=>setEditing(true)}>Place</button>
+          <button type="button" aria-pressed={!editing} disabled={editing&&!setup.scenario} title={editing&&!setup.scenario?'Place crossing, vehicle and person first':undefined} onClick={compare}>Compare</button>
+        </nav>}
+      {editing&&!placementUnavailable&&<nav className="object-selectors" aria-label="Comparison objects">
+        {anchors.map(({key,name,Icon})=><button key={key} type="button" className={complete[key]?undefined:'object--missing'} aria-label={name+(complete[key]?'':', not placed yet')} aria-pressed={active===key} onClick={()=>selectObject(key)}><Icon size={18} aria-hidden="true"/><span>{name}</span></button>)}
+        {resetButton}
+      </nav>}
     </header>
-    {!placementUnavailable&&<AssistantBar question={question} onQuestion={setQuestion} askHint={askHint} checkHint={checkHint} running={running} onAsk={()=>runNemotron('ask')} onCheck={()=>runNemotron('check')} declared={declaredText} reply={shownReply}/>}
-    {!placementUnavailable&&suggested&&(suggested.parts.length>0||suggested.edited)&&<div className="suggestion-line">
-      {suggested.parts.length>0&&<span>Suggested{suggested.parts.map(p=><Fragment key={p.key}>{' '}<span title={p.title}>· {p.text}</span>{p.note&&<>{' '}<span title={p.title}>{p.note}</span></>}</Fragment>)}</span>}
-      {suggested.edited&&<button type="button" className="suggestion-reset" onClick={resetToSuggested}><ArrowCounterClockwise size={13} aria-hidden="true"/>Reset to suggested</button>}
-    </div>}
-    {catalog.length>1&&<select aria-label="Measured scene" value={sceneId} onChange={e=>setSceneId(e.target.value)}>{catalog.map(e=><option key={e.id} value={e.id}>{e.label}</option>)}</select>}
-    <div className="workspace">
-      {error&&<p className="inline-error" role="alert">{error}</p>}
-      {editing?<div className="placement-layout">
-        <section className="placement-panel" aria-label={placementUnavailable?'Recorded observation':'Place comparison actors'}>
+    {error&&<p className="inline-error" role="alert">{error}</p>}
+    {editing?<section className="place-layout" aria-label={placementUnavailable?'Recorded observation':'Place comparison actors'}>
+      <div className="place-photo">
           <div className="recorded-editor" style={bubbleStyle}>
             <div className="recorded-frame">
             <div className={'recorded-picker'+(placementUnavailable?' recorded-picker--readonly':'')} role={placementUnavailable?undefined:'button'} tabIndex={placementUnavailable?undefined:0} aria-label={placementUnavailable?undefined:'Select '+selectedLabel+' on '+surface+'. Arrow keys move the pixel cursor; Enter selects.'} title={placementUnavailable?undefined:'Place '+selectedLabel.toLowerCase()+(mapped?' on mapped ground':' on a supported road pixel')}
@@ -300,18 +333,47 @@ export function App() {
               {active==='parking'?['width','height','length'].map(key=><label key={key}><span>{key}</span><input type="number" aria-label={'Vehicle '+key+' in meters'} aria-invalid={filled(vehicle[key])&&!positive(vehicle[key])} min="0" step="any" value={vehicle[key]} onChange={e=>{setVehicle(v=>({...v,[key]:e.target.value}));resetComparison();}}/></label>):<input type="number" aria-label="Target height in meters" aria-invalid={filled(targetHeight)&&!positive(targetHeight)} min="0" step="any" value={targetHeight} onChange={e=>{setTargetHeight(e.target.value);resetComparison();}}/>}
             </div>}
           </div>
-          {!placementUnavailable&&<div className="pixel-controls"><span className="selected-label"><selected.Icon size={17}/>{selectedLabel}{suggestedTag(active,pixels[active])}{!!supportText(active)&&<span className="suggested-tag support-tag" title={supportText(active)+annotatedNote(active)}><span className="sr-only">, </span>{supportText(active)}</span>}</span><div className="pixel-inputs"><span>Pixel</span>{['X','Y'].map((name,i)=><label key={name}><span className="sr-only">Pixel {name}</span><input aria-label={'Pixel '+name} aria-invalid={!!candidate.error} aria-describedby="point-feedback" type="number" min="0" max={i?scene.camera.height-1:scene.camera.width-1} step="1" value={cursor[i]} onKeyDown={e=>{if(e.key==='Enter')setCursorPoint();}} onChange={e=>{setCursor(p=>p.map((v,j)=>i===j?e.target.value:v));setMessage('');}}/></label>)}<button disabled={!candidate.valid} aria-describedby="point-feedback" onClick={setCursorPoint}>Set point</button></div><span id="point-feedback" className="sr-only" role="status">{candidate.valid?(mapped?'Mapped ground point':'Measured road point'):candidate.error}</span></div>}
-        </section>
-        <section className="driver-preview" aria-label="Placement driver preview"><div className="view-heading"><h2><Eye size={18}/>Driver view</h2></div><div className="preview-viewport"><StreetView scene={scene} preview={preview.actors} onError={setFatal}/></div><div className="evidence-key"><span>{evidence}</span><span>Dark gaps · unknown</span>{attribution}</div></section>
-      </div>:<>
-        {scenario?<DriverComparison scene={scene} scenario={scenario} baseline={baselineWord(input.pixels,input.vehicle,input.vehicleDeclared)} onError={setFatal}/>:<div className="unavailable">Enter valid comparison values.</div>}
-        <div className="comparison-tools">
-          <section className="approach-panel"><div className="control-heading"><h2>Driver position</h2>{scenario&&<span>{meters(scenario.driverDistance)} m</span>}</div>{scenario&&<><input aria-label="Driver position" type="range" min={scenario.limits.minimumDriverDistance} max={scenario.limits.captureDistance} step="any" value={input.driverDistance} onChange={e=>setInput(p=>({...p,driverDistance:Number(e.target.value)}))}/><div className="range-ends"><span>Near crossing</span><span>Recorded camera</span></div></>}</section>
-          <section className="plan-panel"><div className="control-heading"><h2>Proposed movement</h2><label className="setback-input"><span className="sr-only">Vehicle distance from crossing</span><input aria-label="Exact vehicle distance in meters" type="number" min="0" step="any" value={typeof input.proposedSetback==='number'?Number(input.proposedSetback.toFixed(2)):input.proposedSetback} onChange={e=>moveVan(e.target.value)}/><span>m</span></label></div><div className="plan-viewport">{scenario?<StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="plan" baselineLabel={BASELINE[baselineKind(input.pixels,input.vehicle,input.vehicleDeclared)][1]} onSetbackChange={moveVan} onError={setFatal}/>:<div className="unavailable">Comparison unavailable</div>}</div>{scenario&&<input aria-label="Vehicle distance from crossing" type="range" min={scenario.limits.minimumSetback} max={scenario.limits.maximumSetback} step="any" value={Number(input.proposedSetback)} onChange={e=>moveVan(Number(e.target.value))}/>}</section>
-          {sweepShown&&<DistanceCheck results={sweep.results} vehicle={input.vehicle} setback={input.proposedSetback} codeNote={!mapped} disabled={!!running} reveal={sweep.reveal&&!running} onRevealed={()=>setSweep(p=>p&&{...p,reveal:false})} onApply={applySweepRow}/>}
+      </div>
+      <aside className="glass place-preview" aria-label="Driver view preview">
+        <div className="card-head"><span>Driver view</span><span>Dark gaps are unknown</span></div>
+        <div className="preview-viewport"><StreetView scene={scene} preview={preview.actors} onError={setFatal}/></div>
+      </aside>
+    </section>
+    :<section className="views" aria-label="Comparison">
+      {scenario?<>
+        <CaseView scene={scene} scenario={scenario} which="current" name={BASELINE[kindNow][1]} onError={setFatal}/>
+        <CaseView scene={scene} scenario={scenario} which="proposed" name="Proposed vehicle" onError={setFatal}/>
+      </>:<div className="unavailable"><Bloop mood="sleepy" size={72}/>Enter valid comparison values.</div>}
+    </section>}
+    <section className="lower">
+      <div className="glass dock">
+        {editing?!placementUnavailable&&<div className="pixel-controls"><span className="selected-label"><selected.Icon size={17}/>{selectedLabel}{suggestedTag(active,pixels[active])}{!!supportText(active)&&<span className="suggested-tag support-tag" title={supportText(active)+annotatedNote(active)}><span className="sr-only">, </span>{supportText(active)}</span>}</span><div className="pixel-inputs"><span>Pixel</span>{['X','Y'].map((name,i)=><label key={name}><span className="sr-only">Pixel {name}</span><input aria-label={'Pixel '+name} aria-invalid={!!candidate.error} aria-describedby="point-feedback" type="number" min="0" max={i?scene.camera.height-1:scene.camera.width-1} step="1" value={cursor[i]} onKeyDown={e=>{if(e.key==='Enter')setCursorPoint();}} onChange={e=>{setCursor(p=>p.map((v,j)=>i===j?e.target.value:v));setMessage('');}}/></label>)}<button disabled={!candidate.valid} aria-describedby="point-feedback" onClick={setCursorPoint}>Set point</button></div><span id="point-feedback" className="sr-only" role="status">{candidate.valid?(mapped?'Mapped ground point':'Measured road point'):candidate.error}</span></div>:<div className="controls">
+          <label className="exact" htmlFor="setback-meters"><span>Proposed</span><input id="setback-meters" aria-label="Exact vehicle distance in meters" type="number" min="0" step="any" value={typeof input.proposedSetback==='number'?input.proposedSetback.toFixed(2):input.proposedSetback} onChange={e=>moveVan(e.target.value)}/><span>m</span></label>
+          {scenario&&<LaneRuler limits={scenario.limits} setback={scenario.proposedSetback} baselineSetback={scenario.baselineSetback} driverDistance={scenario.driverDistance} baselineLabel={BASELINE[kindNow][1]} onSetback={moveVan} onDriver={v=>setInput(p=>({...p,driverDistance:v}))}/>}
+        </div>}
+        {assistantEl}
+      </div>
+      {!editing&&<aside className="glass mapcard" aria-label="Top-down map and recorded photo">
+        <div className="segmented segmented--small" role="tablist" aria-label="Corner view" data-active={inset==='map'?0:1}>
+          <span className="segmented-thumb" aria-hidden="true"/>
+          <button type="button" role="tab" aria-selected={inset==='map'} aria-pressed={inset==='map'} onClick={()=>setInset('map')}>Map</button>
+          <button type="button" role="tab" aria-selected={inset==='photo'} aria-pressed={inset==='photo'} onClick={()=>setInset('photo')}>Photo</button>
         </div>
-        <div className="evidence-key"><span>{evidence}{!scene.reconstruction&&!scene.measurements&&' · dark gaps unknown'}</span>{!!compareSupport.text&&<span title={compareSupport.title}>{compareSupport.text}</span>}<span title="This geometric comparison is not a safety assessment.">Declared what-if actors</span>{attribution}</div>
-      </>}
-    </div>
+        {inset==='map'?<div className="plan-viewport">{scenario?<StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="plan" baselineLabel={BASELINE[kindNow][1]} onSetbackChange={moveVan} onError={setFatal}/>:<div className="unavailable">Comparison unavailable</div>}</div>
+          :<div className="photo-viewport">{recordedSource&&<img className="recorded-still" src={recordedSource} alt="Recorded camera frame"/>}</div>}
+      </aside>}
+    </section>
+    {!editing&&sweepShown&&<div className="glass distance-wrap"><DistanceCheck results={sweep.results} vehicle={input.vehicle} setback={input.proposedSetback} codeNote={!mapped} disabled={!!running} reveal={sweep.reveal&&!running} onRevealed={()=>setSweep(p=>p&&{...p,reveal:false})} onApply={applySweepRow}/></div>}
+    <footer className="foot">
+      {!editing&&scenario&&<div className="foot-evidence">
+      {!!compareSupport.text&&<p className="support-line" title={compareSupport.title||undefined}>{compareSupport.text}</p>}
+      {evidenceRows.length>0&&<button type="button" className="details-toggle" aria-expanded={showEvidence} aria-controls="evidence-details" onClick={()=>setShowEvidence(v=>!v)}>{showEvidence?'Hide details':'Details'}<CaretDown size={12} weight="bold" aria-hidden="true"/></button>}
+      {showEvidence&&evidenceRows.length>0&&<dl className="evidence" id="evidence-details" title={compareSupport.title||undefined}>
+            {evidenceRows.map(r=><div key={r.key} title={r.title}><dt>{r.name}</dt><dd>{r.value}{r.note&&<span className="evidence-note">{r.note}</span>}</dd></div>)}
+            {resetButton&&<div><dt className="sr-only">Suggestions</dt><dd>{resetButton}</dd></div>}
+          </dl>}
+      </div>}
+      {credits}
+    </footer>
   </main>;
 }
