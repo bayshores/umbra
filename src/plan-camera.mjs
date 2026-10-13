@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import { whatIfBox } from './geometry.mjs';
 
-// Frame the entire allowed movement once, so dragging never moves the map.
-export function planCamera(scene, scenario, aspect) {
+// Frame the entire allowed movement once, so dragging never moves the map. context: also frame the street around it
+// (the far side of the crossing and the curbs), for the large night-map stage.
+export function planCamera(scene, scenario, aspect, context = false) {
   const axis = scenario ? new THREE.Vector3(scenario.axis[0], 0, scenario.axis[2]).normalize() : new THREE.Vector3(0, 0, 1);
   const side = new THREE.Vector3(axis.z, 0, -axis.x);
   // Use the long side of the viewport for the approach, keeping actors readable.
@@ -16,6 +17,10 @@ export function planCamera(scene, scenario, aspect) {
     // (setback 0 to the maximum; it moves in a straight line, so every setback between is inside). geometry.mjs whatIfBox
     // places each one: a declared box on its own line (on mapped scenes through its own front, not the crossing), an
     // annotated pose with its own heading and size.
+    if (context) {
+      const at = (base, along, lateral) => base.map((v, i) => v + axis.getComponent(i) * along + side.getComponent(i) * lateral);
+      for (const lateral of [-13, 13]) points.push(at(scenario.crossing, -11, lateral), at(scene.camera.eye, 2, lateral));
+    }
     for (const b of [scenario.baseline, whatIfBox(scenario.whatIf, 0), whatIfBox(scenario.whatIf, scenario.limits.maximumSetback)]) {
       const along = new THREE.Vector3(b.axis[0], 0, b.axis[2]).normalize(), across = new THREE.Vector3(along.z, 0, -along.x);
       for (const sign of [-1, 1]) for (const end of [-1, 1]) {
@@ -28,7 +33,7 @@ export function planCamera(scene, scenario, aspect) {
   const horizontal = points.map(p => new THREE.Vector3(...p).dot(right));
   const vertical = points.map(p => new THREE.Vector3(...p).dot(up));
   const minX = Math.min(...horizontal), maxX = Math.max(...horizontal), minY = Math.min(...vertical), maxY = Math.max(...vertical);
-  const halfHeight = Math.max((maxY - minY) / 2, (maxX - minX) / (2 * aspect)) * 1.2;
+  const halfHeight = Math.max((maxY - minY) / 2, (maxX - minX) / (2 * aspect)) * (context ? 1.04 : 1.2);
   if (!(halfHeight > 0)) throw new Error('Measured scene bounds cannot frame a top-down view.');
   const center = right.clone().multiplyScalar((minX + maxX) / 2).addScaledVector(up, (minY + maxY) / 2);
   const height = Math.max(scene.bounds.max[1] - scene.bounds.min[1], halfHeight * 2);

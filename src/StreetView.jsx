@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
-import { Truck, PersonSimple } from '@phosphor-icons/react';
+import { Truck, PersonSimple, Eye } from '@phosphor-icons/react';
 import * as THREE from 'three';
 import { planCamera } from './plan-camera.mjs';
 import { driverViewport, comparisonScissors, calibrationCamera } from './driver-viewport.mjs';
 import { renderGeometry } from './scene.mjs';
+import { mapLayers, rulerDots, rulerPoint, setbackAt } from './map-layers.mjs';
 
 // Person marker colour per result: only Blocked carries the accent; Unknown stays neutral.
 const STATES = { clear: 0xf4f2ff, blocked: 0xff7a9a, unknown: 0xf4f2ff };
@@ -14,6 +15,11 @@ const POINT_SIZE_M = 0.045;
 // brightness and given a quiet grey ramp by distance from the driver (top-down view: by height above the ground).
 const RAMP = { near: new THREE.Color(0x9ea3b0), mid: new THREE.Color(0x7f8393), far: new THREE.Color(0x5f6271) };
 const UP = new THREE.Vector3(0, 1, 0);
+// Night-map palette (top-down view): road surface, curbs, lane paint, crosswalk, annotated context objects, ruler dots.
+const MAP = { road: 0x141a2c, curb: 0x8a90b8, yellow: 0xcdb36a, white: 0xeceaf6, crossing: 0xe9e4f2, context: 0xb9b6cc, cyclist: 0xa9c7e8 };
+const RULER = { blocked: new THREE.Color(0xff7a9a), unknown: new THREE.Color(0xe9e4f2), overlap: new THREE.Color(0xa9c7e8), none: new THREE.Color(0x646a8c) };
+const TICKS = [0, 5, 10, 15];
+const metres = n => Number(n).toFixed(2);
 const finite3 = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
 
 function validate(scene, eye, scenario) {
@@ -140,9 +146,89 @@ function addVehicle(center, dimensions, axis, group, baseline = false, top = fal
   return fill;
 }
 
-export default function StreetView({ scene, scenario, preview, eye, mode = 'driver', split = .5, baselineLabel = 'Current vehicle', onSetbackChange, onError }) {
-  const host = useRef(null), api = useRef(null), labels = useRef({}), latest = useRef(null);
-  latest.current = { scene, scenario, preview, eye, mode, split, onSetbackChange, onError };
+function flatMaterial(color, opacity = 1) {
+  return new THREE.MeshBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide });
+}
+function lineMaterial(color, opacity = 1) {
+  return new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false, depthWrite: false });
+}
+// A flat ribbon along a polyline (lane paint), `offset` metres to its side, on the ground.
+function ribbon(points, halfWidth, offset, material, dashed = false) {
+  const positions = [], index = [];
+  const cut = dashed ? (d => d % 12 < 3) : (() => true);
+  let travelled = 0;
+  for (let i = 0; i + 1 < points.length; i++) {
+    const a = points[i], b = points[i + 1], dx = b[0] - a[0], dz = b[2] - a[2], len = Math.hypot(dx, dz);
+    if (!(len > 0)) continue;
+    const nx = -dz / len, nz = dx / len, steps = Math.max(1, Math.ceil(len / 1.5));
+    for (let k = 0; k < steps; k++) {
+      const t0 = k / steps, t1 = (k + 1) / steps, mid = travelled + len * (t0 + t1) / 2;
+      if (!cut(mid)) continue;
+      const p = t => [a[0] + dx * t, a[1] + (b[1] - a[1]) * t + .02, a[2] + dz * t], q0 = p(t0), q1 = p(t1), base = positions.length / 3;
+      for (const [q, side] of [[q0, -1], [q0, 1], [q1, -1], [q1, 1]]) positions.push(q[0] + nx * (offset + side * halfWidth), q[1], q[2] + nz * (offset + side * halfWidth));
+      index.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+    }
+    travelled += len;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(index);
+  return new THREE.Mesh(geometry, material);
+}
+// The publisher map and annotated objects, drawn flat under the scan points (mapped-ground scenes only).
+function buildMapBase(layers) {
+  const group = new THREE.Group(), y = layers.crossing.reduce((sum, p) => sum + p[1], 0) / layers.crossing.length - .05;
+  const order = (object, n) => { object.renderOrder = n; group.add(object); };
+  for (const outline of layers.areas) {
+    const contour = outline.map(([x, z]) => new THREE.Vector2(x, z));
+    const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(outline.flatMap(([x, z]) => [x, y, z]), 3));
+    geometry.setIndex(faces.flat());
+    order(new THREE.Mesh(geometry, flatMaterial(MAP.road)), -20);
+    order(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(outline.map(([x, z]) => new THREE.Vector3(x, y + .01, z))), lineMaterial(MAP.curb, .28)), -19);
+  }
+  const band = new THREE.BufferGeometry();
+  band.setAttribute('position', new THREE.Float32BufferAttribute(layers.crossing.flatMap(p => [p[0], p[1] + .03, p[2]]), 3));
+  band.setIndex([0, 1, 2, 0, 2, 3]);
+  order(new THREE.Mesh(band, flatMaterial(MAP.crossing, .13)), -18);
+  order(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(layers.crossing.map(p => new THREE.Vector3(p[0], p[1] + .04, p[2]))), lineMaterial(MAP.crossing, .6)), -17);
+  for (const { line, style } of layers.lanes) {
+    const material = flatMaterial(style.color === 'yellow' ? MAP.yellow : MAP.white, .95);
+    for (const offset of style.double ? [-.11, .11] : [0]) order(ribbon(line, style.double ? .05 : .065, offset, material, style.dashed), -16);
+  }
+  const dots = [];
+  for (const o of layers.objects) {
+    if (o.kind === 'person' || o.kind === 'other') { dots.push(o); continue; }
+    const loop = o.corners.map(([x, z]) => new THREE.Vector3(x, o.ground + .05, z));
+    order(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(loop), lineMaterial(o.kind === 'cyclist' ? MAP.cyclist : MAP.context, o.kind === 'cyclist' ? .55 : .32)), -15);
+  }
+  if (dots.length) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(dots.flatMap(o => [o.center[0], o.ground + .05, o.center[2]]), 3));
+    order(new THREE.Points(geometry, new THREE.PointsMaterial({ color: MAP.context, size: 4, sizeAttenuation: false, transparent: true, opacity: .55, depthTest: false })), -14);
+  }
+  return group;
+}
+// Round ruler dots of a fixed pixel size, coloured by the checked distance state at each setback.
+function rulerObject(dots, pixelRatio) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(dots.flatMap(d => [d.position[0], d.position[1] + .06, d.position[2]]), 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(dots.flatMap(d => (RULER[d.state] ?? RULER.none).toArray()), 3));
+  const material = new THREE.ShaderMaterial({
+    uniforms: { size: { value: 4.5 * pixelRatio } },
+    vertexShader: 'uniform float size; varying vec3 vColor; void main(){ vColor = color; gl_PointSize = size; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'varying vec3 vColor; void main(){ float r = length(gl_PointCoord - .5); if (r > .5) discard; gl_FragColor = vec4(vColor, smoothstep(.5, .32, r)); }',
+    vertexColors: true, transparent: true, depthTest: false, depthWrite: false,
+  });
+  const points = new THREE.Points(geometry, material);
+  points.renderOrder = -10;
+  return points;
+}
+
+export default function StreetView({ scene, scenario, preview, eye, mode = 'driver', split = .5, baselineLabel = 'Current vehicle', framing = 'tight', ruler = null, onSetbackChange, onDriverChange, onError }) {
+  const host = useRef(null), api = useRef(null), labels = useRef({}), latest = useRef(null), pending = useRef({});
+  latest.current = { scene, scenario, preview, eye, mode, split, framing, onSetbackChange, onDriverChange, onError };
 
   useEffect(() => {
     const element = host.current, invalid = validate(scene, eye, scenario);
@@ -176,6 +262,9 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         pointGeometry.setAttribute('color', geometry.getAttribute('color'));
         dots = pointMaterial();
         world.add(new THREE.Points(pointGeometry, dots));
+        // The night map: real publisher map layers and annotated objects under the scan points.
+        const layers = mode === 'plan' ? mapLayers(scene.ground) : null;
+        if (layers) world.add(buildMapBase(layers));
       }
       const draw = () => {
         const config = latest.current, width = element.clientWidth, height = element.clientHeight;
@@ -187,7 +276,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         renderer.clear(true, true, true);
         let camera, viewport;
         if (config.mode === 'plan') {
-          camera = planCamera(scene, config.scenario, width / height);
+          camera = planCamera(scene, config.scenario, width / height, config.framing === 'context');
           if (dots) {
             dots.uniforms.fixedSize.value = 2 * renderer.getPixelRatio();
             // Mapped-ground scenes keep the ground at the vehicle's ground height; measured-depth scenes at Y 0.
@@ -269,7 +358,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
 
   function pointerDown(event) {
     const a = api.current, config = latest.current;
-    if (!a?.proposed || config.mode !== 'plan' || !config.onSetbackChange || event.button !== 0) return;
+    if (!a?.proposed || config.mode !== 'plan' || !config.onSetbackChange || event.button !== 0 || event.target.closest?.('.map-handle')) return;
     const rect = event.currentTarget.getBoundingClientRect();
     a.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -((event.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
     if (!a.ray.intersectObject(a.proposed, false).length) return;
@@ -314,7 +403,62 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       node.style.top = `${(1 - p.y) * rect.height / 2}px`;
       node.style.transform = 'translate(-50%, -50%)';
     }
+    // Ruler labels and the two handles sit on the projected ruler line; the driver handle at the driver's ground point.
+    const place = (name, point, show = true) => {
+      const node = labels.current[name];
+      if (!node) return;
+      const p = new THREE.Vector3(...point).project(a.camera);
+      node.style.display = show && p.z > -1 && p.z < 1 && Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1 ? '' : 'none';
+      node.style.left = `${(p.x + 1) * rect.width / 2}px`;
+      node.style.top = `${(1 - p.y) * rect.height / 2}px`;
+    };
+    if (s.whatIf) {
+      // A tick label gives way to a handle's own value label when they would overlap.
+      for (const m of TICKS) place('tick-' + m, rulerPoint(s, m, 1.6), m <= s.limits.captureDistance && Math.abs(m - s.proposedSetback) > 1.3 && Math.abs(m - s.driverDistance) > 1.3);
+      place('setback', rulerPoint(s, s.proposedSetback));
+      place('driver', [s.eye[0], rulerPoint(s, 0)[1], s.eye[2]]);
+    }
   }
+  // Handles drag along the setback axis (the ruler), or step with the arrow keys (Shift: 1 m), within the limits.
+  const limitsFor = (kind, s) => kind === 'driver'
+    ? [s.driverDistance, s.limits.minimumDriverDistance, s.limits.captureDistance, latest.current.onDriverChange]
+    : [s.proposedSetback, s.limits.minimumSetback, s.limits.maximumSetback, latest.current.onSetbackChange];
+  const clampTo = (v, min, max) => Math.min(max, Math.max(min, v));
+  function handleDrag(kind) {
+    return event => {
+      const a = api.current, s = latest.current.scenario;
+      if (!a?.camera || !s || event.button !== 0) return;
+      event.preventDefault();
+      const node = event.currentTarget, groundY = rulerPoint(s, 0)[1];
+      node.setPointerCapture(event.pointerId);
+      node.focus({ focusVisible: false });
+      const move = e => {
+        const rect = host.current.getBoundingClientRect(), sc = latest.current.scenario;
+        a.ray.setFromCamera(new THREE.Vector2((e.clientX - rect.left) / rect.width * 2 - 1, -((e.clientY - rect.top) / rect.height * 2 - 1)), a.camera);
+        a.plane.constant = -groundY;
+        const hit = a.ray.ray.intersectPlane(a.plane, new THREE.Vector3());
+        if (!hit || !sc) return;
+        const [, min, max, change] = limitsFor(kind, sc);
+        change?.(clampTo(setbackAt(sc, [hit.x, hit.y, hit.z]), min, max));
+      };
+      const up = () => { node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up); node.removeEventListener('pointercancel', up); };
+      node.addEventListener('pointermove', move); node.addEventListener('pointerup', up); node.addEventListener('pointercancel', up);
+    };
+  }
+  function handleKeys(kind) {
+    return event => {
+      const s = latest.current.scenario;
+      if (!s) return;
+      const [value, min, max, change] = limitsFor(kind, s), step = event.shiftKey ? 1 : .1;
+      const base = pending.current[kind] ?? value;
+      const next = { ArrowLeft: base - step, ArrowDown: base - step, ArrowRight: base + step, ArrowUp: base + step, Home: min, End: max }[event.key];
+      if (next === undefined) return;
+      event.preventDefault();
+      pending.current[kind] = clampTo(next, min, max);
+      change?.(pending.current[kind]);
+    };
+  }
+  useEffect(() => { pending.current = {}; }, [scenario]);
 
   useEffect(() => {
     const a = api.current;
@@ -344,6 +488,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
           if (mode === 'plan') {
             addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, group, true);
             a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group, false, true);
+            if (scenario.whatIf) group.add(rulerObject(rulerDots(scenario, ruler), a.renderer.getPixelRatio()));
           } else {
             a.proposed = addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
           }
@@ -361,7 +506,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       // Let replacement materials acquire matching programs before releasing their last previous users.
       if (previousOverlay) disposeTree(previousOverlay);
     }
-  }, [scene, scenario, preview, eye, mode, onSetbackChange]);
+  }, [scene, scenario, preview, eye, mode, onSetbackChange, ruler]);
 
   useEffect(() => {
     try { if (api.current) api.current.camera = api.current.draw(); }
@@ -374,7 +519,21 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     ['target', 'Person', PersonSimple],
   ] : [];
   const sourceLabel = scene.reconstruction ? 'Estimated street reconstruction' : 'Measured street scene';
-  return <div ref={host} role="img" aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 160, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
+  const plan = scenario && mode === 'plan' && scenario.whatIf;
+  const slider = (kind, label, Icon) => {
+    const [value, min, max] = limitsFor(kind, scenario);
+    return <div ref={node => { labels.current[kind] = node; }} className={'map-handle map-handle--' + kind} role="slider" tabIndex={0} aria-label={label}
+      aria-valuemin={Number(metres(min))} aria-valuemax={Number(metres(max))} aria-valuenow={Number(metres(value))} aria-valuetext={metres(value) + ' metres from the crossing'}
+      onPointerDown={handleDrag(kind)} onKeyDown={handleKeys(kind)}>
+      <span className="map-handle-chip"><Icon size={13} weight="bold" aria-hidden="true"/></span><span className="map-handle-value">{metres(value)} m</span>
+    </div>;
+  };
+  return <div ref={host} role={plan ? 'group' : 'img'} aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 160, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
     {tags.map(([name, text, Icon]) => <div key={name} ref={node => { labels.current[name] = node; }} className={'map-object-marker map-object-marker--'+name} title={text} aria-label={text}><Icon size={18} weight="bold" aria-hidden="true"/></div>)}
+    {plan && <>
+      {TICKS.filter(m => m <= scenario.limits.captureDistance).map(m => <span key={m} ref={node => { labels.current['tick-' + m] = node; }} className="map-tick" aria-hidden="true">{m} m</span>)}
+      {slider('setback', 'Proposed vehicle distance from crossing', Truck)}
+      {slider('driver', 'Driver distance from crossing', Eye)}
+    </>}
   </div>;
 }
