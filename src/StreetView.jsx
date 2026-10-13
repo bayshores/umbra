@@ -383,8 +383,9 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     if (!point) return;
     const s = config.scenario, axis = new THREE.Vector3(s.axis[0], 0, s.axis[2]).normalize();
     const setback = a.grab.setback + point.dot(axis) - a.grab.along;
-    // The box's nearest point stays on the camera side of the crossing (a turned annotated pose: its nearer front corner).
-    if (Number.isFinite(setback) && setback > (s.whatIf?.cornerOffset ?? 0)) config.onSetbackChange(setback);
+    // Dragging the box stops at the slider's ends, as the ruler handle does: its nearest point (a turned annotated pose: its
+    // nearer front corner) keeps the road tolerance from the crossing, and its rear stays inside the captured road.
+    if (Number.isFinite(setback)) config.onSetbackChange(clampTo(setback, s.limits.minimumSetback, s.limits.maximumSetback));
   }
   function pointerUp(event) { if (api.current?.dragging === event.pointerId) api.current.dragging = null; }
   function placeLabels() {
