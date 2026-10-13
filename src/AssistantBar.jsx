@@ -35,7 +35,7 @@ export default function AssistantBar({ messages, question, onQuestion, askHint, 
       {messages.map(m => <li key={m.id} className={'msg msg--' + m.from + (m.kind ? ' msg--' + m.kind : '')}>
         <span className="msg-author">{m.from === 'you' ? 'You' : m.from === 'bloop' ? 'Bloop' : 'Sightline'}</span>
         {m.kind === 'result' ? <p className="msg-result">
-            <DotText text={STATE_TITLE[m.state] ?? m.state} pitch={3} className={'dot-text--' + m.state}/>
+            <DotText text={STATE_TITLE[m.state] ?? m.state} pitch={3} className={'dot-text--' + m.state} animate/>
             <span className="msg-result-at">{m.setback} m</span></p>
           : m.kind === 'sweep' ? (renderSweep(m) ?? <p className="msg-bubble">{m.text}</p>)
           : <p className="msg-bubble">{m.text}</p>}

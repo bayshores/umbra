@@ -63,13 +63,17 @@ const revealOnOpen=el=>{ el?.scrollIntoView({block:'nearest'}); };
 function CaseView({scene,scenario,which,name,onError}) {
   const result=which==='current'?scenario.currentVisibility:scenario.proposedVisibility;
   const setback=which==='current'?scenario.baselineSetback:scenario.proposedSetback;
+  // Counts result changes after the first one shown; each change lights the lettering dot by dot and scans the view in once.
+  const [shown,setShown]=useState(result.state),[changes,setChanges]=useState(0);
+  if(shown!==result.state){ setShown(result.state); setChanges(changes+1); }
   return <figure className={'case case--'+which}>
     <figcaption className="case-head">
       <span className="case-name">{name}</span>
       <span className="case-distance">{meters(setback)} m</span>
-      <DotText key={'state-'+result.state} text={STATE_TITLE[result.state]} pitch={3} className={'case-state dot-text--'+result.state} title={result.reason}/>
+      <DotText key={'state-'+changes} text={STATE_TITLE[result.state]} pitch={3} className={'case-state dot-text--'+result.state} title={result.reason} animate={changes>0}/>
     </figcaption>
-    <div className="case-screen"><StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="compare" split={which==='current'?1:0} onError={onError}/></div>
+    <div className="case-screen"><StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="compare" split={which==='current'?1:0} onError={onError}/>
+      {changes>0&&<span key={changes} className="case-scan" aria-hidden="true"/>}</div>
   </figure>;
 }
 
