@@ -49,22 +49,31 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
-const GROUND_KEYS=['baseSceneSha256','boundaryEpsilonMeters','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind','license',
-  'limitations','maxRangeMeters','processingCodeHashes','protocol','roadToleranceMeters','sceneId','schemaVersion','sources','support',
-  'supportHeightAgreementMeters','supportRadiusMeters','terrain'];
+// ground.json schemaVersion 2 (protocol v3): the schema 1 keys plus the placement range limit and the fitted along-ray
+// uncertainty band. Schema 1 layers (protocol v1/v2) are history and are refused.
+const GROUND_KEYS=['alongRayUncertainty','baseSceneSha256','boundaryEpsilonMeters','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind',
+  'license','limitations','maxRangeMeters','placementRangeLimitMeters','processingCodeHashes','protocol','roadToleranceMeters','sceneId','schemaVersion','sources',
+  'support','supportHeightAgreementMeters','supportRadiusMeters','terrain'];
+// Frozen protocols whose layers have the current schema numbers but are superseded, by sha256. Protocol v3
+// (.local/evaluation/av2-map-first-2026-10-11/protocol-v3.json) put a vehicle declared in place of the stationary one at
+// the front pixel's raster-shadowed ray hit (false Blocked on AV2 8c); protocol v3.1 fixed it (declaredReplacement). Its
+// files are internally consistent, so without this check the app would apply the v3.1 rule to v3 data.
+const SUPERSEDED_PROTOCOLS=Object.freeze({c91066034d6b13ce06ab1ee14cd70a148a4531f93692ccac7e21b58ec2f796eb:'protocol v3'});
 const SOURCE_KEYS='annotations,assembledScene,groundRaster,groundTransform,map,poses,preparedManifest,references';
 const CUBOID_KEYS='category,center,height,length,motion,numInteriorPoints,track,width,worldFromBox';
 const TERRAIN_KEYS='byteOrder,bytes,cellMeters,column0,columns,dtype,file,finiteCells,layout,nanCells,rasterShape,row0,rows,samplingRule,sha256,sim2,values';
-// Structural checks on ground.json (schemaVersion 1) before any value is used; the bytes are already hash-pinned.
+// Structural checks on ground.json (schemaVersion 2) before any value is used; the bytes are already hash-pinned.
 function validateGround(g,scene) {
   const need=(ok,detail)=>{if(!ok)throw new Error(`Invalid mapped ground: ${detail}.`);};
   const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v),text=v=>typeof v==='string'&&v.length>0&&v.length<=4096,
     hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),finite=v=>typeof v==='number'&&Number.isFinite(v),
     finite3=p=>Array.isArray(p)&&p.length===3&&p.every(finite),count=v=>Number.isSafeInteger(v)&&v>=0,
     positiveInt=v=>Number.isSafeInteger(v)&&v>0,keys=(v,list)=>object(v)&&Object.keys(v).sort().join()===list;
+  need(object(g)&&g.schemaVersion===2,'schemaVersion must be 2 (protocol v3; earlier ground layers are history)');
   need(keys(g,GROUND_KEYS.join()),'unexpected or missing top-level fields');
-  need(g.schemaVersion===1&&g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
+  need(g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
   need(hash(g.baseSceneSha256)&&keys(g.protocol,'bytes,path,readOnlyExternal,sha256')&&hash(g.protocol.sha256)&&text(g.protocol.path)&&count(g.protocol.bytes),'protocol record');
+  need(!Object.hasOwn(SUPERSEDED_PROTOCOLS,g.protocol.sha256),`${SUPERSEDED_PROTOCOLS[g.protocol.sha256]} is superseded (protocol v3.1 or later is required)`);
   // Every source is a relative read-only record; only the annotations may be absent (null), and then no cuboids exist.
   const source=s=>keys(s,'bytes,path,readOnlyExternal,sha256')&&hash(s.sha256)&&text(s.path)&&!s.path.startsWith('/')&&count(s.bytes)&&s.readOnlyExternal===true;
   need(keys(g.sources,SOURCE_KEYS)&&Object.entries(g.sources).every(([k,s])=>k==='annotations'&&s===null||source(s))&&
@@ -74,6 +83,12 @@ function validateGround(g,scene) {
     JSON.stringify(g.frame.worldFromCity)==='[[1,0,0],[0,0,1],[0,-1,0]]','frame must equal the scene city frame');
   need(['roadToleranceMeters','supportHeightAgreementMeters','supportRadiusMeters','boundaryEpsilonMeters'].every(k=>finite(g[k])&&g[k]>0&&g[k]<=5)&&
     finite(g.maxRangeMeters)&&g.maxRangeMeters>0&&g.maxRangeMeters<=1000,'tolerances and range');
+  need(finite(g.placementRangeLimitMeters)&&g.placementRangeLimitMeters>0&&g.placementRangeLimitMeters<=g.maxRangeMeters,'placement range limit');
+  // The app uses only heightBandMeters; the rest is provenance (a development fit, or a fixed band tested on this scene).
+  const band=g.alongRayUncertainty;
+  need(object(band)&&finite(band.heightBandMeters)&&band.heightBandMeters>0&&band.heightBandMeters<=1&&text(band.rule)&&object(band.coverage)&&
+    (band.method==='fitThisDevelopmentScene'&&object(band.fit)&&!Object.hasOwn(band,'heldOutResiduals')||
+     band.method==='fixed'&&text(band.fittedOn)&&object(band.heldOutResiduals)&&!Object.hasOwn(band,'fit')),'along-ray uncertainty band');
   const t=g.terrain,sim=t?.sim2,R=sim?.R;
   need(keys(t,TERRAIN_KEYS)&&t.file==='terrain.bin'&&t.dtype==='float32'&&t.byteOrder==='little'&&hash(t.sha256)&&positiveInt(t.columns)&&positiveInt(t.rows)&&
     t.bytes===t.rows*t.columns*4&&t.bytes<=16*1024*1024&&count(t.column0)&&count(t.row0)&&Array.isArray(t.rasterShape)&&t.rasterShape.length===2&&t.rasterShape.every(positiveInt)&&
@@ -94,8 +109,13 @@ function validateGround(g,scene) {
   need(keys(c,'available,frame,items,timestampNs')&&typeof c.available==='boolean'&&text(c.frame)&&typeof c.timestampNs==='string'&&/^[0-9]{1,32}$/.test(c.timestampNs)&&
     Array.isArray(c.items)&&(c.available||c.items.length===0),'cuboids');
   for(const box of c.items) {
-    const M=box?.worldFromBox,ok=keys(box,CUBOID_KEYS)&&text(box.track)&&text(box.category)&&finite3(box.center)&&['length','width','height'].every(k=>finite(box[k])&&box[k]>0)&&
-      count(box.numInteriorPoints)&&(box.motion===null||object(box.motion)&&Object.values(box.motion).every(finite))&&Array.isArray(M)&&M.length===3&&M.every(finite3);
+    // poseAverage: the current stationary vehicle's averaged annotations (protocol v3 currentVehicle.pose); provenance only.
+    const pose=box?.poseAverage,averaged=object(box)&&Object.hasOwn(box,'poseAverage');
+    const M=box?.worldFromBox,ok=keys(box,averaged?CUBOID_KEYS.replace('numInteriorPoints','numInteriorPoints,poseAverage'):CUBOID_KEYS)&&
+      text(box.track)&&text(box.category)&&finite3(box.center)&&['length','width','height'].every(k=>finite(box[k])&&box[k]>0)&&
+      count(box.numInteriorPoints)&&(box.motion===null||object(box.motion)&&Object.values(box.motion).every(finite))&&Array.isArray(M)&&M.length===3&&M.every(finite3)&&
+      (!averaged||object(pose)&&pose.rule==='averageAllAnnotations'&&positiveInt(pose.rows)&&object(pose.centreSpreadM)&&
+        ['alongStd','lateralStd'].every(k=>finite(pose.centreSpreadM[k])&&pose.centreSpreadM[k]>=0)&&object(pose.yawSpreadDeg)&&finite(pose.yawSpreadDeg.std)&&pose.yawSpreadDeg.std>=0);
     need(ok,'cuboid item');
     const det=M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1])-M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0])+M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0]);
     need([0,1,2].every(i=>[0,1,2].every(j=>Math.abs(M[0][i]*M[0][j]+M[1][i]*M[1][j]+M[2][i]*M[2][j]-(i===j?1:0))<=1e-6))&&Math.abs(det-1)<=1e-6,'cuboid rotation must be proper orthonormal');

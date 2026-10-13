@@ -10,6 +10,12 @@ Reads an assembled indexed AV2 scene, its preparation manifest, the frozen place
 No hole filling, interpolation or invented geometry. Missing evidence stays Unknown; nothing here
 establishes free space or Clear. The shared geometry helpers are also used by
 suggest_av2_placements.py so the two scripts and the app apply one rule.
+
+Protocol v3 (protocolVersion 3) adds, and only then: ground.json schemaVersion 2 with the current
+stationary vehicle drawn at the average of all its annotations (poseAverage), an along-ray uncertainty
+height band fitted on this development scene's camera-visible LiDAR ground returns (alongRayUncertainty)
+and a 30 m placement range limit (placementRangeLimitMeters). Protocols v1/v2 produce the schema-1 layer
+exactly as before.
 """
 import argparse
 from importlib.metadata import version
@@ -36,6 +42,15 @@ EPS = 1e-9
 LICENSE = {'id': 'CC-BY-NC-SA-4.0', 'attribution': '(c) 2021 Argo AI, LLC', 'source': 'Argoverse 2 Sensor Dataset',
            'changes': 'Mapped drivable areas, crossing edges, ego lane, a ground-raster window and annotated cuboids converted to '
                       'Sightline scene coordinates; LiDAR support rows selected by a frozen protocol. No endorsement implied.'}
+# Held-out tests, controls and reserve of the frozen Palo Alto split (.local/evaluation/pao-accuracy/split.json, sha256
+# 47f64fe0...). Nothing is ever fitted on these logs; the protocol v3 band fit refuses them.
+HELD_OUT_LOG_PREFIXES = ('88f47a10', '3153b5b3', 'd33f667d', 'fd5c6932', '25e5c600', 'e1d68dde', 'a91d4c7b', '4a60c567', 'b6c4361a')
+# protocol currentVehicle.checks 'stationary' (same numbers as suggest_av2_placements.annotated_vehicle).
+STATIONARY_SPAN_S, STATIONARY_DISPLACEMENT_M = 3.0, 1.0
+
+
+def too_far(limit):
+    return f'Too far to place (over {limit:g} m).'
 
 
 # ------------------------------------------------------------------ shared geometry (one rule for scripts and app)
@@ -149,6 +164,21 @@ def inside_polygons(xz, polygons):
     return result
 
 
+def pixel_ground_hit(scene, uv, terrain, polygons, max_range, range_limit=None):
+    """The runtime placement rule for a crop position [u, v] (integer pixel centre or fractional): its unit camera ray, the
+    first mapped-ground hit, then (protocol v3) the horizontal range limit, then the drivable test.
+    Returns (direction, hit or None, Unknown reason or None)."""
+    d = ray_direction(scene, uv); hit = ray_hit(d, terrain, max_range)
+    if not hit['hit']:
+        return d, None, hit['reason']
+    p = hit['point']
+    if range_limit is not None and math.hypot(p[0], p[2]) > range_limit:
+        return d, None, too_far(range_limit)
+    if not inside_polygons([p[0], p[2]], polygons)[0]:
+        return d, None, 'First mapped-ground hit is outside the mapped drivable area.'
+    return d, hit, None
+
+
 def segment_hits_boxes(ends, cuboids):
     """Closed segment world origin -> each end intersects any cuboid (inclusive slab test, app segmentIntersectsBox)."""
     ends = np.asarray(ends, float).reshape(-1, 3); hit = np.zeros(len(ends), bool)
@@ -213,6 +243,204 @@ def support_rows(positions, eligible, terrain, cuboids, tolerance):
                   'cuboidOcclusionApplied': cuboids is not None}
 
 
+# ------------------------------------------------------------------ protocol v3: averaged stationary pose
+def circular_mean(angles):
+    """Circular mean (radians) of headings: atan2(sum sin, sum cos); undefined when they cancel."""
+    a = np.asarray(angles, float); s = float(np.sin(a).sum()); c = float(np.cos(a).sum())
+    require(len(a) > 0 and math.hypot(s, c) > 1e-6 * len(a), 'Circular mean undefined: headings cancel')
+    return math.atan2(s, c)
+
+
+def wrap_angle(angle):
+    """Angle difference wrapped to [-pi, pi)."""
+    return (float(angle) + math.pi) % (2 * math.pi) - math.pi
+
+
+def upright_world_from_box(yaw):
+    """worldFromBox of an upright box whose +x points along city yaw (box +z = city up)."""
+    c, s = math.cos(yaw), math.sin(yaw)
+    return (WORLD_FROM_CITY @ np.array([[c, -s, 0.], [s, c, 0.], [0., 0., 1.]])).tolist()
+
+
+def _std(values):
+    return float(np.sqrt(np.mean(np.square(values - np.mean(values))))) if len(values) else 0.
+
+
+def average_track_pose(history, poses, sweep_timestamp):
+    """protocol v3 currentVehicle.pose 'averageAllAnnotations': every row of one stationary track, each mapped to the city
+    frame with the exact ego pose at its own timestamp. Centre = arithmetic mean; yaw = circular mean of each row's
+    horizontal heading (box +x); upright box (row pitch/roll not used); dimensions = medians. Rows are sorted by
+    timestamp first, so the result does not depend on input order. Returns (city centre, yaw, [length, width, height],
+    poseAverage record)."""
+    rows = sorted(history, key=lambda r: r['timestamp_ns'])
+    require(len(rows) > 0 and all(r['timestamp_ns'] in poses for r in rows), 'Exact pose missing for an annotation of the averaged track')
+    centres, yaws, dims = [], [], []
+    for r in rows:
+        pose = poses[r['timestamp_ns']]
+        centres.append(pose[:3, :3] @ np.array([r['tx_m'], r['ty_m'], r['tz_m']], float) + pose[:3, 3])
+        h = (pose[:3, :3] @ _quat(r))[:, 0]
+        require(math.hypot(h[0], h[1]) > 1e-6, 'Annotated heading is vertical')
+        yaws.append(math.atan2(h[1], h[0]))
+        dims.append([r['length_m'], r['width_m'], r['height_m']])
+    centres = np.asarray(centres, float); dims = np.asarray(dims, float)
+    require(np.isfinite(centres).all() and np.isfinite(dims).all() and (dims > 0).all(), 'Invalid annotation of the averaged track')
+    centre = centres.mean(0); yaw = circular_mean(yaws); median = np.median(dims, 0)
+    heading = np.array([math.cos(yaw), math.sin(yaw)]); left = np.array([-heading[1], heading[0]])
+    offset = centres - centre; along, lateral, vertical = offset[:, :2] @ heading, offset[:, :2] @ left, offset[:, 2]
+    dyaw = np.degrees([wrap_angle(y - yaw) for y in yaws])
+    sweep = [i for i, r in enumerate(rows) if r['timestamp_ns'] == sweep_timestamp]
+    require(len(sweep) == 1, 'The averaged track needs exactly one row at the sweep timestamp')
+    i = sweep[0]
+    spread = {'alongStd': _std(along), 'lateralStd': _std(lateral), 'verticalStd': _std(vertical),
+              'alongMin': float(along.min()), 'alongMax': float(along.max()), 'lateralMin': float(lateral.min()),
+              'lateralMax': float(lateral.max()), 'verticalMin': float(vertical.min()), 'verticalMax': float(vertical.max()),
+              'maxHorizontalFromMean': float(np.hypot(along, lateral).max())}
+    record = {'rule': 'averageAllAnnotations', 'rows': len(rows), 'firstTimestampNs': str(rows[0]['timestamp_ns']),
+              'lastTimestampNs': str(rows[-1]['timestamp_ns']), 'spanSeconds': (rows[-1]['timestamp_ns'] - rows[0]['timestamp_ns']) / 1e9,
+              'centreSpreadM': spread, 'yawSpreadDeg': {'std': _std(dyaw), 'maxAbs': float(np.abs(dyaw).max())},
+              'dimensionRangeM': {k: [float(dims[:, j].min()), float(dims[:, j].max())] for j, k in enumerate(('length', 'width', 'height'))},
+              'sweepRow': {'timestampNs': str(sweep_timestamp), 'alongM': float(along[i]), 'lateralM': float(lateral[i]),
+                           'verticalM': float(vertical[i]), 'horizontalM': float(math.hypot(along[i], lateral[i])), 'yawDeg': float(dyaw[i])},
+              'convention': 'offsets are row minus average: along the averaged heading (+ = forward), lateral (+ = left of the heading), '
+                            'vertical (+ = up); population standard deviations; yaw offsets wrapped to [-180, 180) degrees',
+              'numInteriorPoints': 'the sweep row\'s count, not recomputed for the averaged box'}
+    return centre, yaw, median.tolist(), record
+
+
+# ------------------------------------------------------------------ protocol v3: fitted along-ray height band
+def nearest_rank(sorted_values, p):
+    """Nearest-rank percentile of an ascending array: element ceil(p n) - 1."""
+    return float(sorted_values[max(math.ceil(p * len(sorted_values)) - 1, 0)])
+
+
+def residual_stats(dz, band):
+    """Descriptive statistics of height residuals dz and the share within +/- band (count 0 and nulls when empty). Computed
+    from sorted values, so any input order gives identical numbers."""
+    d = np.sort(np.asarray(dz, float))
+    require(np.isfinite(d).all(), 'Height residuals must be finite')
+    if not len(d):
+        return {'count': 0, 'medianM': None, 'sigmaRobustM': None, 'stdM': None, 'meanM': None, 'q68AbsM': None, 'q95AbsM': None,
+                'q99AbsM': None, 'maxAbsM': None, 'withinBandFraction': None}
+    a = np.sort(np.abs(d)); median = float(np.median(d))
+    return {'count': int(len(d)), 'medianM': median, 'sigmaRobustM': 1.4826 * float(np.median(np.sort(np.abs(d - median)))),
+            'stdM': _std(d), 'meanM': float(np.mean(d)), 'q68AbsM': nearest_rank(a, .68), 'q95AbsM': nearest_rank(a, .95),
+            'q99AbsM': nearest_rank(a, .99), 'maxAbsM': float(a[-1]), 'withinBandFraction': float((a <= band).mean())}
+
+
+def fit_height_band(dz, minimum_count):
+    """protocol v3 alongRayUncertainty.heightBand: heightBandMeters = nearest-rank 95th percentile of |dz| rounded UP to
+    0.001 m, plus descriptive statistics (residual_stats)."""
+    a = np.sort(np.abs(np.asarray(dz, float)))
+    require(np.isfinite(a).all() and len(a) >= max(minimum_count, 1), f'Height band fit needs at least {minimum_count} finite returns ({len(a)})')
+    band = math.ceil(nearest_rank(a, .95) * 1000 - 1e-9) / 1000
+    return band, residual_stats(dz, band)
+
+
+def height_residuals(positions, eligible, terrain, cuboids, polygons, gate, range_limit):
+    """protocol v3 fit set: camera-visible (eligible, finite, not behind any cuboid), raster value at the return's own XY,
+    inside the drivable union, horizontal range <= range_limit, |dz| <= gate. Returns (rows, dz of rows, counts)."""
+    positions = np.asarray(positions, float); eligible = np.asarray(eligible, bool); count = len(positions)
+    finite = np.isfinite(positions).all(1); dz = np.full(count, np.nan)
+    dz[finite] = positions[finite, 1] - (terrain.sample(positions[finite][:, [0, 2]])[0] - terrain.origin[2])
+    candidate = eligible & finite
+    occluded = np.zeros(count, bool)
+    if cuboids and candidate.any():
+        occluded[candidate] = segment_hits_boxes(positions[candidate], cuboids)
+    drivable = np.zeros(count, bool)
+    drivable[finite] = inside_polygons(positions[finite][:, [0, 2]], polygons)
+    within = np.zeros(count, bool); within[finite] = np.hypot(positions[finite, 0], positions[finite, 2]) <= range_limit
+    base = candidate & ~occluded & np.isfinite(dz) & drivable & within
+    rows = np.flatnonzero(base & (np.abs(np.nan_to_num(dz, nan=np.inf)) <= gate))
+    return rows, dz[rows], {'cameraVisibleWithTerrain': int((candidate & ~occluded & np.isfinite(dz)).sum()),
+                            'insideDrivableWithinRange': int(base.sum()), 'removedByGroundGate': int(base.sum() - len(rows))}
+
+
+def click_errors(scene, terrain, polygons, positions, uv, rows, max_range, range_limit):
+    """For each row: the runtime rule at its floating projection (fractional click) and at the nearest integer pixel
+    (integer click). Returns {kind: {'error': horizontal distance hit-to-return (NaN when Unknown), 'sinDepression',
+    'reason'}}."""
+    camera = scene['camera']; out = {}
+    for kind in ('fractional', 'integer'):
+        error = np.full(len(rows), np.nan); sin_dep = np.full(len(rows), np.nan); reasons = []
+        for k, row in enumerate(rows):
+            u, v = float(uv[row, 0]), float(uv[row, 1])
+            if kind == 'integer':
+                u, v = math.floor(u + .5), math.floor(v + .5)
+            if not (0 <= u <= camera['width'] - 1 and 0 <= v <= camera['height'] - 1):
+                reasons.append('Click is outside the recorded image.'); continue
+            d, hit, reason = pixel_ground_hit(scene, [u, v], terrain, polygons, max_range, range_limit)
+            if hit is None:
+                reasons.append(reason); continue
+            p = hit['point']; error[k] = math.hypot(p[0] - positions[row, 0], p[2] - positions[row, 2]); sin_dep[k] = -d[1]
+            reasons.append(None)
+        out[kind] = {'error': error, 'sinDepression': sin_dep, 'reason': reasons}
+    return out
+
+
+def coverage_table(errors, ranges, band, bands, last_inclusive=True):
+    """Per horizontal-range band: placed count, Unknown reasons, share of errors <= band / sin(depression), error and
+    shown-uncertainty percentiles (nearest rank)."""
+    table = []
+    for j, (a, b) in enumerate(bands):
+        top = ranges <= b if (last_inclusive and j == len(bands) - 1) else ranges < b
+        inside = (ranges >= a) & top
+        placed = inside & np.isfinite(errors['error'])
+        unknown = {}
+        for k in np.flatnonzero(inside & ~np.isfinite(errors['error'])):
+            unknown[errors['reason'][k]] = unknown.get(errors['reason'][k], 0) + 1
+        e = np.sort(errors['error'][placed]); shown = np.sort(band / errors['sinDepression'][placed])
+        covered = int((errors['error'][placed] <= band / errors['sinDepression'][placed]).sum())
+        table.append({'band': f'{a:g}-{b:g} m', 'candidates': int(inside.sum()), 'placed': int(placed.sum()),
+                      'unknown': dict(sorted(unknown.items())), 'covered': covered,
+                      'coverage': covered / int(placed.sum()) if placed.any() else None,
+                      'errorM': {'median': nearest_rank(e, .5), 'p95': nearest_rank(e, .95)} if len(e) else None,
+                      'shownM': {'median': nearest_rank(shown, .5), 'p95': nearest_rank(shown, .95), 'max': float(shown[-1])} if len(shown) else None})
+    return table
+
+
+def along_ray_uncertainty(scene, positions, eligible, uv, terrain, cuboids, polygons, protocol, max_range):
+    """protocol v3 alongRayUncertainty. Development scene (method fitThisDevelopmentScene): fit the height band here and
+    report its in-sample coverage and split-half stability. Held-out scene (method fixed, protocol v3.1): use the fixed
+    development band unchanged; this scene's residuals and coverage are recorded as a test of that band (heldOutResiduals),
+    never as a fit: no minimum count, no split-half refit."""
+    spec = protocol['alongRayUncertainty']; fit = spec['heightBand']; report = spec['coverageReport']
+    limit = protocol['placementRange']['limitMeters']
+    fixed = fit['method'] == 'fixed'
+    if fixed:
+        band = fit['heightBandMeters']
+        require(type(band) is float and 0 < band <= 1 and isinstance(fit.get('fittedOn'), str), 'A fixed height band needs a value and its development source')
+    else:
+        require(fit['method'] == 'fitThisDevelopmentScene', 'Unknown height band method')
+        require(not protocol['scene']['logId'].startswith(HELD_OUT_LOG_PREFIXES), 'Held-out or reserve data must never be used to fit the height band')
+    rows, dz, counts = height_residuals(positions, eligible, terrain, cuboids, polygons, fit['groundGateMeters'], limit)
+    if fixed:
+        stats = residual_stats(dz, band)
+    else:
+        band, stats = fit_height_band(dz, fit['minimumCount'])
+    ranges = np.hypot(positions[rows, 0], positions[rows, 2])
+    errors = click_errors(scene, terrain, polygons, positions, uv, rows, max_range, limit)
+    bands = [tuple(b) for b in report['bandsMeters']]
+    coverage = {'definition': report['definition'],
+                'fractionalClick': coverage_table(errors['fractional'], ranges, band, bands),
+                'integerClick': coverage_table(errors['integer'], ranges, band, bands)}
+    record_ = {**stats, **counts, 'groundGateMeters': fit['groundGateMeters'], 'rangeLimitMeters': limit, 'selection': fit['fitSet']}
+    if fixed:
+        return {'rule': spec['rule'], 'heightBandMeters': band, 'method': 'fixed', 'fittedOn': fit['fittedOn'],
+                'heldOutResiduals': {**record_, 'scope': 'test: the fixed development band checked on this scene\'s returns; nothing is fitted here'},
+                'coverage': coverage}
+    halves = {}
+    for name, part, other in (('fitEvenTestOdd', rows % 2 == 0, rows % 2 == 1), ('fitOddTestEven', rows % 2 == 1, rows % 2 == 0)):
+        half_band, _ = fit_height_band(dz[part], 1)
+        tested = {'error': errors['fractional']['error'][other], 'sinDepression': errors['fractional']['sinDepression'][other],
+                  'reason': [r for r, keep in zip(errors['fractional']['reason'], other) if keep]}
+        table = coverage_table(tested, ranges[other], half_band, [(bands[0][0], bands[-1][1])])[0]
+        halves[name] = {'heightBandMeters': half_band, 'testedPlaced': table['placed'], 'testedCoverage': table['coverage']}
+    return {'rule': spec['rule'], 'heightBandMeters': band, 'method': fit['method'],
+            'fit': {**record_, 'statistic': fit['statistic'],
+                    'scope': 'in-sample: fitted and reported on this development scene only; held-out testing is separate'},
+            'coverage': {**coverage, 'splitHalf': halves}}
+
+
 # ------------------------------------------------------------------ inputs
 def _no_absolute(value, where):
     if isinstance(value, dict):
@@ -252,13 +480,16 @@ def _poses(data):
     return poses
 
 
-def cuboids_from_annotations(data, poses, timestamp, origin):
+def cuboids_from_annotations(data, poses, timestamp, origin, average_prefix=None):
+    """Annotated cuboids at the sweep timestamp. average_prefix (protocol v3): the one track starting with it at the sweep,
+    if it passes the stationary check, is replaced by the average of all its annotations (average_track_pose)."""
     rows = prepare_av2.table(data, ['timestamp_ns', 'track_uuid', 'category', 'length_m', 'width_m', 'height_m',
                                     'qw', 'qx', 'qy', 'qz', 'tx_m', 'ty_m', 'tz_m', 'num_interior_pts']).to_pylist()
     require(timestamp in poses, 'Exact sweep pose missing for annotations')
     tracks = {}
     for row in rows:
         tracks.setdefault(row['track_uuid'], []).append(row)
+    matching = [] if average_prefix is None else [r for r in rows if r['timestamp_ns'] == timestamp and r['track_uuid'].startswith(average_prefix)]
     items = []
     for row in rows:
         if row['timestamp_ns'] != timestamp:
@@ -274,9 +505,16 @@ def cuboids_from_annotations(data, poses, timestamp, origin):
                             poses[r['timestamp_ns']][:3, 3])[:2] for r in history])
             motion = {'sweeps': len(history), 'spanSeconds': (history[-1]['timestamp_ns'] - history[0]['timestamp_ns']) / 1e9,
                       'maxDisplacementFromFirstM': float(np.linalg.norm(xy - xy[0], axis=1).max())}
-        items.append({'track': row['track_uuid'], 'category': row['category'], 'center': _world(center_city, origin).tolist(),
-                      'worldFromBox': rotation.tolist(), 'length': size[0], 'width': size[1], 'height': size[2],
-                      'numInteriorPoints': int(row['num_interior_pts']), 'motion': motion})
+        item = {'track': row['track_uuid'], 'category': row['category'], 'center': _world(center_city, origin).tolist(),
+                'worldFromBox': rotation.tolist(), 'length': size[0], 'width': size[1], 'height': size[2],
+                'numInteriorPoints': int(row['num_interior_pts']), 'motion': motion}
+        # Only an unambiguous, stationary current vehicle is averaged; otherwise the suggestion step refuses it.
+        if (len(matching) == 1 and matching[0] is row and motion is not None and motion['spanSeconds'] >= STATIONARY_SPAN_S and
+                motion['maxDisplacementFromFirstM'] <= STATIONARY_DISPLACEMENT_M):
+            centre, yaw, dims, record = average_track_pose(history, poses, timestamp)
+            item.update(center=_world(centre, origin).tolist(), worldFromBox=upright_world_from_box(yaw),
+                        length=dims[0], width=dims[1], height=dims[2], poseAverage=record)
+        items.append(item)
     require(items, 'No annotation rows at the sweep timestamp')
     return sorted(items, key=lambda item: item['track'])
 
@@ -290,6 +528,13 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     manifest_raw = snapshot(prepared_path, prepared_sha256, MAX_SCENE); manifest = parse(manifest_raw)
     protocol_raw = snapshot(protocol_path, protocol_sha256); protocol = parse(protocol_raw)
     p_scene, tol = protocol['scene'], protocol['tolerances']
+    protocol_version = protocol.get('protocolVersion', 1)
+    require(protocol_version in (1, 2, 3), 'Unsupported protocol version')
+    v3 = protocol_version == 3
+    if v3:
+        pose_rule = protocol['currentVehicle']['pose']['rule']; limit = protocol['placementRange']['limitMeters']
+        require(pose_rule == 'averageAllAnnotations' and type(limit) is float and 0 < limit <= tol['maxRangeMeters'],
+                'Protocol v3 needs the averaged pose rule and a placement range limit within maxRangeMeters')
     m = scene.get('measurements', {}); prov = m.get('provenance', {})
     require(m.get('kind') == 'indexedSparse' and m.get('groundPolicy') == 'unvalidated' and scene.get('sourceClass') == 'Argoverse2Sensor',
             'Assembled indexed AV2 scene with unvalidated ground required')
@@ -365,11 +610,23 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     if annotations_path is not None:
         annotations_path = Path(annotations_path).resolve()
         ann = snapshot(annotations_path, annotations_sha256, MAX_FILE)
-        cuboids = cuboids_from_annotations(ann, _poses(captured['poses']), timestamp, origin)
+        cuboids = cuboids_from_annotations(ann, _poses(captured['poses']), timestamp, origin,
+                                           protocol['currentVehicle']['trackPrefix'] if v3 else None)
         annotations_record = record(annotations_path, ann, output)
     road_tol = tol['roadToleranceMeters']
     rows, stats = support_rows(positions, eligible, terrain, cuboids if annotations_path is not None else None,
                                tol['supportHeightAgreementMeters'])
+    v3_fields = {}
+    if v3:
+        key = 'referenceUV'
+        uv_raw = snapshot(scene_path.parent / m['buffers'][key], m['artifactHashes'][key], MAX_FILE)
+        require(len(uv_raw) == count * 2 * 8, 'Scene buffer length mismatch')
+        uv = np.frombuffer(uv_raw, '<f8').reshape(count, 2)
+        polygons = [np.asarray(a['outline'], float) for a in areas]
+        v3_fields = {'schemaVersion': 2, 'placementRangeLimitMeters': limit,
+                     'alongRayUncertainty': along_ray_uncertainty(scene, positions, eligible, uv, terrain,
+                                                                  cuboids if annotations_path is not None else None,
+                                                                  polygons, protocol, tol['maxRangeMeters'])}
     ground = {
         'schemaVersion': 1, 'kind': 'av2MappedGround', 'sceneId': scene['id'], 'baseSceneSha256': scene_sha256,
         'protocol': record(protocol_path, protocol_raw, output),
@@ -411,6 +668,17 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
                         'Free space and Clear remain unestablished; results are Blocked or Unknown only.']}
     if annotations_path is None:
         ground['limitations'].append('Annotations were not supplied: hidden flags are not evaluated and no cuboid occlusion was applied to LiDAR support.')
+    if v3:
+        ground.update(v3_fields)
+        ground['limitations'] += [
+            'Protocol v3: the current stationary vehicle (cuboid with poseAverage) is the average of all its annotations in the log '
+            '(upright, circular-mean heading, median dimensions); every other cuboid is at the sweep timestamp.',
+            ('Protocol v3: the along-ray uncertainty uses a fixed height band fitted on development scenes '
+             f'({v3_fields["alongRayUncertainty"]["fittedOn"]}); this scene\'s LiDAR ground returns only test it (heldOutResiduals).'
+             if v3_fields['alongRayUncertainty']['method'] == 'fixed' else
+             'Protocol v3: the along-ray uncertainty uses a height band fitted on this development scene\'s camera-visible LiDAR ground '
+             'returns (in-sample; not a held-out test, and the LiDAR shares calibration with the camera).'),
+            f'Protocol v3: a mapped-ground hit more than {limit:g} m from the camera (horizontal) is refused.']
     _no_absolute(ground, 'ground.json')
     ground_bytes = canonical(ground)
     grounded = parse(scene_raw)
@@ -426,8 +694,12 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     _no_absolute(grounded, 'scene.json')
     scene_bytes = canonical(grounded)
     publish(output, {'terrain.bin': terrain_bytes, 'ground.json': ground_bytes, 'scene.json': scene_bytes})
-    return {'groundSha256': digest(ground_bytes), 'terrainSha256': digest(terrain_bytes), 'sceneSha256': digest(scene_bytes),
-            'supportRows': int(len(rows)), 'cuboids': len(cuboids), 'window': [c0, r0, int(window.shape[1]), int(window.shape[0])]}
+    result = {'groundSha256': digest(ground_bytes), 'terrainSha256': digest(terrain_bytes), 'sceneSha256': digest(scene_bytes),
+              'supportRows': int(len(rows)), 'cuboids': len(cuboids), 'window': [c0, r0, int(window.shape[1]), int(window.shape[0])]}
+    if v3:
+        result.update(heightBandMeters=v3_fields['alongRayUncertainty']['heightBandMeters'],
+                      averagedTracks=[c['track'] for c in cuboids if 'poseAverage' in c])
+    return result
 
 
 def main():

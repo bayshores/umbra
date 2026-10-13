@@ -1,4 +1,4 @@
-"""Synthetic analytic fixtures for AV2 map-first suggestions (schema v2), plus a real-data check skipped when files are absent."""
+"""Synthetic analytic fixtures for AV2 map-first suggestions (schema v3, protocol v3), plus real-data checks skipped when files are absent."""
 import copy
 import hashlib
 import importlib.util
@@ -23,6 +23,7 @@ spec = importlib.util.spec_from_file_location('ground_fixture', ROOT / 'tests/ca
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
 EPOCH = '1791768480'
 PLACED = ('crossing', 'vehicle', 'person')
+PENDING = {'basis': 'mapped near edge', 'status': 'pending-measurement', 'label': 'paint offset pending measurement', 'plusMinusM': None, 'evidence': None}
 
 
 def sha(data):
@@ -36,8 +37,9 @@ class SuggestionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def grounded(self, name='a', annotations=True, **options):
-        args = fixture.write_fixture(self.root / name, **options)
+    def grounded(self, name='a', annotations=True, protocol=None, **options):
+        args = fixture.write_fixture(self.root / name, protocol=fixture.PROTOCOL_V3 if protocol is None else protocol,
+                                     returns=fixture.V3_RETURNS, eligible=fixture.V3_ELIGIBLE, **options)
         if not annotations:
             args.update(annotations_path=None, annotations_sha256=None)
         fixture.tool.build(**args)
@@ -49,16 +51,27 @@ class SuggestionTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': EPOCH}):
             return tool.document(*tool.load(**paths))
 
+    def context(self, terrain=None, **options):
+        name = f'context{len(list(self.root.iterdir()))}'
+        scene, ground, base_terrain, positions, eligible, protocol, _ = tool.load(**self.grounded(name, **options))
+        return tool.Context(scene, ground, base_terrain if terrain is None else terrain(base_terrain, ground), positions, eligible, protocol)
+
     def test_annotated_stationary_vehicle_sets_crossing_and_hides_points(self):
         doc = self.document(self.grounded())
         v, c, p = doc['vehicle'], doc['crossing'], doc['person']
-        self.assertEqual((doc['schemaVersion'], doc['sourceClass'], doc['generatedUtc']), (2, 'mappedGround', '2026-10-12T01:28:00Z'))
+        band = doc['tolerances']['alongRayHeightBandMeters']
+        self.assertEqual((doc['schemaVersion'], doc['sourceClass'], doc['generatedUtc']), (3, 'mappedGround', '2026-10-12T01:28:00Z'))
+        self.assertEqual(doc['tolerances'], {'roadToleranceMeters': .08, 'supportHeightAgreementMeters': .08, 'supportRadiusMeters': .5,
+                                             'maxRangeMeters': 60.0, 'placementRangeLimitMeters': 30.0, 'alongRayHeightBandMeters': .094})
         self.assertEqual((v['status'], v['label'], v['reason']), ('annotated', 'stationary vehicle', tool.STATIONARY_REASON))
         self.assertEqual(v['dimensions'], {'width': 1.8, 'height': 1.5, 'length': 4.0}); self.assertEqual(v['track'], fixture.TRACK)
+        self.assertEqual(v['pose'], {'kind': 'averaged', 'annotations': 50}); self.assertEqual(v['appModel'], tool.APP_MODEL)
+        # The averaged box sits 0.00392 m toward world +X of the sweep box (fixture jitter), heading +Z, front at Z = 19.5.
         self.assertAlmostEqual(v['frontGapToCrossingM'], .5, places=9); self.assertAlmostEqual(v['headingToRoadAxisDeg'], 0, places=6)
-        np.testing.assert_allclose(np.asarray(v['mappedPoint'])[[0, 2]], [-4, 19.5], atol=1e-9)
-        self.assertEqual((c['status'], c['nearEdge'], c['paintOffset']), ('mapped', 'edge1', {'status': 'unmeasured', 'label': 'paint offset unmeasured'}))
-        np.testing.assert_allclose(np.asarray(c['mappedPoint'])[[0, 2]], [-4, 20], atol=1e-9)
+        np.testing.assert_allclose(np.asarray(v['mappedPoint'])[[0, 2]], [-4 + .00392, 19.5], atol=1e-9)
+        self.assertEqual((c['status'], c['nearEdge'], c['crossingError']), ('mapped', 'edge1', PENDING))
+        self.assertNotIn('paintOffset', c)
+        np.testing.assert_allclose(np.asarray(c['mappedPoint'])[[0, 2]], [-4 + .00392, 20], atol=1e-9)
         np.testing.assert_allclose(np.asarray(p['mappedPoint'])[[0, 2]], [-5.7, 20], atol=1e-9)
         self.assertEqual((p['status'], p['label'], p['heightM']), ('declared-default', 'child', 1.1))
         # Analytic: each camera ray to these ground points passes through the car box (X -4.9..-3.1, Z 15.5..19.5, Y -1.6..-0.1).
@@ -66,25 +79,64 @@ class SuggestionTests(unittest.TestCase):
         self.assertEqual([doc[k]['supportClass'] for k in PLACED], ['map-only'] * 3)
         self.assertEqual({doc[k]['supportLabel'] for k in PLACED}, {'mapped, not observed'})
         for k in PLACED:
-            g = np.asarray(doc[k]['groundPoint']); self.assertAlmostEqual(g[1], float(np.float16(8.4)) - 10, places=9)  # float16 raster
-            self.assertLess(doc[k]['pixelOffsetFromMappedM'], .35)  # flat ground: only pixel rounding moves the point
-            self.assertGreater(doc[k]['alongRayUncertaintyM'], 0)
-            search = doc[k]['pixelSearch']
-            self.assertEqual(doc[k]['pixelOffsetFromMappedM'], search['residualM']); self.assertLessEqual(search['residualM'], search['roundedResidualM'])
-            self.assertEqual(doc[k]['pixel'], [r + o for r, o in zip(search['roundedPixel'], search['offsetPx'])])
-            self.assertEqual((search['windowPx'], search['candidatesInCrop'], search['candidatesPlaced']), (3, 49, 49))
-        self.assertEqual(v['appModel'], tool.APP_MODEL); self.assertAlmostEqual(v['yawToRoadAxisDeg'], 0, places=6)
+            o = doc[k]; g = np.asarray(o['groundPoint'])
+            self.assertAlmostEqual(g[1], fixture.RASTER_Y, places=9)  # float16 raster
+            # Fractional evaluation reproduces the mapped point; the integer anchor alone would not.
+            self.assertLess(o['pixelOffsetFromMappedM'], 1e-9); np.testing.assert_allclose(g, o['mappedPoint'], atol=1e-9)
+            self.assertEqual(o['pixel'], [math.floor(o['pixelUV'][0] + .5), math.floor(o['pixelUV'][1] + .5)])
+            np.testing.assert_allclose(tool.project(tool.load(**self.grounded(f'p{k}'))[0], o['mappedPoint']), o['pixelUV'], atol=1e-9)
+            self.assertTrue(0 < o['integerPixelCheck']['residualM'] < .35)
+            # alongRayUncertaintyM = band / sin(depression) of the pixelUV ray.
+            self.assertAlmostEqual(o['alongRayUncertaintyM'], band * np.linalg.norm(g) / -g[1], places=9)
+            self.assertAlmostEqual(o['horizontalRangeM'], math.hypot(g[0], g[2]), places=12)
+            self.assertNotIn('pixelSearch', o); self.assertNotIn('projectedUV', o)
         r = v['frontResidualToAnnotatedM']
-        self.assertEqual(r['horizontal'], v['pixelOffsetFromMappedM']); self.assertAlmostEqual(math.hypot(r['alongRoadAxis'], r['lateralRight']), r['horizontal'], places=12)
+        self.assertAlmostEqual(r['horizontal'], v['pixelOffsetFromMappedM'], places=12); self.assertLess(r['horizontal'], 1e-9)
         a = doc['roadAxis']; np.testing.assert_allclose(a['directionOfTravel'], [0, 0, 1], atol=1e-12)
         self.assertAlmostEqual(a['skewDeg'], 0, places=6); self.assertTrue(a['cameraInLane'])
         self.assertAlmostEqual(doc['curb']['nearEdgeLateralM'], 6.0, places=9); self.assertEqual(doc['curb']['label'], 'curb (map edge proxy)')
         self.assertEqual(doc['license']['id'], 'CC-BY-NC-SA-4.0'); self.assertEqual(doc['license']['attribution'], '(c) 2021 Argo AI, LLC')
 
-    def test_support_classes_follow_the_runtime_pixel_rule(self):
-        loaded = tool.load(**self.grounded()); ctx = tool.Context(*loaded[:6])
+    @staticmethod
+    def raised_band(terrain, ground):
+        """Raster rows 169-171 (world Z 18.4-19.3) 5 cm higher: rays to targets just behind the band hit its top instead."""
+        w = terrain.window.copy(); w[169 - terrain.row0:172 - terrain.row0, :] += np.float32(.05)
+        return tool.Terrain(w, terrain.column0, terrain.row0, terrain.shape, ground['terrain']['sim2'], ground['frame']['cityOrigin'])
+
+    def test_fractional_position_is_exact_and_never_hides_raster_occlusion(self):
+        ctx = self.context(terrain=self.raised_band)
+        for z in (8.0, 12.3, 17.4, 18.0, 20.0, 24.7):  # flat cells: the pixelUV ray reaches the mapped point exactly
+            placed = ctx.place(np.array([1.0, z]), {'status': 'mapped'})
+            self.assertEqual(placed['status'], 'mapped'); self.assertLess(placed['pixelOffsetFromMappedM'], 1e-9)
+            self.assertGreater(placed['integerPixelCheck']['residualM'], placed['pixelOffsetFromMappedM'])
+        # Just behind the raised band the exact ray meets the band first: the residual is recorded, not searched away.
+        hidden = ctx.place(np.array([1.0, 19.4]), {'status': 'mapped'})
+        self.assertEqual(hidden['status'], 'mapped'); self.assertGreater(hidden['pixelOffsetFromMappedM'], .1)
+        self.assertEqual(hidden['hitKind'], 'top'); self.assertGreater(hidden['groundPoint'][1], fixture.RASTER_Y + .04)  # on the band top
+        # A pixelUV whose ray reaches no drivable ground keeps the object Unknown with the runtime reason (no fallback pixel).
+        off = ctx.place(np.array([6.1, 20.0]), {'status': 'mapped'})
+        self.assertEqual((off['status'], off['supportClass']), ('unknown', 'unknown')); self.assertIn('outside the mapped drivable area', off['reason'])
+        self.assertEqual(off['pixel'], [math.floor(off['pixelUV'][0] + .5), math.floor(off['pixelUV'][1] + .5)])
+        outside = ctx.place(np.array([40.0, 20.0]), {'status': 'mapped'})
+        self.assertEqual(outside['reason'], 'Mapped point is outside the recorded image.')
+
+    def test_placement_beyond_30_m_is_refused(self):
+        ctx = self.context()
         def at(x, z):
-            uv = tool.project(loaded[0], [x, fixture.GROUND_Y, z]); return ctx.evaluate_pixel([int(np.floor(uv[0] + .5)), int(np.floor(uv[1] + .5))])
+            return ctx.evaluate_pixel(tool.project(ctx.scene, [x, fixture.RASTER_Y, z]))
+        near, far = at(.5, 29.9), at(.5, 30.1)
+        self.assertEqual(near['supportClass'], 'map-only'); self.assertLessEqual(near['horizontalRangeM'], 30.0)
+        self.assertEqual(far, {'supportClass': 'unknown', 'reason': 'Too far to place (over 30 m).'})
+        placed = ctx.place(np.array([.5, 31.0]), {'status': 'mapped'})
+        self.assertEqual((placed['status'], placed['reason']), ('unknown', 'Too far to place (over 30 m).'))
+        # The limit comes from the ground layer; a larger one (still <= maxRangeMeters) would place the same point.
+        ctx.limit = 60.0
+        self.assertEqual(at(.5, 30.1)['supportClass'], 'map-only')
+
+    def test_support_classes_follow_the_runtime_pixel_rule(self):
+        ctx = self.context()
+        def at(x, z):
+            return ctx.evaluate_pixel(tool.project(ctx.scene, [x, fixture.RASTER_Y, z]))
         near = at(1.0, 10.0)
         self.assertEqual(near['supportClass'], 'observed-nearby'); self.assertFalse(near['hidden'])
         # All returns are tested: one agreeing and one 0.6 m above the map lie within 0.5 m.
@@ -92,9 +144,13 @@ class SuggestionTests(unittest.TestCase):
                          {'cameraVisibleWithinRadius': 2, 'agreeingWithinRadius': 1, 'aboveToleranceWithinRadius': 1})
         self.assertEqual(at(1.0, 13.0)['supportClass'], 'map-only')
         off = at(8.0, 20.0); self.assertEqual(off['supportClass'], 'unknown'); self.assertIn('outside the mapped drivable area', off['reason'])
-        nan = at(3.0, 40.0); self.assertEqual(nan['supportClass'], 'unknown'); self.assertIn('without mapped ground height', nan['reason'])
+        nan = at(3.0, 29.0)
+        self.assertEqual(nan['supportClass'], 'map-only')
         behind = at(-4.0, 21.0)  # an agreeing return exists here but the camera sees the car, so it is not support
         self.assertEqual((behind['supportClass'], behind['hidden']), ('map-only', True))
+        # Integer pixel centres and fractional positions go through the same rule.
+        uv = tool.project(ctx.scene, [1.0, fixture.RASTER_Y, 10.0]); pixel = [math.floor(uv[0] + .5), math.floor(uv[1] + .5)]
+        self.assertEqual(ctx.evaluate_pixel(pixel)['supportClass'], 'observed-nearby')
 
     def test_without_annotations_vehicle_is_declared_default_and_hidden_unknown(self):
         doc = self.document(self.grounded(annotations=False))
@@ -110,7 +166,8 @@ class SuggestionTests(unittest.TestCase):
     def test_rejected_track_falls_back_and_occupied_default_is_unknown(self):
         paths = self.grounded(moving=True); doc = self.document(paths)
         self.assertEqual(doc['vehicle']['status'], 'declared-default')
-        self.assertTrue(any('not stationary' in f for f in doc['vehicle']['annotatedVehicleRejected']))
+        rejected = doc['vehicle']['annotatedVehicleRejected']
+        self.assertTrue(any('not stationary' in f for f in rejected)); self.assertTrue(any('No averaged annotated pose' in f for f in rejected))
         scene, ground, terrain, positions, eligible, protocol, inputs = tool.load(**paths)
         blocked = copy.deepcopy(ground); car = copy.deepcopy(blocked['cuboids']['items'][0])
         car.update(track='cccccccc-0000-4000-8000-000000000003', center=[-4.9, -.85, 11.5]); blocked['cuboids']['items'].append(car)
@@ -124,14 +181,13 @@ class SuggestionTests(unittest.TestCase):
         self.assertTrue(all(objects[k]['supportClass'] in ('map-only', 'unknown') for k in PLACED))
         no_terrain = tool.Terrain(np.full((terrain.window.shape), np.nan, np.float32), terrain.column0, terrain.row0, terrain.shape,
                                   ground['terrain']['sim2'], ground['frame']['cityOrigin'])
-        bare['support']['rows'] = []
         objects = tool.suggest(scene, bare, no_terrain, positions, np.zeros_like(eligible), protocol)
         self.assertEqual([objects[k]['status'] for k in PLACED], ['unknown'] * 3)
 
     def test_split_drivable_polygons_do_not_create_a_curb(self):
         whole = self.document(self.grounded('a', annotations=False)); split = self.document(self.grounded('b', annotations=False, split=True))
         self.assertAlmostEqual(whole['vehicle']['lateralFromCameraM'], split['vehicle']['lateralFromCameraM'], places=12)
-        self.assertEqual(whole['person']['pixel'], split['person']['pixel'])
+        self.assertEqual(whole['person']['pixelUV'], split['person']['pixelUV'])
 
     def test_deterministic_and_never_names_a_reason_for_stopping(self):
         paths = self.grounded()
@@ -142,85 +198,59 @@ class SuggestionTests(unittest.TestCase):
         with mock.patch.object(tool, 'STATIONARY_REASON', 'stationary vehicle; Parked'), self.assertRaisesRegex(ValueError, 'banned'):
             self.document(paths)
 
-    # ------------------------------------------------------------ protocol v2 pixel search
-    def context(self, terrain=None, window=None, **options):
-        name = f'context{len(list(self.root.iterdir()))}'
-        scene, ground, base_terrain, positions, eligible, protocol, _ = tool.load(**self.grounded(name, **options))
-        if window is not None:
-            protocol = copy.deepcopy(protocol); protocol['pixelSelection']['windowPx'] = window
-        return tool.Context(scene, ground, base_terrain if terrain is None else terrain(base_terrain, ground), positions, eligible, protocol)
+    def test_crossing_error_slot(self):
+        def error(entry, crossing='77'):
+            return tool.crossing_error({'crossingError': {'perCrossing': {} if entry is None else {'77': entry}}}, crossing)
+        self.assertEqual(error({'status': 'pending-measurement'}), PENDING)
+        self.assertEqual(error(None), {**PENDING, 'status': 'unmeasured', 'label': 'paint offset unmeasured'})
+        evidence = {'file': '../pao-paint/result.json', 'sha256': 'a' * 64}
+        measured = error({'status': 'measured', 'plusMinusM': .231, 'evidence': evidence})
+        self.assertEqual(measured, {'basis': 'mapped near edge', 'status': 'measured', 'label': '±0.24 m', 'plusMinusM': .24, 'evidence': evidence})
+        self.assertEqual(error({'status': 'measured', 'plusMinusM': .3, 'evidence': evidence})['label'], '±0.30 m')  # exact cm not bumped
+        self.assertEqual(error({'status': 'unresolved', 'evidence': evidence}),
+                         {'basis': 'mapped near edge', 'status': 'unresolved', 'label': 'paint offset unresolved', 'plusMinusM': None, 'evidence': evidence})
+        for bad in ({'status': 'measured', 'plusMinusM': -.1, 'evidence': evidence}, {'status': 'measured', 'plusMinusM': .2},
+                    {'status': 'measured', 'plusMinusM': float('nan'), 'evidence': evidence}, {'status': 'unresolved'}, {'status': 'guessed'}):
+            with self.assertRaises(ValueError):
+                error(bad)
+        # The crossing position never depends on the crossing error: a v3.1-style measured entry changes only crossingError.
+        paths = self.grounded('m'); base = self.document(paths)
+        scene, ground, terrain, positions, eligible, protocol, _ = tool.load(**paths)
+        filled = copy.deepcopy(protocol); filled['crossingError']['perCrossing']['77'] = {'status': 'measured', 'plusMinusM': .2, 'evidence': evidence}
+        objects = tool.suggest(scene, ground, terrain, positions, eligible, filled)
+        self.assertEqual(objects['crossing']['crossingError']['label'], '±0.20 m')
+        self.assertEqual({k: v for k, v in objects['crossing'].items() if k != 'crossingError'},
+                         {k: v for k, v in base['crossing'].items() if k != 'crossingError'})
 
-    def brute_force(self, ctx, xz, uv, window):
-        """Independent re-statement of the rule: evaluate every window pixel with the full runtime rule."""
-        rounded = [math.floor(uv[0] + .5), math.floor(uv[1] + .5)]; best = None
-        for dv in range(-window, window + 1):
-            for du in range(-window, window + 1):
-                pixel = [rounded[0] + du, rounded[1] + dv]
-                if not ctx.in_crop(pixel):
-                    continue
-                result = ctx.evaluate_pixel(pixel)
-                if result['supportClass'] == 'unknown':
-                    continue
-                g = np.asarray(result['groundPoint']); key = (float(np.hypot(*(g[[0, 2]] - xz))), math.hypot(pixel[0] - uv[0], pixel[1] - uv[1]), pixel[1], pixel[0])
-                best = min(best, (key, pixel)) if best else (key, pixel)
-        return best
+    def test_protocol_v1_v2_and_schema_1_ground_are_refused(self):
+        v2_paths = self.grounded('v2', protocol=fixture.PROTOCOL)  # a v2 protocol builds a schema-1 ground layer
+        with self.assertRaisesRegex(ValueError, 'Protocol v3 pixelSelection'):
+            tool.document(*tool.load(**v2_paths))
+        scene, ground, terrain, positions, eligible, _, _ = tool.load(**v2_paths)
+        with self.assertRaisesRegex(ValueError, 'schemaVersion 2'):
+            tool.Context(scene, ground, terrain, positions, eligible, fixture.PROTOCOL_V3)
+        scene, ground, terrain, positions, eligible, protocol, _ = tool.load(**self.grounded('v3'))
+        for change in ({'protocolVersion': 2}, {'pixelSelection': {'rule': 'nearestHitWindow', 'windowPx': 3}}):
+            with self.assertRaisesRegex(ValueError, 'Protocol v3'):
+                tool.suggest(scene, ground, terrain, positions, eligible, {**protocol, **change})
+        with self.assertRaisesRegex(ValueError, 'Protocol v3 ground layer'):
+            tool.suggest(scene, ground, terrain, positions, eligible, {**protocol, 'placementRange': {'limitMeters': 25.0}})
 
-    @staticmethod
-    def raised_band(terrain, ground):
-        """Raster rows 169-171 (world Z 18.4-19.3) 5 cm higher: rays to targets just behind the band hit its top instead."""
-        w = terrain.window.copy(); w[169 - terrain.row0:172 - terrain.row0, :] += np.float32(.05)
-        return tool.Terrain(w, terrain.column0, terrain.row0, terrain.shape, ground['terrain']['sim2'], ground['frame']['cityOrigin'])
-
-    def test_pixel_search_is_never_worse_than_rounding_and_matches_brute_force(self):
-        ctx = self.context(terrain=self.raised_band)
-        for z in (17.4, 18.1, 19.4, 19.6, 20.0, 20.2):
-            xz = np.array([1.0, z]); uv = tool.project(ctx.scene, [1.0, ctx.height(xz), z])
-            pixel, record = ctx.search_pixel(xz, uv)
-            self.assertLessEqual(record['residualM'], record['roundedResidualM'])
-            self.assertLessEqual(max(map(abs, record['offsetPx'])), 3)
-            key, expected = self.brute_force(ctx, xz, uv, 3)
-            self.assertEqual(pixel, expected); self.assertAlmostEqual(record['residualM'], key[0], places=12)
-        # Just behind the band plain rounding lands on the band top about 0.66 m short; a pixel two rows up gets within 0.12 m.
-        xz = np.array([1.0, 19.4]); pixel, record = ctx.search_pixel(xz, tool.project(ctx.scene, [1.0, ctx.height(xz), 19.4]))
-        self.assertGreater(record['roundedResidualM'], .6); self.assertLess(record['residualM'], .15); self.assertEqual(record['offsetPx'], [0, -2])
-
-    def test_pixel_search_is_deterministic_and_breaks_ties_by_projection_then_v_then_u(self):
-        ctx = self.context(terrain=self.raised_band)
-        xz = np.array([1.0, 20.0]); uv = tool.project(ctx.scene, [1.0, ctx.height(xz), 20.0])
-        self.assertEqual(ctx.search_pixel(xz, uv), ctx.search_pixel(xz, uv))
-        flat = self.context()
-        flat.ground_hit = lambda pixel: (None, {'point': [5., -1.6, 5.]}, None)  # every pixel reaches the same point: all residuals tie
-        self.assertEqual(flat.search_pixel([1., 1.], [100.2, 50.7])[0], [100, 51])  # nearest the projection
-        self.assertEqual(flat.search_pixel([1., 1.], [100.5, 50.5])[0], [100, 50])  # four-way tie: smaller v, then smaller u
-
-    def test_pixel_search_window_bounds_the_choice(self):
-        ctx = self.context()
-        # 0.1 m outside the drivable edge (X = 6): rounding is Unknown, a pixel inside the window reaches drivable ground.
-        near = ctx.place(np.array([6.1, 20.0]), {'status': 'mapped'})
-        self.assertEqual(near['status'], 'mapped'); s = near['pixelSearch']
-        self.assertIsNone(s['roundedResidualM']); self.assertIn('outside the mapped drivable area', s['roundedReason'])
-        self.assertTrue(0 < max(map(abs, s['offsetPx'])) <= 3); self.assertLess(s['residualM'], .2)
-        self.assertLess(near['groundPoint'][0], 6.0)
-        # 1 m outside: drivable ground is about 40 px away, beyond the window, so the object stays Unknown.
-        far = ctx.place(np.array([7.0, 20.0]), {'status': 'mapped'})
-        self.assertEqual((far['status'], far['supportClass'], far['pixelSearch']['candidatesPlaced']), ('unknown', 'unknown', 0))
-        self.assertIn('No pixel within 3 px', far['reason'])
-        inside = tool.project(ctx.scene, [5.9, fixture.GROUND_Y, 20.0]); inside = [math.floor(inside[0] + .5), math.floor(inside[1] + .5)]
-        self.assertNotEqual(ctx.evaluate_pixel(inside)['supportClass'], 'unknown')
-        self.assertGreater(max(abs(a - b) for a, b in zip(inside, far['pixel'])), 3)
-        # Window 0 is exactly plain rounding (the protocol v1 pixel).
-        zero = self.context(window=0)
-        for z in (12.0, 17.0, 20.0):
-            placed = zero.place(np.array([1.0, z]), {'status': 'mapped'})
-            self.assertEqual(placed['pixel'], placed['pixelSearch']['roundedPixel']); self.assertEqual(placed['pixelSearch']['offsetPx'], [0, 0])
-
-    def test_protocol_without_v2_pixel_rule_is_refused(self):
-        scene, ground, terrain, positions, eligible, protocol, _ = tool.load(**self.grounded())
-        for rule in ('Desired ground point ... pixel = [floor(u+0.5), floor(v+0.5)]', {'rule': 'nearestHitWindow', 'windowPx': 3.0},
-                     {'rule': 'nearestHitWindow', 'windowPx': 11}, {'rule': 'other', 'windowPx': 3}):
-            bad = dict(protocol, pixelSelection=rule)
-            with self.assertRaisesRegex(ValueError, 'pixelSelection'):
-                tool.suggest(scene, ground, terrain, positions, eligible, bad)
+    def test_protocol_v3_1_records_the_declared_replacement_front(self):
+        # protocol v3.1 currentVehicle.declaredReplacement: a declared vehicle in place of the stationary one keeps its
+        # front point (mappedPoint). The file says so in appModel and limitations; protocol v3 output is unchanged.
+        protocol = copy.deepcopy(fixture.PROTOCOL_V3); protocol['currentVehicle']['declaredReplacement'] = {'rule': 'fixture'}
+        doc = self.document(self.grounded('v31', protocol=protocol)); old = self.document(self.grounded('v3'))
+        self.assertEqual(doc['vehicle']['appModel'], tool.APP_MODEL_REPLACEMENT); self.assertEqual(old['vehicle']['appModel'], tool.APP_MODEL)
+        self.assertIn(tool.REPLACEMENT_LIMITATION, doc['limitations']); self.assertNotIn(tool.REPLACEMENT_LIMITATION, old['limitations'])
+        self.assertEqual(doc['limitations'][-1], old['limitations'][-1])
+        for key in ('crossing', 'person', 'roadAxis', 'curb'):
+            self.assertEqual(doc[key], old[key], key)
+        self.assertEqual({k: v for k, v in doc['vehicle'].items() if k != 'appModel'}, {k: v for k, v in old['vehicle'].items() if k != 'appModel'})
+        # A declared default vehicle (no annotated vehicle to replace) gets no replacement limitation.
+        default = self.document(self.grounded('v31-default', protocol=protocol, annotations=False))
+        self.assertEqual(default['vehicle']['status'], 'declared-default'); self.assertNotIn(tool.REPLACEMENT_LIMITATION, default['limitations'])
+        self.assertNotIn(b'park', tool.canonical(doc).lower())
 
     def test_vehicle_yaw_is_signed_toward_the_right(self):
         scene, ground, terrain, positions, eligible, protocol, _ = tool.load(**self.grounded())
@@ -256,6 +286,8 @@ class SuggestionTests(unittest.TestCase):
 
 REAL = ROOT / '.local/evaluation/av2-map-first-2026-10-11'
 V2 = REAL / 'grounded-v2'
+V3 = REAL / 'grounded-v3'
+V31 = REAL / 'grounded-v3.1'
 
 
 def real_paths(folder, freeze, protocol):
@@ -263,57 +295,111 @@ def real_paths(folder, freeze, protocol):
                 protocol_path=REAL / protocol, protocol_sha256=json.loads((REAL / freeze).read_bytes())['sha256'])
 
 
-@unittest.skipUnless((V2 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v2 files absent')
-class RealSuggestionTests(unittest.TestCase):
-    """grounded-v2 (protocol v2) is current; grounded/ (protocol v1) is historical and only cross-checked."""
+def epoch_of(doc):
+    from datetime import datetime
+    return str(int(datetime.strptime(doc['generatedUtc'], '%Y-%m-%dT%H:%M:%S%z').timestamp()))
 
-    def test_real_v2_suggestions_reproduce_and_match_expected_values(self):
-        stored = (V2 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
-        paths = real_paths('grounded-v2', 'protocol-v2-freeze.json', 'protocol-v2.json')
-        self.assertEqual(sha((REAL / 'protocol-v2.json').read_bytes()), paths['protocol_sha256'])
-        from datetime import datetime
-        epoch = str(int(datetime.strptime(doc['generatedUtc'], '%Y-%m-%dT%H:%M:%S%z').timestamp()))
-        with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch}):
+
+@unittest.skipUnless((V31 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v3.1 files absent')
+class RealV31SuggestionTests(unittest.TestCase):
+    """grounded-v3.1 (protocol v3.1) is current; it reproduces byte for byte from the current script."""
+
+    def test_real_v3_1_suggestions_reproduce_and_match_expected_values(self):
+        stored = (V31 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
+        paths = real_paths('grounded-v3.1', 'protocol-v3.1-freeze.json', 'protocol-v3.1.json')
+        self.assertEqual(sha((REAL / 'protocol-v3.1.json').read_bytes()), paths['protocol_sha256'])
+        self.assertEqual(paths['protocol_sha256'], '6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92')
+        with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
             self.assertEqual(tool.canonical(tool.document(*tool.load(**paths))), stored)
-        v = doc['vehicle']
-        self.assertEqual((v['status'], v['track'][:8], v['label'], v['reason']),
-                         ('annotated', '396f15b5', 'stationary vehicle', 'stationary vehicle (AV2 annotation); reason for stopping unknown'))
-        self.assertEqual([doc[k]['pixel'] for k in PLACED], [[373, 188], [377, 188], [486, 186]])
-        self.assertEqual([doc[k]['pixelSearch']['roundedPixel'] for k in PLACED], [[373, 189], [377, 191], [484, 185]])
-        self.assertEqual([doc[k]['pixelSearch']['offsetPx'] for k in PLACED], [[0, -1], [0, -3], [2, 1]])
-        for k, expected in zip(PLACED, (.1437, .1767, .2096)):
-            search = doc[k]['pixelSearch']
-            self.assertAlmostEqual(search['residualM'], expected, places=4); self.assertLessEqual(search['residualM'], search['roundedResidualM'])
-            self.assertEqual(search['residualM'], doc[k]['pixelOffsetFromMappedM']); self.assertEqual(search['candidatesPlaced'], 49)
+        self.assertEqual((doc['schemaVersion'], doc['generatedUtc']), (3, '2026-10-12T11:51:45Z'))
+        self.assertEqual(doc['tolerances'], {'roadToleranceMeters': .08, 'supportHeightAgreementMeters': .08, 'supportRadiusMeters': .5,
+                                             'maxRangeMeters': 60.0, 'placementRangeLimitMeters': 30.0, 'alongRayHeightBandMeters': .075})
+        v, c, p = doc['vehicle'], doc['crossing'], doc['person']
+        self.assertEqual((v['status'], v['track'][:8], v['label'], v['reason'], v['pose']),
+                         ('annotated', '396f15b5', 'stationary vehicle', 'stationary vehicle (AV2 annotation); reason for stopping unknown',
+                          {'kind': 'averaged', 'annotations': 114}))
+        self.assertEqual(v['appModel'], tool.APP_MODEL_REPLACEMENT); self.assertIn(tool.REPLACEMENT_LIMITATION, doc['limitations'])
+        self.assertEqual([doc[k]['pixel'] for k in PLACED], [[371, 189], [374, 191], [484, 185]])
+        for k, uv in zip(PLACED, ([371.14534464547864, 188.52832143204816], [374.45809937658737, 190.84864102416427], [484.3272234524834, 185.2703140345646])):
+            np.testing.assert_allclose(doc[k]['pixelUV'], uv, atol=1e-9)
+            self.assertEqual(doc[k]['pixel'], [math.floor(doc[k]['pixelUV'][0] + .5), math.floor(doc[k]['pixelUV'][1] + .5)])
+        # Metric C (internal consistency, not accuracy): crossing and person reproduce their mapped points (target < 0.001 m;
+        # v2: 0.144 and 0.210 m). The vehicle front's pixel ray lies in a raster shadow: it meets a cell 7.8 cm higher 1.03 m
+        # sooner, so the stored hit misses the target (<= 0.05 m); protocol v3.1 uses the averaged front point instead.
+        self.assertLess(c['pixelOffsetFromMappedM'], 1e-9); self.assertLess(p['pixelOffsetFromMappedM'], 1e-9)
+        self.assertAlmostEqual(v['pixelOffsetFromMappedM'], 1.0285, places=4)
+        self.assertAlmostEqual(v['groundPoint'][1] - v['mappedPoint'][1], .078125, places=9)
+        for k, residual in zip(PLACED, (.9764, 1.0658, .3061)):
+            self.assertAlmostEqual(doc[k]['integerPixelCheck']['residualM'], residual, places=4)
+        for k, along in zip(PLACED, (1.0259, .9902, 1.0888)):
+            self.assertAlmostEqual(doc[k]['alongRayUncertaintyM'], along, places=4)
         self.assertEqual([doc[k]['supportClass'] for k in PLACED], ['map-only'] * 3)
-        self.assertEqual([doc[k]['hidden'] for k in PLACED], [True, True, False]); self.assertFalse(doc['person']['topHiddenDiagnostic'])
-        self.assertAlmostEqual(v['frontGapToCrossingM'], .5456, places=3); self.assertAlmostEqual(doc['roadAxis']['skewDeg'], 3.338, places=2)
-        self.assertAlmostEqual(v['yawToRoadAxisDeg'], 1.407, places=3); self.assertAlmostEqual(v['headingToRoadAxisDeg'], abs(v['yawToRoadAxisDeg']), places=9)
-        r = v['frontResidualToAnnotatedM']
-        self.assertEqual(r['horizontal'], v['pixelOffsetFromMappedM']); self.assertAlmostEqual(r['alongRoadAxis'], -.1726, places=3)
-        self.assertAlmostEqual(r['lateralRight'], -.0378, places=3); self.assertAlmostEqual(v['pixelGroundGapAlongAxisM'], .8591, places=3)
-        entry = json.loads((V2 / 'catalog-entry.json').read_bytes())
+        self.assertEqual([doc[k]['hidden'] for k in PLACED], [True, True, False]); self.assertFalse(p['topHiddenDiagnostic'])
+        self.assertTrue(all(doc[k]['horizontalRangeM'] <= 30 for k in PLACED))
+        self.assertEqual(c['crossingError'], PENDING); self.assertAlmostEqual(c['forwardM'], 17.4435, places=4)
+        self.assertAlmostEqual(v['frontGapToCrossingM'], .4199, places=4); self.assertAlmostEqual(v['yawToRoadAxisDeg'], 1.4121, places=4)
+        self.assertAlmostEqual(v['pixelGroundGapAlongAxisM'], 1.4313, places=4); self.assertEqual(v['dimensions'], {'width': 1.88, 'height': 1.49, 'length': 4.03})
+        # Same objects as grounded-v3: only the protocol, generator, scene and ground pins, the time, appModel and one
+        # limitation differ (protocol v3.1 changes no stored geometry).
+        old = json.loads((V3 / 'suggestions.json').read_bytes())
+        for key in ('crossing', 'person', 'roadAxis', 'curb', 'tolerances', 'license', 'sceneId'):
+            self.assertEqual(doc[key], old[key], key)
+        self.assertEqual({k: x for k, x in v.items() if k != 'appModel'}, {k: x for k, x in old['vehicle'].items() if k != 'appModel'})
+        entry = json.loads((V31 / 'catalog-entry.json').read_bytes())
         self.assertEqual(entry['suggestions']['sha256'], sha(stored)); self.assertEqual(entry['metadataSha256'], paths['metadata_sha256'])
-        command = [sys.executable, '-I', '-B', str(SCRIPT), '--grounded', str(V2), '--metadata-sha256', paths['metadata_sha256'],
-                   '--buffers', str(REAL / 'assembled'), '--protocol', str(REAL / 'protocol-v2.json'), '--protocol-sha256', paths['protocol_sha256']]
+        command = [sys.executable, '-I', '-B', str(SCRIPT), '--grounded', str(V31), '--metadata-sha256', paths['metadata_sha256'],
+                   '--buffers', str(REAL / 'assembled'), '--protocol', str(REAL / 'protocol-v3.1.json'), '--protocol-sha256', paths['protocol_sha256']]
         refused = subprocess.run(command, capture_output=True, text=True, timeout=120)
         self.assertEqual(refused.returncode, 1); self.assertIn('Existing suggestions.json retained', refused.stderr)
-        self.assertEqual((V2 / 'suggestions.json').read_bytes(), stored)
+        self.assertEqual((V31 / 'suggestions.json').read_bytes(), stored)
+
+    def test_no_form_of_the_banned_word_in_v3_1_outputs(self):
+        for path in (*sorted(V31.iterdir()), REAL / 'protocol-v3.1.json', REAL / 'protocol-v3.1-freeze.json', REAL / 'runtime-test-vectors-v3.1.json'):
+            self.assertNotIn(b'park', path.read_bytes().lower(), path.name)
+
+
+@unittest.skipUnless((V3 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v3 files absent')
+class RealV3HistoricalSuggestionTests(unittest.TestCase):
+    """grounded-v3 (protocol v3) is history: pinned by hash and written by the previous version of the script (sha256 5f2d9c7a...).
+    The current script on protocol v3 reproduces its content except the two generator hashes."""
+
+    def test_v3_is_pinned_and_differs_from_the_current_script_only_in_its_generator(self):
+        stored = (V3 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
+        self.assertEqual(sha(stored), '56aafdc7d166538861e36b173c1197137879a9ceab82b6630e5cd64ffe31b73c')
+        self.assertEqual(doc['generator']['sha256'], '5f2d9c7a30aa736e51d39b9a816abdd479885ceb519ad30e08c6422e32e704a5')
+        paths = real_paths('grounded-v3', 'protocol-v3-freeze.json', 'protocol-v3.json')
+        with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
+            now = tool.document(*tool.load(**paths))
+        self.assertEqual({k: x for k, x in now['generator'].items() if not k.endswith('ha256')}, {k: x for k, x in doc['generator'].items() if not k.endswith('ha256')})
+        now['generator'] = doc['generator']
+        self.assertEqual(tool.canonical(now), stored)
+
+    def test_no_form_of_the_banned_word_in_v3_outputs(self):
+        for path in (*sorted(V3.iterdir()), REAL / 'protocol-v3.json', REAL / 'protocol-v3-freeze.json'):
+            self.assertNotIn(b'park', path.read_bytes().lower(), path.name)
+
+
+@unittest.skipUnless((V2 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v2 files absent')
+class RealHistoricalSuggestionTests(unittest.TestCase):
+    """grounded-v2 (protocol v2) and grounded/ (protocol v1) are history: pinned by hash, written by earlier versions of the
+    script (v2: sha256 955d6b1e..., commit ae1c442) and refused by the current one."""
+
+    def test_v2_is_pinned_and_refused(self):
+        stored = (V2 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
+        self.assertEqual(sha(stored), '94b294f3b7f7abd1e9fc58994e8e0a72f277b59c5e6490e3596157d05533d248')
+        self.assertEqual(doc['generator']['sha256'], '955d6b1ed7c81da05a6a96f0d3b34bb8c787724979a043e7a71494eadc96ccf1')
+        self.assertEqual([doc[k]['pixel'] for k in PLACED], [[373, 188], [377, 188], [486, 186]])
+        for k, expected in zip(PLACED, (.1437, .1767, .2096)):
+            self.assertAlmostEqual(doc[k]['pixelOffsetFromMappedM'], expected, places=4)
+        paths = real_paths('grounded-v2', 'protocol-v2-freeze.json', 'protocol-v2.json')
+        with self.assertRaisesRegex(ValueError, 'Protocol v3 pixelSelection'):
+            tool.document(*tool.load(**paths))
 
     def test_no_form_of_the_banned_word_in_v2_outputs(self):
         for path in (V2 / 'suggestions.json', V2 / 'ground.json', V2 / 'scene.json', V2 / 'catalog-entry.json',
                      REAL / 'protocol-v2.json', REAL / 'runtime-test-vectors-v2.json'):
             if path.exists():
                 self.assertNotIn(b'park', path.read_bytes().lower(), path.name)
-
-    @unittest.skipUnless((REAL / 'grounded/suggestions.json').exists(), 'historical v1 output absent')
-    def test_v2_rounding_pixel_is_the_historical_v1_pixel_and_never_worse(self):
-        v1 = json.loads((REAL / 'grounded/suggestions.json').read_bytes()); v2 = json.loads((V2 / 'suggestions.json').read_bytes())
-        for k in PLACED:
-            search = v2[k]['pixelSearch']
-            self.assertEqual(search['roundedPixel'], v1[k]['pixel'])
-            self.assertAlmostEqual(search['roundedResidualM'], v1[k]['pixelOffsetFromMappedM'], places=12)
-            self.assertLess(search['residualM'], v1[k]['pixelOffsetFromMappedM'])
 
     @unittest.skipUnless((REAL / 'grounded/suggestions.json').exists(), 'historical v1 output absent')
     def test_v1_protocol_is_refused(self):

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline } from '../src/geometry.mjs';
+import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline, SIZE_LIMITS } from '../src/geometry.mjs';
 import { loadScene } from '../src/scene.mjs';
 import { scene,input,fetchAsset } from './scene-input.mjs';
 test('measured pixels round-trip through the fitted camera transform',()=>{
@@ -20,7 +20,7 @@ test('placement previews use declared measured actors without inventing incomple
   assert.deepEqual(preview.vehicle.axis,scenario.axis);
   assert.deepEqual(preview.target,scenario.target);
   assert.deepEqual(placementPreview(scene,input.pixels,{...input.vehicle,width:''},'').vehicle,undefined);
-  assert.throws(()=>placementPreview(scene,input.pixels,{...input.vehicle,width:1e6},input.targetHeight),/scene extent/);
+  assert.throws(()=>placementPreview(scene,input.pixels,{...input.vehicle,width:1e6},input.targetHeight),{message:'Vehicle width must be a number from 0.5 to 3.5 m.'});
 });
 test('actual data forms a declared vehicle occlusion and a data-derived driver position',()=>{
   const r=createScenario(scene,input);
@@ -34,6 +34,25 @@ test('browser serialization of derived range endpoints remains valid',()=>{
 });
 test('missing, invalid and out-of-extent inputs never produce a default comparison',()=>{
   for(const bad of [null,{...input,proposedSetback:''},{...input,proposedSetback:1e6},{...input,driverDistance:1e6},{...input,vehicle:{...input.vehicle,width:NaN}}])assert.throws(()=>createScenario(scene,bad));
+});
+test('implausible or malformed sizes and setbacks below the slider minimum are refused, never read or clamped',()=>{
+  // Sizes: SIZE_LIMITS (the Nemotron tool ranges), typed numbers as plain decimals only.
+  assert.deepEqual(SIZE_LIMITS,{width:[.5,3.5],height:[.5,4.5],length:[1,20],targetHeight:[.3,2.5]});
+  const refused=(patch,message)=>assert.throws(()=>createScenario(scene,{...input,...patch}),{message},JSON.stringify(patch));
+  for(const width of ['50',50,'0x2','0.4',' 2','2 ','+2','-2','1,9','',null,NaN,Infinity,true])refused({vehicle:{...input.vehicle,width}},'Vehicle width must be a number from 0.5 to 3.5 m.');
+  refused({vehicle:{...input.vehicle,height:'50'}},'Vehicle height must be a number from 0.5 to 4.5 m.');
+  refused({vehicle:{...input.vehicle,length:.01}},'Vehicle length must be a number from 1 to 20 m.');
+  for(const targetHeight of [150,'100','0x1',.2])refused({targetHeight},'Target height must be a number from 0.3 to 2.5 m.');
+  for(const width of ['1.9','.50','3.5',.5,'1.','2e0'])assert.doesNotThrow(()=>createScenario(scene,{...input,vehicle:{...input.vehicle,width}}),String(width));
+  // Setbacks: plain positive decimals, at least the slider minimum (the road tolerance here).
+  const {limits}=createScenario(scene,input);
+  assert.equal(limits.minimumSetback,scene.processing.roadToleranceMeters);
+  for(const proposedSetback of ['0x2','-1',0])refused({proposedSetback},'Proposed setback must be a positive number.');
+  for(const proposedSetback of [.01,.05,limits.minimumSetback-1e-6])refused({proposedSetback},'Proposed setback must be at least 0.08 m from the crossing (the slider minimum).');
+  for(const proposedSetback of [limits.minimumSetback,Number(limits.minimumSetback.toPrecision(15)),String(limits.minimumSetback)])
+    assert.equal(createScenario(scene,{...input,proposedSetback}).proposedSetback,limits.minimumSetback);
+  assert.throws(()=>placementPreview(scene,input.pixels,{...input.vehicle,length:'0x2'},input.targetHeight),{message:'Vehicle length must be a number from 1 to 20 m.'});
+  assert.throws(()=>placementPreview(scene,input.pixels,input.vehicle,'150'),{message:'Target height must be a number from 0.3 to 2.5 m.'});
 });
 test('unsupported sightline outside the capture remains unknown',()=>{
   const r=classifySightline(scene,[0,2,1],[0,2,4],input.vehicle,[0,0,1],[100,2,100]);

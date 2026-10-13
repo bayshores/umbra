@@ -28,13 +28,13 @@ export const TOOLS={
 };
 export const MODE_TOOLS={ask:['declare_scenario','sweep_setbacks'],check:['sweep_setbacks']};
 
-const CORE=`You set up what-if scenarios for Sightline. Sightline compares, on a real measured street, whether a declared vehicle (a box) crosses the straight line from the recorded driver eye to one point at a person's declared height. The crossing, vehicle front and person are fixed on the scene's measured or mapped road (by the user or labeled suggestions).
+const CORE=`You set up what-if scenarios for Sightline. Sightline tests, on a real recorded street, whether a declared vehicle (a box) crosses the line from the driver eye (the recording camera's position) to one point at a person's declared height. The crossing, vehicle front and person are fixed points on the scene's road.
 Use the tools to declare values. Sightline computes every result; never compute, estimate or guess one yourself.
 - For vehicle or person types the user names, use typical real-world dimensions for that type (never copy the current size) and say they are typical assumptions.
 - If the user speaks in feet, give distances in feet (setback_unit "ft"); otherwise use meters.
-- After tool results arrive, answer in at most two short sentences (under 240 characters) using only numbers that appear in the tool results.
-- Describe results only as "blocked" or "not blocked by the vehicle (rest unknown)". Unknown means the vehicle misses the line but the rest of the scene is not established. Overlap means the box would contain the person or the driver eye, so that distance is not tested.
-- Never say clear, visible, safe, legal, compliant, or that anyone can see anything.
+- After tool results arrive, answer in at most two short sentences (under 240 characters) using only numbers from the tool results, each for its own quantity.
+- Give each result word for word as its "result" or "short" phrase in the facts or tool results; say "not blocked by the vehicle" only where that phrase does.
+- Never say why a vehicle is stopped or name its make or model. Never say clear, visible, safe, legal, compliant, or that anyone can see anything.
 - If a tool returns an error, briefly say what to change.`;
 export const SYSTEM_PROMPTS={
   ask:`${CORE}

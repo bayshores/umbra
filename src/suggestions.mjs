@@ -1,7 +1,7 @@
-import { roadPoint, comparisonStart, createScenario, isMappedGround, mappedGroundHit, mappedTravel, SUPPORT_LABELS, SUPPORT_CONTEXT } from './geometry.mjs';
+import { roadPoint, anchorPoint, comparisonStart, createScenario, isMappedGround, mappedGroundHit, mappedGroundHeight, mappedTravel, namesAnnotatedFront, SUPPORT_LABELS, SUPPORT_CONTEXT, SIZE_LIMITS } from './geometry.mjs';
 
 // Placement suggestions come from a one-time preparation step (suggestions.json), never from runtime guessing. Schema 1
-// is the measured-depth (DrivingStereo) file; schema 2 is the map-first (mapped ground) file. A declared default is a
+// is the measured-depth (DrivingStereo) file; schema 3 is the map-first (mapped ground, protocol v3) file. A declared default is a
 // hypothetical starting value, not a measurement. Anything the file marks unknown, or that fails the scene's ground rule
 // here, stays unplaced with its reason.
 const FOOT=.3048,DIMS=['width','height','length'];
@@ -49,62 +49,78 @@ function detectorFields(block,ran,where) {
     fail(`${where} must name its model, package, license, weights and output sha256 and parked count`);
 }
 
-// ---------------------------------------------------------------- schema 2: mapped ground (map-first AV2 scenes)
-const V2_TOP=['schemaVersion','sceneId','sourceClass','generatedUtc','generator','inputs','protocolSha256','license','tolerances',
+// ---------------------------------------------------------------- schema 3: mapped ground (map-first AV2 scenes, protocol v3)
+// Schema 2 (protocol v1/v2) files are history and are refused.
+const V3_TOP=['schemaVersion','sceneId','sourceClass','generatedUtc','generator','inputs','protocolSha256','license','tolerances',
   'crossing','roadAxis','curb','vehicle','person','limitations'];
-const V2_INPUTS=['scene.json','ground.json','terrain.bin','recorded.png','referencepositions.bin','referenceeligible.bin','protocol.json'];
-const V2_HIT=['status','label','reason','pixel','groundPoint','supportClass','supportLabel','hidden','alongRayUncertaintyM','rangeM','hitKind',
-  'terrainCityZ','terrainCell','mappedPoint','projectedUV','pixelOffsetFromMappedM','pixelSearch','supportEvidence'];
+const V3_INPUTS=['scene.json','ground.json','terrain.bin','recorded.png','referencepositions.bin','referenceeligible.bin','protocol.json'];
+const V3_TOLERANCES=['roadToleranceMeters','supportHeightAgreementMeters','supportRadiusMeters','maxRangeMeters','placementRangeLimitMeters'];
+const V3_HIT=['status','label','reason','pixel','pixelUV','groundPoint','supportClass','supportLabel','hidden','alongRayUncertaintyM','rangeM','horizontalRangeM',
+  'hitKind','terrainCityZ','terrainCell','mappedPoint','pixelOffsetFromMappedM','integerPixelCheck','supportEvidence'];
 // Per role and status: [required extra fields, optional extra fields].
-const V2_EXTRA={
-  crossing:{mapped:[['nearEdge','paintOffset','forwardM'],[]]},
-  vehicle:{annotated:[['dimensions','track','category','motion','headingWorld','headingToRoadAxisDeg','yawToRoadAxisDeg','frontGapToCrossingM','appModel',
+const V3_EXTRA={
+  crossing:{mapped:[['nearEdge','crossingError','forwardM'],[]]},
+  vehicle:{annotated:[['dimensions','track','category','motion','pose','headingWorld','headingToRoadAxisDeg','yawToRoadAxisDeg','frontGapToCrossingM','appModel',
     'frontResidualToAnnotatedM'],['pixelGroundGapAlongAxisM']],
   'declared-default':[['dimensions','setbackM','annotatedVehicleRejected','curbLateralAlongLengthM','lateralFromCameraM'],['pixelGroundGapAlongAxisM']]},
   person:{'declared-default':[['heightM'],['topHiddenDiagnostic']]},
 };
+// protocol v3 crossingError: the crossing stays the mapped near edge; its shown error is the paint offset or a status.
+const CROSSING_ERROR_LABELS={unmeasured:'paint offset unmeasured','pending-measurement':'paint offset pending measurement',unresolved:'paint offset unresolved'};
 const finiteNumber=v=>typeof v==='number'&&Number.isFinite(v);
 const finiteList=(v,n)=>Array.isArray(v)&&v.length===n&&v.every(finiteNumber);
 const intPair=v=>Array.isArray(v)&&v.length===2&&v.every(Number.isSafeInteger);
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-// One placed (or unknown) object: its fields, then the runtime rule re-run on its stored pixel must reproduce it.
+const inCrop=(v,c)=>finiteList(v,2)&&v[0]>=0&&v[0]<=c.width-1&&v[1]>=0&&v[1]<=c.height-1;
+const anchorOf=uv=>[Math.floor(uv[0]+.5),Math.floor(uv[1]+.5)];
+// The runtime rule's result as the file stores it: within 1e-6 m for points, ranges and the uncertainty, the rest equal.
+function sameHit(hit,v) {
+  return !hit.point.some((n,i)=>Math.abs(n-v.groundPoint[i])>1e-6)&&hit.supportClass===v.supportClass&&hit.hidden===v.hidden&&hit.hitKind===v.hitKind&&
+    hit.terrainCityZ===v.terrainCityZ&&same(hit.terrainCell,v.terrainCell)&&Math.abs(hit.rangeM-v.rangeM)<=1e-6&&
+    Math.abs(hit.alongRayUncertaintyM-v.alongRayUncertaintyM)<=1e-6;
+}
+// One placed (or unknown) object: its fields, then the runtime rule re-run at its stored pixelUV (the position the app
+// evaluates while the suggestion is untouched) must reproduce it; pixel is the integer pixel containing pixelUV.
 function mappedElement(v,scene,role,check) {
-  const statuses=Object.keys(V2_EXTRA[role]);
+  const statuses=Object.keys(V3_EXTRA[role]),c=scene.camera;
   if(!object(v)||![...statuses,'unknown'].includes(v.status))fail(`${role}.status must be ${[...statuses,'unknown'].join(' or ')}`);
   if(v.status==='unknown') {
-    const optional=new Set(Object.values(V2_EXTRA[role]).flat(2));V2_HIT.forEach(k=>optional.add(k));
-    fields(v,['status','supportClass','reason'],[...optional].filter(k=>!['status','supportClass','reason'].includes(k)),role);
+    const optional=new Set(Object.values(V3_EXTRA[role]).flat(2));['label','mappedPoint','pixelUV','pixel'].forEach(k=>optional.add(k));
+    fields(v,['status','supportClass','reason'],[...optional],role);
     if(v.supportClass!=='unknown'||!text(v.reason))fail(`${role} unknown must carry supportClass unknown and a reason`);
+    if(Object.hasOwn(v,'pixelUV')&&(!inCrop(v.pixelUV,c)||!same(v.pixel,anchorOf(v.pixelUV))))fail(`${role}.pixelUV and pixel must be a crop position and the pixel containing it`);
     return v.status;
   }
-  const [required,optional]=V2_EXTRA[role][v.status];
-  fields(v,[...V2_HIT,...required],optional,role);
+  const [required,optional]=V3_EXTRA[role][v.status];
+  fields(v,[...V3_HIT,...required],optional,role);
   pixel(v.pixel,scene,role);
+  if(!inCrop(v.pixelUV,c)||!same(v.pixel,anchorOf(v.pixelUV)))fail(`${role}.pixelUV must be a crop position and pixel the pixel containing it`);
   if(!text(v.label)||!text(v.reason))fail(`${role}.label and reason must be text`);
   if(!['observed-nearby','map-only'].includes(v.supportClass)||v.supportLabel!==SUPPORT_LABELS[v.supportClass])fail(`${role}.supportClass and supportLabel must match`);
   if(scene.ground.cuboids.available?typeof v.hidden!=='boolean':v.hidden!==null)fail(`${role}.hidden must be a flag, or null without annotations`);
-  if(!finiteList(v.groundPoint,3)||!finiteList(v.mappedPoint,3)||!finiteList(v.projectedUV,2)||!['top','step'].includes(v.hitKind)||!finiteNumber(v.terrainCityZ)||
-    !intPair(v.terrainCell)||!['alongRayUncertaintyM','rangeM'].every(k=>positive(v[k]))||!(finiteNumber(v.pixelOffsetFromMappedM)&&v.pixelOffsetFromMappedM>=0))
+  if(!finiteList(v.groundPoint,3)||!finiteList(v.mappedPoint,3)||!['top','step'].includes(v.hitKind)||!finiteNumber(v.terrainCityZ)||!intPair(v.terrainCell)||
+    !['alongRayUncertaintyM','rangeM','horizontalRangeM'].every(k=>positive(v[k]))||!(finiteNumber(v.pixelOffsetFromMappedM)&&v.pixelOffsetFromMappedM>=0))
     fail(`${role} ray diagnostics must be finite`);
-  const search=v.pixelSearch;
-  if(!object(search)||!Number.isSafeInteger(search.windowPx)||search.windowPx<0||!intPair(search.roundedPixel)||!intPair(search.offsetPx)||
-    search.roundedPixel[0]+search.offsetPx[0]!==v.pixel[0]||search.roundedPixel[1]+search.offsetPx[1]!==v.pixel[1]||
-    Math.abs(search.offsetPx[0])>search.windowPx||Math.abs(search.offsetPx[1])>search.windowPx||search.residualM!==v.pixelOffsetFromMappedM||
-    !['candidatesInCrop','candidatesPlaced'].every(k=>Number.isSafeInteger(search[k])&&search[k]>=0)||
-    !(search.roundedResidualM===null?text(search.roundedReason):finiteNumber(search.roundedResidualM)&&search.roundedResidualM>=0))
-    fail(`${role}.pixelSearch must record the protocol pixel window`);
   if(!object(v.supportEvidence)||!Object.values(v.supportEvidence).every(n=>n===null||finiteNumber(n)&&n>=0))fail(`${role}.supportEvidence must hold counts`);
   let hit;
-  try{hit=mappedGroundHit(scene,v.pixel);}catch(error){fail(`${role}.pixel does not reach mapped ground (${error.message})`);}
-  if(hit.point.some((n,i)=>Math.abs(n-v.groundPoint[i])>1e-6)||hit.supportClass!==v.supportClass||hit.hidden!==v.hidden||hit.hitKind!==v.hitKind||
-    hit.terrainCityZ!==v.terrainCityZ||!same(hit.terrainCell,v.terrainCell)||Math.abs(hit.rangeM-v.rangeM)>1e-6||Math.abs(hit.alongRayUncertaintyM-v.alongRayUncertaintyM)>1e-6)
+  try{hit=mappedGroundHit(scene,v.pixelUV);}catch(error){fail(`${role}.pixelUV does not reach mapped ground (${error.message})`);}
+  const horizontal=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]);
+  if(!sameHit(hit,v)||Math.abs(Math.hypot(v.groundPoint[0],v.groundPoint[2])-v.horizontalRangeM)>1e-6||
+    Math.abs(horizontal(v.groundPoint,v.mappedPoint)-v.pixelOffsetFromMappedM)>1e-6)
     fail(`${role} disagrees with the runtime mapped-ground rule`);
+  // The integer anchor's own result is a diagnostic, but it must be true.
+  const ic=v.integerPixelCheck;
+  let anchor=null;try{anchor=mappedGroundHit(scene,v.pixel);}catch(error){anchor=error.message;}
+  if(!object(ic)||(typeof anchor==='string'?!same(Object.keys(ic),['reason'])||ic.reason!==anchor
+    :Object.keys(ic).sort().join()!=='groundPoint,residualM'||!finiteList(ic.groundPoint,3)||anchor.point.some((n,i)=>Math.abs(n-ic.groundPoint[i])>1e-6)||
+      Math.abs(horizontal(anchor.point,v.mappedPoint)-ic.residualM)>1e-6))
+    fail(`${role}.integerPixelCheck disagrees with the runtime mapped-ground rule`);
   check(v);
   return v.status;
 }
 function validateMapped(raw,scene) {
-  fields(raw,V2_TOP,[],'file');
-  if(raw.schemaVersion!==2)fail('schemaVersion must be 2 for a mapped-ground scene');
+  if(!object(raw)||raw.schemaVersion!==3)fail('schemaVersion must be 3 for a mapped-ground scene (protocol v3; earlier files are history)');
+  fields(raw,V3_TOP,[],'file');
   if(raw.sceneId!==scene.id)fail('sceneId does not match the loaded scene');
   if(raw.sourceClass!=='mappedGround')fail('sourceClass must be mappedGround');
   if(typeof raw.generatedUtc!=='string'||!Number.isFinite(Date.parse(raw.generatedUtc)))fail('generatedUtc must be a timestamp');
@@ -114,17 +130,21 @@ function validateMapped(raw,scene) {
   if(raw.generator.script!=='scripts/california/suggest_av2_placements.py'||raw.generator.sharedScript!=='scripts/california/prepare_av2_ground.py'||
     !hash(raw.generator.sha256)||!hash(raw.generator.sharedSha256)||!['python','numpy'].every(k=>text(raw.generator[k])))
     fail('generator must name the map-first scripts, their sha256 and versions');
-  fields(raw.inputs,V2_INPUTS,[],'inputs');
+  fields(raw.inputs,V3_INPUTS,[],'inputs');
   if(!Object.values(raw.inputs).every(hash)||raw.protocolSha256!==raw.inputs['protocol.json'])fail('inputs must be sha256 hashes and name the protocol used');
   const g=scene.ground;
   if(!same(raw.license,g.license))fail('license must equal the mapped ground license');
-  fields(raw.tolerances,['roadToleranceMeters','supportHeightAgreementMeters','supportRadiusMeters','maxRangeMeters'],[],'tolerances');
-  if(Object.entries(raw.tolerances).some(([k,n])=>n!==g[k]))fail('tolerances must equal the mapped ground tolerances');
+  fields(raw.tolerances,[...V3_TOLERANCES,'alongRayHeightBandMeters'],[],'tolerances');
+  if(V3_TOLERANCES.some(k=>raw.tolerances[k]!==g[k])||raw.tolerances.alongRayHeightBandMeters!==g.alongRayUncertainty.heightBandMeters)
+    fail('tolerances must equal the mapped ground tolerances');
   mappedElement(raw.crossing,scene,'crossing',v=>{
-    const paint=v.paintOffset;
-    if(!['edge1','edge2'].includes(v.nearEdge)||!finiteNumber(v.forwardM)||!object(paint)||!text(paint.label)||
-      !(paint.status==='unmeasured'&&Object.keys(paint).length===2||paint.status==='label'&&Object.keys(paint).length===3&&positive(paint.meters)))
-      fail('crossing must name its near edge, forward distance and paint offset label');
+    const e=v.crossingError;
+    if(!['edge1','edge2'].includes(v.nearEdge)||!finiteNumber(v.forwardM))fail('crossing must name its near edge and forward distance');
+    if(!object(e)||Object.keys(e).sort().join()!=='basis,evidence,label,plusMinusM,status'||e.basis!=='mapped near edge')fail('crossing.crossingError must hold basis, status, label, plusMinusM and evidence');
+    const evidence=x=>object(x)&&Object.keys(x).sort().join()==='file,sha256'&&text(x.file)&&hash(x.sha256);
+    const ok=e.status==='measured'?finiteNumber(e.plusMinusM)&&e.plusMinusM>=0&&e.plusMinusM<=5&&e.label===`±${e.plusMinusM.toFixed(2)} m`&&evidence(e.evidence)
+      :Object.hasOwn(CROSSING_ERROR_LABELS,e.status)&&e.label===CROSSING_ERROR_LABELS[e.status]&&e.plusMinusM===null&&(e.status==='unresolved'?evidence(e.evidence):e.evidence===null);
+    if(!ok)fail('crossing.crossingError must be a measured offset with its evidence, or a named status');
   });
   mappedElement(raw.vehicle,scene,'vehicle',v=>{
     if(!name(v.label))fail('vehicle.label must be a plain name');
@@ -136,12 +156,22 @@ function validateMapped(raw,scene) {
         !['headingToRoadAxisDeg','yawToRoadAxisDeg','frontGapToCrossingM'].every(k=>finiteNumber(v[k]))||!text(v.appModel)||
         !object(r)||Object.keys(r).sort().join()!=='alongRoadAxis,horizontal,lateralRight'||!Object.values(r).every(finiteNumber))
         fail('an annotated vehicle must carry its annotation, heading and front residual');
-      // The app draws and tests this vehicle with the cuboid's exact pose, so the file must name exactly one cuboid
-      // whose category, motion, heading and (0.01 m) size it records.
+      // The app draws and tests this vehicle with the cuboid's exact (averaged) pose, so the file must name exactly one
+      // cuboid whose category, motion, heading, (0.01 m) size and averaged-annotation count it records.
       const boxes=g.cuboids.items.filter(b=>b.track===v.track),box=boxes[0],M=box?.worldFromBox,n=box&&Math.hypot(M[0][0],M[2][0]);
       if(boxes.length!==1||box.category!==v.category||!same(box.motion,v.motion)||DIMS.some(k=>Number(box[k].toFixed(2))!==v.dimensions[k])||
-        Math.abs(v.headingWorld[0]-M[0][0]/n)>1e-6||Math.abs(v.headingWorld[2]-M[2][0]/n)>1e-6)
-        fail('an annotated vehicle must match exactly one annotated cuboid');
+        Math.abs(v.headingWorld[0]-M[0][0]/n)>1e-6||Math.abs(v.headingWorld[2]-M[2][0]/n)>1e-6||!box.poseAverage||
+        !object(v.pose)||Object.keys(v.pose).sort().join()!=='annotations,kind'||v.pose.kind!=='averaged'||v.pose.annotations!==box.poseAverage.rows)
+        fail('an annotated vehicle must match exactly one annotated (averaged) cuboid');
+      // mappedPoint is the averaged box's front point at the mapped height of its cell: the front a vehicle in its place keeps.
+      const front=[box.center[0]+M[0][0]/n*box.length/2,box.center[2]+M[2][0]/n*box.length/2],y=mappedGroundHeight(scene,front[0],front[1]);
+      if(Math.abs(v.mappedPoint[0]-front[0])>1e-6||Math.abs(v.mappedPoint[2]-front[1])>1e-6||y===null||Math.abs(v.mappedPoint[1]-y)>1e-9)
+        fail('an annotated vehicle mappedPoint must be the averaged box front point on the mapped ground');
+      // The app tests this cuboid at its exact sizes and fills the size fields with them, so a vehicle outside the
+      // supported sizes (geometry.mjs SIZE_LIMITS, e.g. a semi tractor-trailer) is refused here, by name, instead of
+      // opening the scene into a size refusal.
+      if(DIMS.some(k=>box[k]<SIZE_LIMITS[k][0]||box[k]>SIZE_LIMITS[k][1]))
+        fail(`the annotated vehicle (${DIMS.map(k=>`${k} ${fmt(box[k])} m`).join(', ')}) is outside the supported sizes (${DIMS.map(k=>`${k} ${SIZE_LIMITS[k][0]}-${SIZE_LIMITS[k][1]} m`).join(', ')})`);
     }else if(!positive(v.setbackM)||!Array.isArray(v.annotatedVehicleRejected)||!v.annotatedVehicleRejected.every(text)||
       !finiteList(v.curbLateralAlongLengthM,2)||!finiteNumber(v.lateralFromCameraM))
       fail('a declared default vehicle must carry its setback and curb evidence');
@@ -229,20 +259,24 @@ export function validateSuggestions(raw,scene) {
   return raw;
 }
 
-// The app's starting values from a validated file: pixels (only those that pass roadPoint here), field strings, and
-// provenance per value. input is the comparison input when everything is placed and createScenario accepts it.
+// The app's starting values from a validated file: pixels (only those whose evaluated point is placed here), field strings,
+// and provenance per value. input is the comparison input when everything is placed and createScenario accepts it.
+// Schema 3: each pixel is the suggestion's integer anchor; geometry.mjs evaluates its exact sub-pixel position (pixelUV)
+// while it stays there, and the support shown is that of the point the comparison uses (anchorPoint: for the annotated
+// stationary vehicle, its averaged front point).
 export function suggestedSetup(scene,suggestions) {
-  const pixels={},provenance={},s=suggestions,mapped=s.schemaVersion===2;
+  const pixels={},provenance={},s=suggestions,mapped=s.schemaVersion===3;
   for(const [key,role] of ROLES) {
     const e=s[role];
     if(e.status==='unknown'){provenance[key]={status:'unplaced',reason:e.reason};continue;}
-    try{roadPoint(scene,e.pixel,role);}catch(error){provenance[key]={status:'unplaced',reason:error.message};continue;}
+    let evidence;
+    try{evidence=mapped?anchorPoint(scene,key,e.pixel):roadPoint(scene,e.pixel,role);}catch(error){provenance[key]={status:'unplaced',reason:error.message};continue;}
     pixels[key]=[...e.pixel];provenance[key]={status:SOURCE[e.status],value:[...e.pixel]};
     // Mapped points keep their support class ("mapped, not observed") and hidden flag (behind an annotated object).
-    if(mapped)Object.assign(provenance[key],{supportClass:e.supportClass,supportLabel:e.supportLabel,hidden:e.hidden});
+    if(mapped)Object.assign(provenance[key],{supportClass:evidence.supportClass,supportLabel:evidence.supportLabel,hidden:evidence.hidden});
     if(role==='vehicle'&&e.status==='declared-default')provenance[key].setbackFt=Math.round(e.setbackM/FOOT);
   }
-  // Schema v1 detects at most the vehicle front; its size is always the declared default. Schema v2 takes an annotated
+  // Schema v1 detects at most the vehicle front; its size is always the declared default. Schema v3 takes an annotated
   // stationary vehicle's size from its annotation.
   if(s.vehicle.status!=='unknown')provenance.vehicle={status:s.vehicle.status==='annotated'?'annotated':'default',value:{...s.vehicle.dimensions}};
   if(s.person.status!=='unknown')provenance.targetHeight={status:SOURCE[s.person.status],value:s.person.heightM};
@@ -280,10 +314,11 @@ export function suggestionStatus(suggestions,setup,current) {
   const edited=Object.keys(p).some(key=>p[key].status!=='unplaced'&&!still(key));
   const parts=[],context={};
   const unknown=(key,word)=>{if(p[key].status==='unplaced'&&!current.pixels?.[key])parts.push({key,text:`${word} unknown`,title:p[key].reason});};
-  // Schema 2: the annotated vehicle keeps its annotated pose exactly while its front pixel and size hold the suggestion
-  // and no declaration replaced the vehicle (geometry.mjs createScenario uses the same test with vehicleDeclared).
-  const pose=p.parking?.status==='annotated'&&isStillSuggested('parking',value('parking'),p)&&still('vehicle');
-  if(s.schemaVersion===2)return mappedStatus(s,p,still,unknown,parts,context,edited,pose);
+  // Schema 3: the annotated vehicle keeps its annotated pose exactly while its front pixel stays within the nudge of the
+  // suggestion, its size holds the suggestion and no declaration replaced the vehicle (geometry.mjs annotatedVehicle and
+  // createScenario use the same test with vehicleDeclared).
+  const pose=p.parking?.status==='annotated'&&!current.overridden?.includes('parking')&&namesAnnotatedFront(p.parking.value,value('parking'))&&still('vehicle');
+  if(s.schemaVersion===3)return mappedStatus(s,p,still,unknown,parts,context,edited,pose);
   if(still('crossing'))parts.push({key:'crossing',text:`crosswalk detected ±${fmt(s.crossing.alongRoadUncertaintyM)} m`,title:`${s.crossing.method} · ±${fmt(s.crossing.alongRoadUncertaintyM)} m along the road`});
   unknown('crossing','crossing');
   if(still('parking')&&still('vehicle')) {
@@ -310,7 +345,14 @@ export function suggestionStatus(suggestions,setup,current) {
   return {parts,edited,context:Object.keys(context).length?context:null};
 }
 
-// Schema 2 (mapped ground): each still-suggested point shows its support label ("mapped, not observed") and, when its
+// The crosswalk chip text (protocol v3.1 crossingError.display): the mapped near edge with its measured paint offset
+// ("crosswalk mapped ±0.25 m") or the offset's status ("crosswalk mapped · paint offset pending measurement"). The
+// crossing's along-ray uncertainty describes its pixel ray, not the crossing position, so it is never shown here.
+export function crossingText(crossing) {
+  const e=crossing.crossingError;
+  return e.status==='measured'?`${crossing.label} ${e.label}`:`${crossing.label} · ${e.label}`;
+}
+// Schema 3 (mapped ground): each still-suggested point shows its support label ("mapped, not observed") and, when its
 // pixel shows an annotated object instead of the ground, "hidden", as a separate note so narrow screens can wrap it. The annotated vehicle is labelled stationary; nothing
 // says why it stopped. Nemotron context strings carry no numbers and none of the answer filter's withheld wording.
 function mappedStatus(s,p,still,unknown,parts,context,edited,pose) {
@@ -318,9 +360,9 @@ function mappedStatus(s,p,still,unknown,parts,context,edited,pose) {
     title=(key,reason)=>`${reason} · ${p[key].supportLabel}`+(p[key].hidden?' · pixel shows an annotated object, point behind it':'');
   const where=key=>SUPPORT_CONTEXT[p[key].supportClass];
   if(still('crossing')) {
-    const along=`±${fmt(s.crossing.alongRayUncertaintyM)} m`;
-    parts.push({key:'crossing',text:`${s.crossing.label} ${along}`,note:`(${support('crossing')})`,
-      title:`${title('crossing',s.crossing.reason)} · ${along} along the pixel ray · ${s.crossing.paintOffset.label}`});
+    const e=s.crossing.crossingError;
+    parts.push({key:'crossing',text:crossingText(s.crossing),note:`(${support('crossing')})`,
+      title:`${title('crossing',s.crossing.reason)} · ${e.status==='measured'?`mapped near edge; ${e.label} is the measured paint offset`:`mapped near edge; ${e.label}`}`});
   }
   unknown('crossing','crossing');
   if(still('parking')&&still('vehicle')) {
@@ -333,8 +375,9 @@ function mappedStatus(s,p,still,unknown,parts,context,edited,pose) {
     parts.push({key:'target',text:`${s.person.label} ${fmt(s.person.heightM)} m`,note:`(default; ${support('target')})`,title:title('target',s.person.reason)});
   unknown('target','person');
   if(still('crossing'))context.crossing=`mapped crosswalk edge, ${where('crossing')}`;
-  // A resized annotated vehicle is a declared box at the annotated front pixel, not the annotation.
-  if(still('parking'))context.vehicle_front=p.parking.status!=='annotated'?`declared default, ${where('parking')}`
+  // A resized annotated vehicle is a declared box at the annotated front pixel, not the annotation. A nudged front still
+  // names the annotated vehicle (its pixel is no longer the suggested one, so its status part is gone).
+  if(still('parking')||pose)context.vehicle_front=p.parking.status!=='annotated'?`declared default, ${where('parking')}`
     :pose?'stationary vehicle from the dataset annotation; reason for stopping unknown':`declared vehicle, ${where('parking')}`;
   if(still('vehicle'))context.vehicle_size=p.vehicle.status==='annotated'?'annotated stationary vehicle size':`declared default ${s.vehicle.label}`;
   if(still('target'))context.person_point=`declared default, ${where('target')}`;
