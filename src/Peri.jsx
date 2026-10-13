@@ -5,9 +5,10 @@ import { CENTER, DISC, DOTS, EYE, EYES, GAP, MOODS, RING, inGap } from './peri-s
 // Peri, the app's mascot, drawn in code: LiDAR-style dots inside a thin ring, with two capsule eyes (the geometry is in
 // peri-shape.mjs). A change of mood recolours the dots from the middle outward: rose for Blocked, a gap with no dots
 // for Unknown, dimmed with shut eyes for sleepy. While working, a bright band sweeps across the dots like a LiDAR scan.
-// The chat's Peri is alive: it blinks now and then, glances toward a drag or the field you type in, and dozes off after
-// a minute with no input. All of that stops while the tab is hidden and stays off with Reduce Motion.
-const DOZE_MS = 60000, GLANCE_MS = 1200;
+// The app's one Peri (PeriHost.jsx moves it between places) is alive: it blinks now and then, glances toward a drag or
+// the field you type in, and dozes off after a minute with no input. All of that stops while the tab is hidden and
+// stays off with Reduce Motion.
+const DOZE_MS = 60000, GLANCE_MS = 1200, BLINK_MS = 200;
 // Any of these is input: it wakes a dozing Peri and restarts the one-minute clock.
 const INPUT = ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart'];
 // How far the eyes move toward what you are doing, in viewBox units (the ball is 94 wide), and the distance in screen
@@ -20,8 +21,9 @@ const listen = (types, handler) => {
 
 export default function Peri({ mood = 'idle', size = 44, className = '', label, alive = false }) {
   const reduced = useReducedMotion(), visible = usePageVisible(), live = alive && !reduced && visible;
-  // blink counts blinks: each new value redraws the eyes, which restarts their CSS blink.
-  const [dozing, setDozing] = useState(false), [blink, setBlink] = useState(0), svg = useRef(null), look = useRef(null);
+  // blinking: the eyes carry the blink class only while a blink plays, so moving Peri to another place (which restarts
+  // CSS animations) or a mood change never replays it, on both eyes or on one as a wink.
+  const [dozing, setDozing] = useState(false), [blinking, setBlinking] = useState(false), svg = useRef(null), look = useRef(null);
   const known = MOODS.includes(mood) ? mood : 'idle', face = dozing ? 'sleepy' : known;
   // An id safe inside url(#…) whatever characters React's useId uses.
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, '');
@@ -52,16 +54,17 @@ export default function Peri({ mood = 'idle', size = 44, className = '', label, 
   const blinks = live && (face === 'idle' || face === 'unknown');
   useEffect(() => {
     if (!blinks) return undefined;
-    let timer = 0;
+    let timer = 0, open = 0;
+    const shut = () => { setBlinking(true); clearTimeout(open); open = setTimeout(() => setBlinking(false), BLINK_MS); };
     const next = () => {
       timer = setTimeout(() => {
-        setBlink(n => n + 1);
-        if (Math.random() < .2) timer = setTimeout(() => { setBlink(n => n + 1); next(); }, 280);
+        shut();
+        if (Math.random() < .2) timer = setTimeout(() => { shut(); next(); }, 280);
         else next();
       }, 2600 + Math.random() * 3800);
     };
     next();
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); clearTimeout(open); setBlinking(false); };
   }, [blinks]);
   // Glancing: the eyes turn toward a drag (any pressed pointer) or the focused field while you type, and back after
   // GLANCE_MS without either. The offset is written straight to the eye group (a CSS transition eases it).
@@ -110,10 +113,9 @@ export default function Peri({ mood = 'idle', size = 44, className = '', label, 
     {sweep && <g clipPath={`url(#peri-dots-${id})`}><rect className="peri-sweep" x="-24" y="0" width="22" height="100"/></g>}
     <g ref={look} className="peri-look">
       {EYE.x.map((x, i) => {
-        // Unknown leaves the right eye as a dashed outline: half of what Peri would see is missing. Both eyes keep the
-        // blink class once Peri has blinked, so a mood change never adds it to one eye alone and replays it as a wink.
+        // Unknown leaves the right eye as a dashed outline: half of what Peri would see is missing.
         const unseen = gap && i === 1;
-        return <rect key={i + '-' + blink} className={'peri-eye' + (unseen ? ' peri-eye--unknown' : '') + (blink ? ' peri-eye--blink' : '')}
+        return <rect key={i} className={'peri-eye' + (unseen ? ' peri-eye--unknown' : '') + (blinking ? ' peri-eye--blink' : '')}
           x={x} y={eye.y} width={EYE.w} height={eye.h} rx={Math.min(EYE.w, eye.h) / 2}/>;
       })}
     </g>
