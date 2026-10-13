@@ -1,4 +1,4 @@
-// Dot-matrix lettering, Sightline's display type: every character is a 5 x 7 grid of round dots (narrower for "." and
+// Dot-matrix lettering, Umbra's display type: every character is a 5 x 7 grid of round dots (narrower for "." and
 // " "), lit dots in the text colour and unlit dots faintly visible, like an LED sign built from the scan's own points.
 // DotText.jsx draws them.
 export const GLYPHS = {

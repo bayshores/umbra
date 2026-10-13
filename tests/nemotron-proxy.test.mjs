@@ -103,13 +103,13 @@ test('upstream request is fixed by the server for each mode',async t=>{
   assert.deepEqual(c.body.tools.map(t=>t.function.name),['sweep_setbacks']);
   assert.deepEqual(a.body.messages[0],{role:'system',content:SYSTEM_PROMPTS.ask});
   assert.deepEqual(c.body.messages[0],{role:'system',content:SYSTEM_PROMPTS.check});
-  assert.equal(a.body.messages[1].content,`Question: ${ask.question}\nScenario facts computed by Sightline (JSON): ${JSON.stringify(context)}`);
-  assert.match(c.body.messages[1].content,/^Run the distance check[^\n]*\nScenario facts computed by Sightline \(JSON\): /);
+  assert.equal(a.body.messages[1].content,`Question: ${ask.question}\nScenario facts computed by Umbra (JSON): ${JSON.stringify(context)}`);
+  assert.match(c.body.messages[1].content,/^Run the distance check[^\n]*\nScenario facts computed by Umbra \(JSON\): /);
   assert.ok(c.body.messages[1].content.endsWith(JSON.stringify(context)));
   for(const prompt of Object.values(SYSTEM_PROMPTS)) {
     assert.ok(prompt.length<=1800,`${prompt.length} characters`);
     assert.match(prompt,/never compute, estimate or guess/);
-    // Results are worded only with Sightline's own phrases (an Unknown that is too close to call is never "not blocked").
+    // Results are worded only with Umbra's own phrases (an Unknown that is too close to call is never "not blocked").
     assert.match(prompt,/Give each result word for word as its "result" or "short" phrase in the facts or tool results; say "not blocked by the vehicle" only where that phrase does\./);
     assert.doesNotMatch(prompt,/Unknown: the vehicle misses the line|measured/);
     assert.match(prompt,/Never say why a vehicle is stopped or name its make or model\./);
@@ -267,7 +267,7 @@ test('memory budget arithmetic',()=>{
 });
 
 test('file budget appends private JSON lines and keeps spending across restarts',()=>{
-  const dir=mkdtempSync(path.join(tmpdir(),'sightline-nemotron-')),file=path.join(dir,'usage','usage.jsonl');
+  const dir=mkdtempSync(path.join(tmpdir(),'umbra-nemotron-')),file=path.join(dir,'usage','usage.jsonl');
   const first=createFileBudget(file,0.01);
   assert.equal(statSync(file).mode&0o777,0o600);
   const a=first.reserve(0.004);first.settle(a,0.001);first.reserve(0.003);
@@ -291,7 +291,7 @@ test('file budget appends private JSON lines and keeps spending across restarts'
 });
 
 test('servers sharing one usage log never reserve past the cap together',()=>{
-  const dir=mkdtempSync(path.join(tmpdir(),'sightline-nemotron-')),file=path.join(dir,'usage.jsonl');
+  const dir=mkdtempSync(path.join(tmpdir(),'umbra-nemotron-')),file=path.join(dir,'usage.jsonl');
   const dev=createFileBudget(file,0.01),preview=createFileBudget(file,0.01),granted=[];
   for(let i=0;i<20;i++)for(const b of [dev,preview]){const t=b.reserve(0.001);if(t)granted.push([b,t]);}
   assert.ok(granted.length>=9&&granted.length<=10,String(granted.length));
@@ -305,7 +305,7 @@ test('servers sharing one usage log never reserve past the cap together',()=>{
 });
 
 test('a held usage-log lock blocks reservations until it goes stale',()=>{
-  const dir=mkdtempSync(path.join(tmpdir(),'sightline-nemotron-')),file=path.join(dir,'usage.jsonl'),budget=createFileBudget(file,1);
+  const dir=mkdtempSync(path.join(tmpdir(),'umbra-nemotron-')),file=path.join(dir,'usage.jsonl'),budget=createFileBudget(file,1);
   writeFileSync(file+'.lock','');
   assert.throws(()=>budget.reserve(0.001),/locked/);
   assert.ok(existsSync(file+'.lock'));
@@ -314,7 +314,7 @@ test('a held usage-log lock blocks reservations until it goes stale',()=>{
 });
 
 test('key file must be a private regular file of printable ASCII',()=>{
-  const dir=mkdtempSync(path.join(tmpdir(),'sightline-key-')),write=(name,content,mode=0o600)=>{const f=path.join(dir,name);writeFileSync(f,content,{mode});chmodSync(f,mode);return f;};
+  const dir=mkdtempSync(path.join(tmpdir(),'umbra-key-')),write=(name,content,mode=0o600)=>{const f=path.join(dir,name);writeFileSync(f,content,{mode});chmodSync(f,mode);return f;};
   assert.equal(readKeyFile(write('good.key',KEY+'\n')),KEY);
   assert.equal(readKeyFile(write('crlf.key',KEY+'\r\n')),KEY);
   assert.equal(readKeyFile(write('bare.key','ab')),'ab');
@@ -337,7 +337,7 @@ test('key file must be a private regular file of printable ASCII',()=>{
 
 test('a key reached through a symlinked project folder is refused (SEC-1)',()=>{
   // Audit reproduction: proj/link -> ../outside. Vite serves /link/<name> by the path as requested, without resolving symlinks.
-  const base=realpathSync(mkdtempSync(path.join(tmpdir(),'sightline-link-'))),proj=path.join(base,'proj'),outside=path.join(base,'outside');
+  const base=realpathSync(mkdtempSync(path.join(tmpdir(),'umbra-link-'))),proj=path.join(base,'proj'),outside=path.join(base,'outside');
   mkdirSync(proj);mkdirSync(outside);symlinkSync('../outside',path.join(proj,'link'));
   for(const name of ['tf-token','tf.key']){writeFileSync(path.join(outside,name),KEY,{mode:0o600});chmodSync(path.join(outside,name),0o600);}
   const servable=file=>file.startsWith(proj+'/')&&!/\.key$/i.test(file);// project files are served unless denied by name
@@ -387,7 +387,7 @@ test('local route caps the request body at 16 KiB',async()=>{
 
 test('local route reads the key file and usage log only when enabled, and never echoes the key',async t=>{
   const warn=t.mock.method(console,'warn',()=>{}),lastWarning=()=>String(warn.mock.calls.at(-1).arguments[0]);
-  const root=mkdtempSync(path.join(tmpdir(),'sightline-root-')),keyFile=path.join(root,'.local','secrets','tf.key');
+  const root=mkdtempSync(path.join(tmpdir(),'umbra-root-')),keyFile=path.join(root,'.local','secrets','tf.key');
   mkdirSync(path.dirname(keyFile),{recursive:true});writeFileSync(keyFile,KEY+'\n',{mode:0o600});chmodSync(keyFile,0o600);
   const env={NEMOTRON_ENABLED:'1',NEMOTRON_BUDGET_USD:'0.01',TOKEN_FACTORY_KEY_FILE:'.local/secrets/tf.key'};
   const defaultLog=path.join(realpathSync(path.dirname(keyFile)),USAGE_LOG_NAME),servable=file=>!file.includes('/.local/');
@@ -419,7 +419,7 @@ test('every checkout using the same key file shares one usage log and cap (SPEND
   t.mock.method(console,'warn',()=>{});
   // Audit reproduction: two checkouts (main and a worktree) with the same absolute key file. Before, each opened its own
   // root-relative log and could spend the full NEMOTRON_BUDGET_USD again.
-  const base=mkdtempSync(path.join(tmpdir(),'sightline-checkouts-')),keyFile=path.join(base,'secrets','tf.key'),[main,worktree]=['main','worktree'].map(n=>path.join(base,n));
+  const base=mkdtempSync(path.join(tmpdir(),'umbra-checkouts-')),keyFile=path.join(base,'secrets','tf.key'),[main,worktree]=['main','worktree'].map(n=>path.join(base,n));
   for(const dir of [path.dirname(keyFile),main,worktree])mkdirSync(dir,{recursive:true});
   writeFileSync(keyFile,KEY,{mode:0o600});chmodSync(keyFile,0o600);
   const env={NEMOTRON_ENABLED:'1',NEMOTRON_BUDGET_USD:'0.01',TOKEN_FACTORY_KEY_FILE:keyFile},fetch=upstream(),handle=createNemotronHandler();
@@ -434,7 +434,7 @@ test('every checkout using the same key file shares one usage log and cap (SPEND
 
 test('a Vite config reload keeps the process busy/tripped state and file budget (SPEND-2)',async()=>{
   // Vite bundles worker/*.js into its config and evaluates them again on `r`, a config edit or a worker edit, in the same process.
-  const reloaded=(await import('../worker/nemotron.js?reload')).handleNemotron,state=globalThis[Symbol.for('sightline.nemotron')];
+  const reloaded=(await import('../worker/nemotron.js?reload')).handleNemotron,state=globalThis[Symbol.for('umbra.nemotron')];
   assert.notEqual(reloaded,handleNemotron);
   const budget=createMemoryBudget(1),idle=upstream();let release;
   const slow=upstream(()=>new Promise(resolve=>{release=()=>resolve(reply({content:'Blocked.'}));}));
@@ -451,7 +451,7 @@ test('a Vite config reload keeps the process busy/tripped state and file budget 
     assert.equal((await createNemotronHandler()(request(ask),ENV,{fetch:idle,budget})).status,200,'a separate handler keeps its own state');
   } finally {state.tripped=false;}
   // The reloaded middleware reuses the process's file budget (and its open log) instead of opening the log again.
-  const root=mkdtempSync(path.join(tmpdir(),'sightline-reload-')),keyFile=path.join(root,'tf.key');writeFileSync(keyFile,KEY,{mode:0o600});chmodSync(keyFile,0o600);
+  const root=mkdtempSync(path.join(tmpdir(),'umbra-reload-')),keyFile=path.join(root,'tf.key');writeFileSync(keyFile,KEY,{mode:0o600});chmodSync(keyFile,0o600);
   const env={NEMOTRON_ENABLED:'1',NEMOTRON_BUDGET_USD:'0.01',TOKEN_FACTORY_KEY_FILE:keyFile},budgets=[];
   const handle=(_request,_config,deps)=>{budgets.push(deps.budget);return new Response('{}');};
   const {nemotronMiddleware:reloadedMiddleware}=await import('../worker/nemotron-file-budget.mjs?reload');

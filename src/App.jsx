@@ -40,7 +40,7 @@ const ASSISTANT_ERRORS={assistant_unavailable:'Nemotron isn\'t configured on thi
 const STATE_WORDS={blocked:'blocked',unknown:'not blocked by the vehicle (rest unknown)',overlap:'vehicle overlaps person or driver'};
 // The result words shown on screen (never Clear).
 const STATE_TITLE={blocked:'Blocked',unknown:'Unknown',overlap:'Overlap'};
-// Bloop's reaction to a result. There is no happy "sees clearly" mood: Sightline never reports Clear.
+// Bloop's reaction to a result. There is no happy "sees clearly" mood: Umbra never reports Clear.
 const MOOD={blocked:'blocked',unknown:'unsure',overlap:'unsure'};
 let messageId=0;
 const unwrapNote=note=>(note??'').replace(/^\((.*)\)$/,'$1').replace(/; /g,', ');
@@ -100,7 +100,7 @@ export function App() {
   // The suggested default vehicle front is a declared what-if with no parked vehicle measured, so it is not "current".
   const defaultFront=pixel=>suggestion?.provenance.parking?.status==='default'&&isStillSuggested('parking',pixel,suggestion.provenance);
   const [question,setQuestion]=useState(''),[running,setRunning]=useState(null),[reply,setReply]=useState(null),[sweep,setSweep]=useState(null),[declared,setDeclared]=useState([]);
-  // The chat log: your messages, Bloop's replies (Nemotron's words) and Sightline's own computed lines, oldest first.
+  // The chat log: your messages, Bloop's replies (Nemotron's words) and Umbra's own computed lines, oldest first.
   const [messages,setMessages]=useState([]);
   const say=(...items)=>setMessages(list=>[...list,...items.filter(Boolean).map(m=>({id:++messageId,...m}))]);
   // A Nemotron declaration or an applied distance-check vehicle replaced the vehicle on screen (it stays replaced until
@@ -234,7 +234,7 @@ export function App() {
     if(stopReplay.current){stopReplay.current();return;}
     if(scenario&&!running)setReplay({from:input,far:scenario.limits.captureDistance,near:scenario.limits.minimumDriverDistance});
   }
-  // A distance-check row is a declared what-if: its vehicle and Sightline's computed stop distance go into the editable
+  // A distance-check row is a declared what-if: its vehicle and Umbra's computed stop distance go into the editable
   // fields. A row matching the checked vehicle (to the 2 decimals Nemotron was given) restores its exact sizes and credit.
   function applySweepRow(r) {
     if(!input)return;
@@ -289,13 +289,13 @@ export function App() {
       const set=run.parts.length&&run.basis?declaredLine(run.parts,run.basis):'';
       const first=run.sweep?.find(v=>!v.error);
       // Bloop speaks only Nemotron's own answer (or, without one, the values it declared). A withheld answer, an error and
-      // every computed result are Sightline's lines. basis: an error leaves Bloop sleepy while the comparison is unchanged.
+      // every computed result are Umbra's lines. basis: an error leaves Bloop sleepy while the comparison is unchanged.
       say(r.text?{from:'bloop',text:r.text,declared:set}:set&&{from:'bloop',text:`Set ${set}`},
-        r.error&&{from:'sightline',kind:'error',text:r.error,basis:run.basis},
-        r.note&&{from:'sightline',kind:'note',text:r.note},
-        r.computed&&{from:'sightline',text:r.computed},
-        mode==='ask'&&run.facts&&{from:'sightline',kind:'result',state:run.facts.proposed.state,setback:run.facts.proposed.setback_m},
-        mode==='check'&&first&&{from:'sightline',kind:'sweep',text:`${first.label}: ${sweepText(first)}`});
+        r.error&&{from:'umbra',kind:'error',text:r.error,basis:run.basis},
+        r.note&&{from:'umbra',kind:'note',text:r.note},
+        r.computed&&{from:'umbra',text:r.computed},
+        mode==='ask'&&run.facts&&{from:'umbra',kind:'result',state:run.facts.proposed.state,setback:run.facts.proposed.setback_m},
+        mode==='check'&&first&&{from:'umbra',kind:'sweep',text:`${first.label}: ${sweepText(first)}`});
     };
     try {
       const out=await runAssistant({mode,question:question.trim(),context},executeTool,{signal:controller.signal});
@@ -310,7 +310,7 @@ export function App() {
       if(runRef.current===controller){runRef.current=null;setRunning(null);}
     }
   }
-  if(fatal)return <main className="app"><h1>Sightline</h1><section className="unavailable" role="alert"><Bloop mood="sleepy" size={96}/><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
+  if(fatal)return <main className="app"><h1>Umbra</h1><section className="unavailable" role="alert"><Bloop mood="sleepy" size={96}/><h2>Scene unavailable</h2><p>{fatal}</p><button onClick={()=>sceneId?setLoadAttempt(n=>n+1):location.reload()}>Retry loading</button></section></main>;
   if(!scene)return <main className="app app--loading"><div className="backdrop" aria-hidden="true"><i/><i/><i/></div><div className="loading" role="status"><Bloop mood="bounce" size={120}/><span>Loading measured scene…</span></div></main>;
   const mapped=isMappedGround(scene),placementUnavailable=scene.measurements?.kind==='indexedSparse'&&!mapped;
   const surface=mapped?'mapped ground':'measured road';
@@ -404,7 +404,7 @@ export function App() {
       :inset==='map'?<div className="stage-map">{scenario?<StreetView scene={scene} scenario={scenario} eye={scenario.eye} mode="plan" framing="context" ruler={rulerRows} baselineLabel={BASELINE[kindNow][1]} onSetbackChange={moveVan} onDriverChange={moveDriver} onError={setFatal}/>:<div className="unavailable">Comparison unavailable</div>}</div>
       :<div className="stage-photo">{recordedSource&&<img className="recorded-still" src={recordedSource} alt="Recorded camera frame"/>}</div>}
       <div className="stage-brand">
-        <a className="brand" href="/" aria-label="Sightline home"><DotText text="Sightline" pitch={3.4}/></a>
+        <a className="brand" href="/" aria-label="Umbra home"><DotText text="Umbra" pitch={3.4}/></a>
         {catalog.length>1?<select className="place-select" aria-label="Measured scene" value={sceneId} onChange={e=>setSceneId(e.target.value)}>{catalog.map(e=><option key={e.id} value={e.id} title={e.label}>{placeName(e.label)}</option>)}</select>:<span className="place-name">{placeLabel}</span>}
       </div>
       {!editing&&<div className="stage-controls">

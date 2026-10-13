@@ -97,7 +97,7 @@ test('dot lettering: every glyph is a 7-row grid and the on-screen words are ful
     assert.ok(rows.every(r=>r.length===rows[0].length&&/^[#.]+$/.test(r)),ch);
   }
   // The app's dot-matrix words: the wordmark and the three result states (never Clear).
-  for(const word of ['Sightline','Blocked','Unknown','Overlap','0.42'])
+  for(const word of ['Umbra','Blocked','Unknown','Overlap','0.42'])
     assert.ok([...word].every(ch=>GLYPHS[ch]),`${word} has a glyph for every character`);
   const {lit,unlit,columns,rows}=dotLayout('Bo');
   assert.equal(rows,7);assert.equal(columns,11,'two 5-column glyphs and a 1-column gap');

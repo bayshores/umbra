@@ -21,7 +21,7 @@ Method (ported from the iteration-1 prototype, .local/evaluation/auto-placement-
   2. Crosswalk: periodic bright bars on a bird's-eye grid resampled on the depth-registered ground plane; bar
      near ends are mapped back to the image, and the near edge's 3D position comes from measured depth on that
      image row (median over the curb-side lane).
-  3. Every suggested pixel has measured depth and passes Sightline's roadPoint rule (|world y| <= 2 x road
+  3. Every suggested pixel has measured depth and passes Umbra's roadPoint rule (|world y| <= 2 x road
      tolerance) plus stricter gates. The plane only resamples image brightness; no depth is filled or invented.
 Anything that cannot be established is {"status": "unknown", "reason": ...} with no pixel.
 """
@@ -633,7 +633,7 @@ def suggest(sc, detections, detections_sha256=None, check=None, check_sha256=Non
     cfg, g = CFG, CFG['selection']
     world, d, plane_depth = measured_world(sc)
     has = sc['raw'] > 0
-    road_rule = has & (np.abs(world[..., 1]) <= 2 * sc['tol'])   # Sightline roadPoint rule
+    road_rule = has & (np.abs(world[..., 1]) <= 2 * sc['tol'])   # Umbra roadPoint rule
 
     curb = detect_curb(world, has, cfg)
     bev = build_bev(sc, cfg)
@@ -681,7 +681,7 @@ def suggest(sc, detections, detections_sha256=None, check=None, check_sha256=Non
         if along_edge is None:
             out['crossing'] = unknown('Too little measured depth on the crosswalk near edge.')
         else:
-            # Sightline centres the vehicle box on the crossing-to-front line, so the crossing point sits on the
+            # Umbra centres the vehicle box on the crossing-to-front line, so the crossing point sits on the
             # declared vehicle centreline: declared curb gap + half the declared width from the curb face.
             cross = choose_pixel(world, d, plane_depth, edge_mask, curb_point(curb, along_edge, offset), curb, along_edge)
             if cross is None:

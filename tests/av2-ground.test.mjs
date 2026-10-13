@@ -440,7 +440,7 @@ test('mapped ground: model-written answers and labels never call a vehicle parke
   for(const text of ['The parked car at 0.69 m (2.25 ft) blocks the line.','Parking it 0.69 m back still blocks.','PARKED: blocked at 0.69 m.','A carpark van is blocked at 0.69 m.']) {
     const r=checkAnswer(text,allowed,{mapped:true});
     assert.deepEqual([r.ok,r.kind],[false,'wording'],text);assert.equal(r.text,undefined,text);
-    assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: used wording Sightline does not allow.');
+    assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: used wording Umbra does not allow.');
     assert.equal(checkAnswer(text,allowed).ok,true,text);
   }
   assert.equal(checkAnswer('The stationary vehicle at 0.69 m (2.25 ft) blocks the line.',allowed,{mapped:true}).ok,true);
@@ -850,7 +850,7 @@ test('AV2 8c: a 1-2 px nudge of the vehicle front keeps the stationary vehicle; 
   assert.equal(v.state,'unknown');near(v.gapM,.06241,5e-5);
 });
 
-test('AV2 8c: answers say "not blocked by the vehicle" only where Sightline computed it, in its own result phrases',{skip},async()=>{
+test('AV2 8c: answers say "not blocked by the vehicle" only where Umbra computed it, in its own result phrases',{skip},async()=>{
   // Audit (October 12): with the adult (1.5 m) the rows up to 6 m cut under 10 cm into the box (too close to call), yet
   // the prompt told the model to call Unknown "not blocked by the vehicle (rest unknown)" and the check let it.
   const s=await loadAV2(),setup=suggestedSetup(s,s.suggestions);
@@ -862,7 +862,7 @@ test('AV2 8c: answers say "not blocked by the vehicle" only where Sightline comp
     for(const bad of [`At ${at} m the person is not blocked by the vehicle (rest unknown).`,`The proposed vehicle is not blocked by the vehicle (rest unknown).`,
       `At ${at} m (${ft} ft) the line isn't blocked by the vehicle.`,`The what-if at ${at} m does not block the line.`,`From ${at} m it no longer blocks.`]) {
       const r=checkAnswer(bad,allowed,{mapped:true});assert.deepEqual([r.ok,r.kind],[false,'result'],bad);
-      assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: described a result Sightline did not compute.');
+      assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: described a result Umbra did not compute.');
     }
     for(const good of [`At ${at} m (${ft} ft) the result is unknown (too close to call).`,'The stationary vehicle at 0.42 m is not blocked by the vehicle (rest unknown).',
       `Stationary vehicle: not blocked by the vehicle (rest unknown); proposed at ${at} m: unknown (too close to call).`])

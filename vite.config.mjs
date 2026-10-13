@@ -14,7 +14,7 @@ function nemotronApi() {
   const mount = server => server.middlewares.use(nemotronMiddleware(server.config.root,
     { servable: file => isFileLoadingAllowed(server.config, normalizePath(file)) }));
   return {
-    name: "sightline-nemotron-api",
+    name: "umbra-nemotron-api",
     configureServer(server) { mount(server); },
     configurePreviewServer(server) { mount(server); },
   };

@@ -3,9 +3,9 @@ import BLOOP from './bloop-frames.json';
 import { usePageVisible, useReducedMotion } from './motion.mjs';
 import { REST, faceParts } from './bloop-face.mjs';
 
-// Bloop, Sightline's mascot: vector frames traced (potrace) from mood sheets generated with OpenAI image generation in Codex. Each frame is five
+// Bloop, Umbra's mascot: vector frames traced (potrace) from mood sheets generated with OpenAI image generation in Codex. Each frame is five
 // layers (body, two rim crescents, highlight, face) drawn with the brand palette. Moods: idle, bounce (working), blocked,
-// unsure (an Unknown result: Bloop never has a "sees clearly" mood, because Sightline never reports Clear) and sleepy
+// unsure (an Unknown result: Bloop never has a "sees clearly" mood, because Umbra never reports Clear) and sleepy
 // (empty or unavailable). Frames advance with timers only while the page is visible; reduced motion shows the first frame.
 // The chat's Bloop is alive: after a reaction he settles onto a calm face, blinks now and then, glances toward a drag or
 // the field you type in, and dozes off after a minute with no input. All of that stops while the tab is hidden and stays

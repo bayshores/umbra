@@ -24,7 +24,7 @@ export const sameVehicle=(a,b)=>DIMS.every(k=>fmt(Number(a?.[k]))===fmt(Number(b
 // computed sentence.
 const FORBIDDEN=[/\bclear(?:ly|ed|er|est|ance|s)?\b/i,/\b(?:in|non-?)?visib\w*/i,/\b(?:un)?safe(?:ly|r|st|ty)?\b/i,
   /\b(?:danger|hazard|risk|crash|collision|accident)\w*/i,
-  // Law in any form: Sightline never establishes that parking is legal, permitted or meets a rule.
+  // Law in any form: Umbra never establishes that parking is legal, permitted or meets a rule.
   /\b(?:il)?legal\w*/i,/\b(?:un)?lawful\w*/i,/\b(?:non-?)?complian\w*/i,/\bcompl(?:y|ies|ied|ying)\b/i,/\bviolat\w*/i,
   /\bpermi(?:t|ss)\w*/i,/\ballow(?:s|ed|able|ing|ance)?\b/i,/\b(?:prohibit|forbid|forbad)\w*/i,/\bconform\w*/i,/\baccordance\b/i,
   /\b(?:meets?|met|meeting|satisf\w*)\b.{0,40}?(?:\b(?:rules?|codes?|laws?|regulations?|requirements?)\b|22500)/i,
@@ -386,7 +386,7 @@ function roleMismatch(text,roles) {
     const sets=role==='distance'?(unit==='ft'?[roles.distance_ft]:unit==='m'?[roles.distance_m]:[roles.distance_m,roles.distance_ft])
       // Sizes and heights are computed in metres only, so a size written in feet never matches.
       :unit==='ft'?[]:role==='height'?[roles.vehicleHeight,roles.person,roles.eye]:[roles[role]];
-    if(!sets.some(set=>set.has(key(value))))return `Number ${raw} is not Sightline's computed ${ROLE_NAMES[role==='distance'&&unit?`distance_${unit}`:role]}.`;
+    if(!sets.some(set=>set.has(key(value))))return `Number ${raw} is not Umbra's computed ${ROLE_NAMES[role==='distance'&&unit?`distance_${unit}`:role]}.`;
   }
 }
 // A claim that the vehicle does not block the line, in any wording the other checks let through.
@@ -405,11 +405,11 @@ function notBlockedMismatch(text,nb) {
     const clause=text.slice(a,b);
     if(!NOT_BLOCKED.test(clause))continue;
     const proposed=/\b(?:proposed|what-?if)\b/i.test(clause),current=/\b(?:current|stationary|baseline|existing)\b/i.test(clause);
-    if(proposed&&nb.proposed!==true)return 'Calls the proposed position not blocked by the vehicle; Sightline did not compute that.';
-    if(current&&nb.current!==true)return 'Calls the current position not blocked by the vehicle; Sightline did not compute that.';
+    if(proposed&&nb.proposed!==true)return 'Calls the proposed position not blocked by the vehicle; Umbra did not compute that.';
+    if(current&&nb.current!==true)return 'Calls the current position not blocked by the vehicle; Umbra did not compute that.';
     const distances=numbers.filter(n=>n.index>=a&&n.index<b&&n.distanceLike);
     const bad=distances.find(n=>!nb.at.has(key(n.value)));
-    if(bad)return `Says not blocked by the vehicle at ${bad.raw} ${bad.unit??'m'}, where Sightline did not compute that.`;
+    if(bad)return `Says not blocked by the vehicle at ${bad.raw} ${bad.unit??'m'}, where Umbra did not compute that.`;
     if(!distances.length&&!proposed&&!current&&!(/\bat\s+any\s+tested\s+distance\b/i.test(clause)?nb.anyTestedDistance:nb.unnamed))
       return 'Says not blocked by the vehicle without a distance, but not every computed result says so.';
   }
@@ -424,7 +424,7 @@ export function checkAnswer(text,allowedNumbers=[],{mapped=false}={}) {
   if(word)return {ok:false,kind:'wording',reason:`Uses withheld wording "${word}".`};
   const allowed=new Set(allowedNumbers.filter(Number.isFinite).map(key));
   const stray=(text.match(NUMBER)??[]).find(n=>!allowed.has(key(Number(n))));
-  if(stray)return {ok:false,kind:'number',reason:`Number ${stray} is not in Sightline's computed facts.`};
+  if(stray)return {ok:false,kind:'number',reason:`Number ${stray} is not in Umbra's computed facts.`};
   // Lists from allowedNumbersFrom know each number's quantity and where "not blocked" holds; a plain list is checked by
   // value only.
   const misplaced=allowedNumbers.roles&&roleMismatch(text,allowedNumbers.roles);
@@ -433,8 +433,8 @@ export function checkAnswer(text,allowedNumbers=[],{mapped=false}={}) {
   if(unsupported)return {ok:false,kind:'result',reason:unsupported};
   return {ok:true,reason:'',text};
 }
-const WITHHELD={length:'too long.',number:'used a number Sightline did not compute.',role:'used a computed number for the wrong quantity.',wording:'used wording Sightline does not allow.',
-  result:'described a result Sightline did not compute.'};
+const WITHHELD={length:'too long.',number:'used a number Umbra did not compute.',role:'used a computed number for the wrong quantity.',wording:'used wording Umbra does not allow.',
+  result:'described a result Umbra did not compute.'};
 // The quiet note shown beside the app's own line, true to why the answer was not shown.
 export const withheldNote=checked=>WITHHELD[checked.kind]?`Nemotron's answer was withheld: ${WITHHELD[checked.kind]}`:'Nemotron returned no wording.';
 

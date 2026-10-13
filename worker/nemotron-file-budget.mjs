@@ -43,7 +43,7 @@ export function createFileBudget(file,limitUsd) {
         if(error.code!=='EEXIST')throw error;
         // The lock covers one read and one append; an old one was left by a process that died holding it.
         try{if(Date.now()-statSync(lock).mtimeMs>STALE_LOCK_MS)unlinkSync(lock);}catch{}
-        if(Date.now()-start>LOCK_WAIT_MS)throw new Error(`Nemotron usage log is locked; remove ${lock} if no Sightline server is running.`);
+        if(Date.now()-start>LOCK_WAIT_MS)throw new Error(`Nemotron usage log is locked; remove ${lock} if no Umbra server is running.`);
         Atomics.wait(pause,0,0,5);
       }
     }
@@ -101,7 +101,7 @@ export const loopbackAddress=address=>address==='::1'||/^(::ffff:)?127(\.\d{1,3}
 
 // One file budget per log for the whole process, kept beside the handler's busy/tripped state: a Vite config reload reuses it
 // instead of opening the log again.
-const budgets=(globalThis[Symbol.for('sightline.nemotron')]??={}).budgets??=new Map();
+const budgets=(globalThis[Symbol.for('umbra.nemotron')]??={}).budgets??=new Map();
 function sharedFileBudget(file,limitUsd) {
   const id=`${limitUsd}\0${file}`;
   if(!budgets.has(id))budgets.set(id,createFileBudget(file,limitUsd));
