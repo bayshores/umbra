@@ -37,10 +37,13 @@ figure { margin:0; }
 /* Chart and chat: the street map is the stage on the left; the two case screens and the chat with Peri on the right. */
 .app { display:grid; grid-template-columns:minmax(0,1fr) clamp(440px,36vw,600px); grid-template-rows:minmax(0,1fr); gap:16px; height:100vh; height:100dvh; min-height:640px;
   max-width:1900px; margin:auto; padding:16px; overflow:clip; }
-.app > * { animation:rise .5s cubic-bezier(.2,.7,.2,1) both; }
+/* backwards, not both: a finished fade must not stay applied, or Chrome keeps the element a backdrop root and the blur
+   of glass inside it stops seeing what is behind. */
+.app > * { animation:rise .5s cubic-bezier(.2,.7,.2,1) backwards; }
 .app > .side { animation-delay:.08s; }
-@keyframes rise { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-.app--loading { display:grid; place-items:center; grid-template-columns:1fr; }
+/* Opacity only: a moving ancestor would shift the pinned header and the place Peri flies to. */
+@keyframes rise { from { opacity:0; } to { opacity:1; } }
+.app--loading { display:grid; place-items:center; grid-template-columns:1fr; min-height:0; }
 .loading { display:flex; flex-direction:column; align-items:center; gap:14px; color:var(--muted); font-size:13px; }
 /* Peri, the mascot (Peri.jsx): LiDAR-style dots in a thin ring. A mood change recolours the dots from the middle out
    (each dot's transition-delay); working sweeps a bright band across them; the eyes ease toward a glance and blink. */
@@ -59,6 +62,11 @@ figure { margin:0; }
 .peri-eye--unknown { fill:none; stroke:var(--text); stroke-width:1.6; stroke-dasharray:2.5 2.5; }
 .peri-eye--blink { animation:peri-blink .18s ease-in-out; }
 @keyframes peri-blink { 45%,55% { transform:scaleY(.12); } }
+/* Where Peri can be (PeriHost.jsx): each place is a slot with its own size, Peri's carrier fills the slot it rests in,
+   and flights between places cross the sky, a fixed layer above everything that never takes clicks. */
+.peri-slot { position:relative; display:block; flex:none; }
+.peri-carrier { display:block; width:100%; height:100%; }
+.peri-sky { position:fixed; inset:0; z-index:90; overflow:hidden; pointer-events:none; }
 .inline-error { padding:10px 14px; border-radius:12px; background:rgba(60,20,24,.82); color:#ffc4b6; font-size:13px; }
 .unavailable { display:grid; place-items:center; align-content:center; gap:10px; min-height:200px; padding:24px; border-radius:16px; background:var(--screen); color:var(--muted); font-size:14px; text-align:center; }
 
@@ -287,24 +295,186 @@ figure { margin:0; }
 .credits { display:flex; flex-wrap:wrap; gap:2px 14px; color:var(--faint); font-size:10.5px; line-height:1.5; }
 .attribution { display:inline-flex; flex-wrap:wrap; gap:0 8px; }
 
-@media (max-width:1050px) {
-  .app { grid-template-columns:minmax(0,1fr); grid-template-rows:none; height:auto; min-height:100vh; padding:12px; overflow:visible; }
-  .stage { height:clamp(380px,64vh,640px); }
-  .chat { min-height:440px; }
-  .stage-credits { position:static; max-width:none; padding:0 4px; }
+/* Phones and tablets (App.jsx ARTICLE: 1050 px wide and below). One page read from top to bottom: a pinned header with
+   Peri, the two driver views one above the other, the buttons and credits, then the chat; the street map opens as its
+   own layer over the page. Text is never fainter than 75%, controls are 46 px tall, and nothing scrolls sideways. */
+.app--article { --gutter:20px; --head-gap:12px; --control:46px; --peri-size:40px; --mark-h:17px; --choice-pad:12px;
+  --t1:17px; --t2:15px; --t3:12.5px; --column:100%; --plate-inset:0px; --plate-r:0px; --caption-pad:var(--gutter);
+  --muted:rgba(244,242,255,.75); --faint:rgba(244,242,255,.75); --fill:rgba(244,242,255,.1); --fill-hover:rgba(244,242,255,.15); --chosen:rgba(244,242,255,.24);
+  --head:calc(var(--control) + 20px + env(safe-area-inset-top,0px)); --top-glow:radial-gradient(150% 150px at 50% 0,rgba(84,76,160,.32),rgba(84,76,160,0));
+  display:block; height:auto; min-height:100vh; max-width:none; margin:0; padding:0; overflow:visible; font-size:var(--t2); line-height:1.45; }
+/* The header has to fit beside Place / Compare on every phone: Peri and the wordmark shrink in steps, then the wordmark
+   leaves (the place name stays). Overpass Mono letters are 0.616 em wide; the wordmark is 53 x 7 dots. */
+@media (max-width:391px) { .app--article { --peri-size:36px; --mark-h:15px; } }
+@media (max-width:372px) { .app--article { --mark-h:13px; } }
+@media (max-width:357px) { .app--article { --gutter:16px; --head-gap:10px; --peri-size:32px; --choice-pad:10px; } .article-brand .brand { display:none; } }
+@media (min-width:700px) { .app--article { --gutter:28px; --t1:18px; --t2:16px; --t3:13px; --column:816px; --plate-inset:var(--gutter); --plate-r:14px; --caption-pad:0px; } }
+@media (min-width:700px) and (orientation:landscape) { .app--article { --column:1050px; } }
+html.layer-open { overflow:hidden; }
+/* Pinned header: in-page jumps (opened details, a finished distance check) stop below it. */
+@media (max-width:1050px) { html { scroll-padding-top:calc(74px + env(safe-area-inset-top,0px)); } }
+/* One dusk glow along the top edge, gone by 150 px; no moving light on phones. The header is opaque and paints the same
+   glow, so what scrolls under it disappears and its bottom edge does not show. */
+.app--article .backdrop { background:var(--top-glow),var(--page); }
+.app--article .backdrop i { display:none; }
+.article { padding:calc(var(--head) + 8px) 0 calc(24px + env(safe-area-inset-bottom,0px)); }
+.article-head { position:fixed; z-index:20; top:0; left:0; right:0; display:flex; align-items:center; gap:var(--head-gap);
+  padding:calc(10px + env(safe-area-inset-top,0px)) max(calc(var(--gutter) + env(safe-area-inset-right,0px)),calc((100% - var(--column)) / 2 + var(--gutter))) 10px max(calc(var(--gutter) + env(safe-area-inset-left,0px)),calc((100% - var(--column)) / 2 + var(--gutter)));
+  background:var(--top-glow),var(--page); }
+.article-peri { width:var(--peri-size); height:var(--peri-size); }
+.article-brand { display:flex; flex:1 1 auto; flex-direction:column; align-items:flex-start; justify-content:center; gap:5px; min-width:0; }
+.article-brand > * { max-width:100%; }
+.article-brand .brand svg { width:auto; max-width:100%; height:var(--mark-h); }
+.article-brand .place-name { display:block; min-width:0; overflow:hidden; color:var(--muted); font-size:var(--t2); line-height:1.2; white-space:nowrap; text-overflow:ellipsis; }
+/* 16 px: iOS zooms the page into any smaller field it focuses. */
+.article-brand .place-select { max-width:100%; padding:0; color:var(--muted); font-size:16px; line-height:1.2; }
+/* More than one place: the name with a small caret, and the menu invisible over both. Its touch area reaches from the
+   wordmark down to the header's bottom edge. */
+.place-pick { position:relative; display:flex; align-items:center; gap:8px; }
+.place-pick::after { content:''; flex:none; width:6px; height:6px; margin:-4px 2px 0 0; border:solid var(--muted); border-width:0 1.5px 1.5px 0; transform:rotate(45deg); }
+.place-pick .place-select { position:absolute; top:-5px; right:-8px; bottom:-12px; left:-8px; width:auto; max-width:none; height:auto; margin:0; opacity:0; cursor:pointer; }
+.place-pick:has(.place-select:focus-visible) { outline:2px solid var(--text); outline-offset:4px; border-radius:2px; }
+.article-body { display:flex; flex-direction:column; gap:16px; max-width:var(--column); margin:0 auto; }
+.article-body > * { margin-inline:var(--gutter); }
+.article-body > .article-cases,.article-body > .article-editor,.article-body > .article-preview { margin-inline:var(--plate-inset); }
+
+/* Controls: a pearl 10% fill with 14 px corners; the chosen one is pearl 24% in weight 600. No icons. */
+.app--article :is(.choice button,.article-actions button,.map-layer-close,.composer-check,.pixel-inputs button,.suggestion-reset) {
+  display:inline-flex; align-items:center; justify-content:center; gap:0; height:auto; min-height:var(--control); padding:0 16px;
+  border-radius:14px; background:var(--fill); color:var(--text); font-size:var(--t2); font-weight:400; line-height:1.2; white-space:nowrap; }
+/* A tap leaves :hover behind on touch screens, so only a mouse brightens a control. */
+.app--article :is(.choice button,.article-actions button,.map-layer-close,.composer-check,.pixel-inputs button,.suggestion-reset):hover:not(:disabled):not([aria-disabled='true']) { background:var(--fill); text-decoration:none; }
+@media (hover:hover) {
+  .app--article :is(.choice button,.article-actions button,.map-layer-close,.composer-check,.pixel-inputs button,.suggestion-reset):hover:not(:disabled):not([aria-disabled='true']) { background:var(--fill-hover); }
 }
-@media (max-width:760px) {
-  .stage { height:460px; }
-  .stage-photo--editor { padding:76px 12px 16px; }
-  .stage-photo--editor .recorded-editor { width:100%; }
-  .stage-credits { display:none; }
-  .side-top { justify-content:space-between; }
-  .object-selectors { order:2; width:100%; }
-  .field-bubble,.field-bubble--anchored { position:relative; inset:auto; width:100%; margin-top:10px; }
-  .field-bubble label { display:inline-flex; width:100%; }
-  .pixel-inputs { width:100%; }
-  .evidence-note { display:block; margin-left:0; }
-  .msg { max-width:94%; }
+.app--article :is(.choice button[aria-pressed='true'],.article-actions button[aria-expanded='true']),
+.app--article :is(.choice button[aria-pressed='true'],.article-actions button[aria-expanded='true']):hover:not(:disabled):not([aria-disabled='true']) { background:var(--chosen); font-weight:600; }
+.app--article :is(button:disabled,[aria-disabled='true']) { opacity:.5; }
+.app--article .choice { display:flex; flex:none; overflow:hidden; border-radius:14px; }
+.app--article .choice button { flex:1 1 auto; padding:0 var(--choice-pad); border-radius:0; }
+.app--article .choice--objects { display:grid; grid-auto-columns:minmax(0,1fr); grid-auto-flow:column; }
+.app--article .choice--objects button { padding:0 6px; white-space:normal; }
+.choice--objects .object--missing { color:var(--muted); }
+.app--article input[type='number'] { min-height:var(--control); padding:0 12px; border-radius:12px; font-size:16px; }
+.app--article .scene-support-state,.app--article .inline-error { font-size:var(--t2); }
+
+/* Driver views: plates edge to edge on phones (inset with rounded corners from 700 px), each with one caption line. */
+.article-cases { display:grid; gap:16px; }
+.app--article .case { display:flex; flex-direction:column; gap:0; min-height:0; }
+.app--article .case-screen { min-height:0; border-radius:var(--plate-r); }
+.case-head--plain { justify-content:space-between; align-items:baseline; gap:12px; height:auto; padding:8px var(--caption-pad) 0; }
+.case-label { min-width:0; color:var(--muted); font-size:var(--t2); }
+/* Narrow phones: the caption steps down a size so a label and its result share one line from 360 px; below that the
+   distance moves to its own line instead of breaking after the dot. */
+@media (max-width:391px) { .app--article .case-label { font-size:14px; } }
+@media (max-width:357px) { .case-sep { display:none; } .case-at { display:block; } }
+.case-word { flex:none; color:var(--text); font-size:var(--t1); font-weight:600; }
+.case-word--blocked { color:var(--accent); }
+.case-word--new { animation:state-in .3s ease-out both; }
+.article-notes { display:flex; flex-direction:column; gap:16px; }
+.app--article .support-line { color:var(--muted); font-size:var(--t2); line-height:1.45; }
+.article-actions { display:grid; grid-auto-columns:minmax(0,1fr); grid-auto-flow:column; gap:8px; }
+.app--article .evidence { gap:12px; margin:0; font-size:var(--t2); }
+.app--article .evidence > div { grid-template-columns:minmax(0,1fr); gap:2px; }
+.app--article .evidence dt { color:var(--muted); font-size:var(--t3); }
+.app--article .evidence-note { display:block; margin-left:0; color:var(--muted); }
+.app--article .credits { gap:2px 12px; color:var(--muted); font-size:var(--t3); line-height:1.55; }
+.app--article .attribution { display:contents; }
+
+/* Placing: the recorded photo edge to edge, the selected object's details, then the live driver view. */
+.article-objects { display:flex; flex-direction:column; align-items:flex-start; gap:10px; }
+.article-objects .choice { align-self:stretch; }
+.app--article .recorded-picker { border-radius:var(--plate-r); box-shadow:none; }
+.article-place { display:flex; flex-direction:column; gap:16px; }
+.app--article .pixel-controls { gap:12px; font-size:var(--t2); }
+.app--article .selected-label { gap:4px 10px; font-size:var(--t1); }
+.app--article .suggested-tag { color:var(--muted); font-size:var(--t3); }
+.app--article .pixel-inputs { width:100%; gap:8px; color:var(--muted); }
+.app--article .pixel-inputs label { flex:1 1 0; min-width:0; }
+.app--article .pixel-inputs input { width:100%; }
+.app--article .field-bubble { position:static; width:auto; padding:0; border-radius:0; background:none; -webkit-backdrop-filter:none; backdrop-filter:none; }
+.app--article .bubble-title { margin-bottom:4px; font-size:var(--t1); }
+.app--article .field-bubble .suggested-tag { margin:0 0 4px; }
+.app--article .field-bubble label { margin-top:8px; font-size:var(--t2); }
+.app--article .field-bubble input { width:min(150px,50%); }
+
+/* The chat is part of the page: no bubbles or boxes, your words on the right, Peri's on the left, and only the app's
+   own lines named. */
+.app--article .chat { flex:none; margin-top:20px; overflow:visible; border-radius:0; background:none; box-shadow:none; }
+.app--article .chat-head { display:block; padding:0; }
+.app--article .chat-title h2 { font-size:var(--t1); font-weight:600; letter-spacing:0; }
+.app--article .chat-source { margin-top:4px; color:var(--muted); font-size:var(--t3); }
+.app--article .chat-log { flex:none; gap:36px; padding:28px 0; overflow:visible; }
+.app--article .chat-empty { margin:0; color:var(--muted); font-size:var(--t2); text-align:left; }
+.app--article .msg { max-width:min(100%,32em); gap:4px; }
+.app--article .msg-author { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+.app--article .msg-bubble { padding:0; border:0; border-radius:0; background:none; color:var(--text); font-size:var(--t1); line-height:1.5; }
+.app--article .msg--you .msg-bubble { text-align:right; }
+.app--article .msg--sightline { flex-direction:row; flex-wrap:wrap; align-self:flex-start; align-items:baseline; gap:4px 14px; }
+.app--article .msg--sightline .msg-author { position:static; width:auto; height:auto; overflow:visible; clip:auto; color:var(--muted); font-size:var(--t2); }
+.app--article .msg--sightline .msg-bubble { color:var(--muted); font-size:var(--t2); text-align:left; }
+.app--article .msg--error .msg-bubble { color:#ffc4b6; }
+.app--article .msg--sweep { flex-direction:column; align-self:stretch; align-items:stretch; max-width:none; }
+.app--article .msg--typing .msg-bubble { color:var(--muted); }
+.app--article .msg-result { align-items:baseline; gap:14px; }
+.msg-result-word { font-size:var(--t1,15px); font-weight:600; }
+.msg-result-word--blocked { color:var(--accent); }
+.app--article .msg-result-at { font-size:var(--t1); font-weight:400; }
+.app--article .msg-declared { padding:0; color:var(--muted); font-size:var(--t2); }
+.app--article .composer { gap:12px; padding:0; }
+.app--article .composer-field { display:contents; }
+.app--article .composer-check { align-self:flex-end; }
+.app--article .composer-field textarea { flex:none; width:100%; min-height:48px; max-height:168px; padding:12px 16px; border-radius:14px;
+  background:rgba(244,242,255,.04); box-shadow:inset 0 0 0 1.5px rgba(244,242,255,.45); font-size:16px; line-height:24px; }
+.app--article .composer-field textarea:focus { box-shadow:inset 0 0 0 2px var(--text); }
+.app--article .composer-field textarea::placeholder { color:var(--muted); }
+.app--article .composer-hint { color:var(--muted); font-size:var(--t3); }
+.app--article .msg--sweep .distance-panel { gap:14px; padding:0; border-radius:0; background:none; }
+.app--article .control-heading { flex-wrap:wrap; font-size:var(--t3); }
+.app--article .control-heading h2 { font-size:var(--t1); }
+.app--article .distance-legend { flex-wrap:wrap; gap:6px 14px; color:var(--muted); font-size:var(--t3); }
+.app--article .distance-rows { grid-template-columns:minmax(0,1fr); gap:10px; }
+.app--article .distance-row { gap:10px; padding:14px 16px 12px; border-radius:14px; background:var(--fill); font-size:var(--t2); }
+.app--article .distance-row--applied { background:var(--chosen); }
+.app--article .distance-name > span:last-child { color:var(--muted); font-size:var(--t3); }
+.app--article .distance-strip { margin-bottom:18px; }
+.app--article .distance-tick > span { color:var(--muted); font-size:var(--t3); }
+.app--article .distance-result { color:var(--muted); font-size:var(--t2); }
+.app--article .distance-marks { margin-top:-4px; font-size:var(--t3); }
+.app--article .distance-note { color:var(--muted); font-size:var(--t3); }
+
+/* The street map layer: covers the page (header included) until Close or Escape; Peri flies into its result row. */
+.map-layer { position:fixed; z-index:80; inset:0; display:flex; flex-direction:column; gap:16px; overflow-y:auto; overscroll-behavior:contain; outline:none;
+  padding:calc(10px + env(safe-area-inset-top,0px)) 0 calc(16px + env(safe-area-inset-bottom,0px)); background:var(--page); }
+.app > .map-layer { animation:layer-in .2s ease-out backwards; }
+.app > .map-layer--closing { animation:layer-out .18s ease-in both; pointer-events:none; }
+@keyframes layer-in { from { opacity:0; } }
+@keyframes layer-out { to { opacity:0; } }
+.map-layer-top,.map-layer-foot,.map-layer > .credits { flex:none; margin-inline:max(var(--gutter),calc((100% - var(--column)) / 2 + var(--gutter))); }
+.map-layer-top { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.map-layer-view { position:relative; flex:1 1 auto; min-height:240px; background:#060716; }
+.map-layer-fill { position:absolute; inset:0; }
+.map-layer-fill > .recorded-still { display:block; width:100%; height:100%; object-fit:contain; }
+.map-layer-foot { display:flex; align-items:center; gap:16px; min-height:48px; }
+.map-layer-result { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 20px; margin-right:auto; }
+.map-layer-peri { width:44px; height:44px; }
+/* Landscape phones: the map takes the left side at full height, the controls stack on the right. */
+@media (orientation:landscape) and (max-height:500px) {
+  .map-layer { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(220px,1fr); grid-template-rows:auto auto minmax(0,1fr); gap:14px 20px;
+    padding:calc(12px + env(safe-area-inset-top,0px)) calc(var(--gutter) + env(safe-area-inset-right,0px)) calc(12px + env(safe-area-inset-bottom,0px)) calc(var(--gutter) + env(safe-area-inset-left,0px)); }
+  .map-layer-view { grid-column:1; grid-row:1 / -1; min-height:0; border-radius:14px; overflow:hidden; }
+  .map-layer-top,.map-layer-foot,.map-layer > .credits { grid-column:2; margin-inline:0; }
+  .map-layer > .credits { align-self:end; }
+}
+/* Wide screens on their side: the two driver views side by side; placing shows the photo beside the driver view. */
+@media (min-width:700px) and (orientation:landscape) {
+  .article-cases { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .app--placing .article-body { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+  .app--placing .article-body > * { grid-column:1 / -1; order:2; }
+  .app--placing .article-body > :is(.scene-support-state,.inline-error,.article-objects) { order:0; }
+  .app--placing .article-body > .article-editor { grid-column:1; order:0; margin-inline:var(--plate-inset) 0; }
+  .app--placing .article-body > .article-preview { grid-column:2; order:0; margin-inline:0 var(--plate-inset); }
+  .app--placing .article-body > .article-place { order:1; }
 }
 @media (prefers-reduced-motion:reduce) {
   *,*::before,*::after { transition:none !important; animation:none !important; }
