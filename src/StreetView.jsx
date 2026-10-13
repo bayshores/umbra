@@ -9,6 +9,8 @@ import { mapLayers, rulerDots, rulerPoint, setbackAt } from './map-layers.mjs';
 // Person marker colour per result: only Blocked carries the accent; Unknown stays neutral.
 const STATES = { clear: 0xf4f2ff, blocked: 0xff7a9a, unknown: 0xf4f2ff };
 const VIEW_BACKGROUND = 0x060716;
+// Driver-view vehicle colours (sRGB, shadowed face to lit face): the proposed vehicle pearl as on the map, the current one slate.
+const BODY = { proposed: [[0x55, 0x50, 0x74], [0xf4, 0xf1, 0xfb]], current: [[0x1d, 0x21, 0x38], [0x8c, 0x92, 0xb4]] };
 // Dot diameter in metres before the per-pixel clamp: near points read larger, far points smaller.
 const POINT_SIZE_M = 0.045;
 // Each dot's stored colour is the recorded camera's (grayscale) brightness at its pixel. Dots are shaded by that
@@ -63,7 +65,7 @@ function validate(scene, eye, scenario) {
 function disposeTree(root) {
   root.traverse(o => {
     o.geometry?.dispose();
-    (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m?.dispose());
+    (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m?.map?.dispose(); m?.dispose(); });
   });
 }
 function addMarker(point, color, group) {
@@ -130,7 +132,7 @@ function pointMaterial() {
     vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   });
 }
-// Vehicles are opaque near-black volumes with bright edges.
+// Over the recorded photo, vehicles are opaque near-black volumes with bright edges.
 function addVehicle(center, dimensions, axis, group) {
   const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
   const yaw = Math.atan2(axis[0], axis[2]);
@@ -143,6 +145,112 @@ function addVehicle(center, dimensions, axis, group) {
   edge.rotation.copy(fill.rotation);
   group.add(edge);
   return fill;
+}
+// The driver views draw each vehicle as its exact box, solid: every face shaded from a light above and behind the viewer
+// (fixed colours, no scene lights) and darker toward the ground, a bright top rim, faint other edges and a soft contact
+// shadow under it.
+function addSolidVehicle(center, dimensions, axis, group, tone, eye) {
+  const geometry = new THREE.BoxGeometry(dimensions.width, dimensions.height, dimensions.length);
+  const yaw = Math.atan2(axis[0], axis[2]), turn = new THREE.Matrix4().makeRotationY(yaw);
+  const toBox = new THREE.Vector3(center[0] - eye[0], 0, center[2] - eye[2]);
+  const ahead = toBox.lengthSq() > 1e-9 ? toBox.normalize() : new THREE.Vector3(-axis[0], 0, -axis[2]).normalize();
+  const light = ahead.clone().multiplyScalar(-.8).addScaledVector(ahead.clone().cross(UP), .35).addScaledVector(UP, .6).normalize();
+  const normals = geometry.getAttribute('normal'), positions = geometry.getAttribute('position'), n = new THREE.Vector3(), shade = new THREE.Color(), colors = [];
+  const [dark, bright] = BODY[tone];
+  for (let i = 0; i < normals.count; i++) {
+    n.fromBufferAttribute(normals, i).applyMatrix4(turn);
+    const lit = .35 + .65 * Math.max(0, n.dot(light)), k = lit * (n.y > .5 ? 1 : .5 + .5 * (positions.getY(i) / dimensions.height + .5));
+    shade.setRGB(...dark.map((d, c) => (d + (bright[c] - d) * k) / 255), THREE.SRGBColorSpace);
+    colors.push(shade.r, shade.g, shade.b);
+  }
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  const body = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ vertexColors: true, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
+  body.position.set(...center);
+  body.rotation.y = yaw;
+  const outline = new THREE.EdgesGeometry(geometry).getAttribute('position').array, rim = [], rest = [];
+  for (let i = 0; i < outline.length; i += 6) (outline[i + 1] > 0 && outline[i + 4] > 0 ? rim : rest).push(...outline.slice(i, i + 6));
+  const edges = [[rim, tone === 'proposed' ? .95 : .6], [rest, tone === 'proposed' ? .35 : .22]].map(([points, opacity]) => {
+    const line = new THREE.BufferGeometry();
+    line.setAttribute('position', new THREE.Float32BufferAttribute(points, 3));
+    const segments = new THREE.LineSegments(line, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity }));
+    segments.position.copy(body.position);
+    segments.rotation.copy(body.rotation);
+    return segments;
+  });
+  const shadow = contactShadow(dimensions);
+  shadow.position.set(center[0], center[1] - dimensions.height / 2 + .005, center[2]);
+  shadow.rotation.y = yaw;
+  group.add(shadow, body, ...edges);
+}
+// A soft dark rounded rectangle on the ground: darkest under the footprint, fading out `spread` metres beyond it.
+// Drawn after the scan dots, so the dots around the vehicle's base darken too.
+function contactShadow(dimensions, spread = .7) {
+  const geometry = new THREE.PlaneGeometry(dimensions.width + spread * 2, dimensions.length + spread * 2).rotateX(-Math.PI / 2);
+  const shadow = new THREE.Mesh(geometry, new THREE.ShaderMaterial({
+    uniforms: { extent: { value: new THREE.Vector2(dimensions.width / 2, dimensions.length / 2) }, spread: { value: spread } },
+    vertexShader: 'varying vec2 vAt; void main(){ vAt = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: 'uniform vec2 extent; uniform float spread; varying vec2 vAt; void main(){ vec2 q = abs(vAt) - extent; float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0); gl_FragColor = vec4(0.0, 0.0, 0.0, .85 * (1.0 - smoothstep(-.2, spread, d))); }',
+    transparent: true, depthWrite: false,
+  }));
+  shadow.renderOrder = 1;
+  return shadow;
+}
+// A standing person pictogram on a 1:4 canvas, the crown touching the top edge and the feet the bottom edge.
+let figureCanvas = null;
+function personCanvas() {
+  if (figureCanvas) return figureCanvas;
+  const canvas = document.createElement('canvas'), g = canvas.getContext('2d');
+  canvas.width = 96;
+  canvas.height = 384;
+  g.fillStyle = '#fff';
+  const part = (x, y, w, h, r) => { g.beginPath(); g.roundRect(x, y, w, h, r); g.fill(); };
+  g.beginPath();
+  g.arc(48, 25, 25, 0, Math.PI * 2);
+  g.fill();
+  part(21, 58, 54, 146, [22, 22, 6, 6]);
+  part(5, 64, 13, 128, 6.5);
+  part(78, 64, 13, 128, 6.5);
+  part(23, 196, 22, 188, [3, 3, 9, 9]);
+  part(51, 196, 22, 188, [3, 3, 9, 9]);
+  return figureCanvas = canvas;
+}
+// The driver views draw the person as a slim upright figure from the ground point to the set height, so its crown is the
+// tested point. Parts hidden behind a vehicle show as a dark silhouette on it; the tested point is a ring drawn over
+// everything, in the accent when Blocked.
+function addPerson(point, ground, color, group, hiddenGround, facing, pixelRatio) {
+  if (!finite3(point) || !finite3(ground)) throw new Error('Measured target ground point is missing or invalid.');
+  const canvas = personCanvas(), height = point[1] - ground[1];
+  const figure = (tint, opacity, depthFunc, order) => {
+    const map = new THREE.CanvasTexture(canvas);
+    map.colorSpace = THREE.SRGBColorSpace;
+    const geometry = new THREE.PlaneGeometry(height * canvas.width / canvas.height, height).translate(0, height / 2, 0);
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ map, color: tint, transparent: true, opacity, depthWrite: false, depthFunc, side: THREE.DoubleSide }));
+    mesh.position.set(...ground);
+    mesh.rotation.y = Math.atan2(facing[0] - ground[0], facing[2] - ground[2]);
+    mesh.renderOrder = order;
+    return mesh;
+  };
+  group.add(figure(0xe4e0f0, .95, THREE.LessEqualDepth, 2), figure(VIEW_BACKGROUND, .55, THREE.GreaterDepth, 3), headMark(point, color, pixelRatio));
+  if (hiddenGround) addHollowMarker(ground, STATES.unknown, group, facing);
+}
+function headMark(point, color, pixelRatio) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(point, 3));
+  const mark = new THREE.Points(geometry, new THREE.ShaderMaterial({
+    uniforms: { size: { value: 10 * pixelRatio }, tint: { value: new THREE.Color(color) } },
+    vertexShader: 'uniform float size; void main(){ gl_PointSize = size; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform vec3 tint;
+      void main() {
+        float r = length(gl_PointCoord - .5) * 2.0;
+        float mark = max(smoothstep(.6, .7, r) * (1.0 - smoothstep(.86, .98, r)), 1.0 - smoothstep(.2, .32, r));
+        gl_FragColor = vec4(tint * mark, max(mark, .35 * (1.0 - smoothstep(.9, 1.0, r))));
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthTest: false, depthWrite: false,
+  }));
+  mark.renderOrder = 4;
+  return mark;
 }
 
 function flatMaterial(color, opacity = 1) {
@@ -513,31 +621,35 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       a.currentOverlay = null;
       a.proposedOverlay = null;
       // Plan mode looks down; the driver views face the eye.
-      const facing = mode === 'plan' ? null : (eye ?? scene.camera.eye);
+      const facing = mode === 'plan' ? null : (eye ?? scene.camera.eye), pixelRatio = a.renderer.getPixelRatio();
       if (scenario) {
         const hiddenGround = scenario.support?.target?.hidden === true;
         if (mode === 'compare') {
           a.currentOverlay = new THREE.Group();
           a.proposedOverlay = new THREE.Group();
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.currentVisibility.state], a.currentOverlay, hiddenGround, facing);
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], a.proposedOverlay, hiddenGround, facing);
+          addPerson(scenario.target, scenario.targetGround, STATES[scenario.currentVisibility.state], a.currentOverlay, hiddenGround, facing, pixelRatio);
+          addPerson(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], a.proposedOverlay, hiddenGround, facing, pixelRatio);
           // Each vehicle carries its own pose (an annotated stationary vehicle and its what-if may be turned from the lane axis).
-          addVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, a.currentOverlay);
-          addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, a.proposedOverlay);
+          addSolidVehicle(scenario.baseline.center, scenario.baseline.vehicle, scenario.baseline.axis, a.currentOverlay, 'current', facing);
+          addSolidVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, a.proposedOverlay, 'proposed', facing);
           group.add(a.currentOverlay, a.proposedOverlay);
         } else if (mode === 'plan') {
           // The top-down view draws its vehicles and the person above the map (placeLabels), so lane paint never crosses them.
           // The annotated box the current vehicle is drawn from is not outlined a second time.
           const own = scenario.baseline.pose === 'annotated' ? scenario.baseline.center : null;
           a.mapBase?.children.forEach(o => { if (o.userData.center) o.visible = !own || Math.hypot(o.userData.center[0] - own[0], o.userData.center[2] - own[2]) > .05; });
-          if (scenario.whatIf) group.add(rulerObject(rulerDots(scenario, ruler), a.renderer.getPixelRatio()));
+          if (scenario.whatIf) group.add(rulerObject(rulerDots(scenario, ruler), pixelRatio));
         } else {
-          addTarget(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group, hiddenGround, facing);
-          addVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group);
+          addPerson(scenario.target, scenario.targetGround, STATES[scenario.proposedVisibility.state], group, hiddenGround, facing, pixelRatio);
+          addSolidVehicle(scenario.proposed.center, scenario.proposed.vehicle, scenario.proposed.axis, group, 'proposed', facing);
         }
-      } else if (preview) {
+      } else if (preview && mode === 'recorded') {
         if (preview.vehicle) addVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group);
         if (preview.target) addTarget(preview.target, preview.targetGround, STATES.unknown, group, preview.targetHidden === true, facing);
+      } else if (preview) {
+        // While placing, the vehicle is the current one.
+        if (preview.vehicle) addSolidVehicle(preview.vehicle.center, preview.vehicle.dimensions, preview.vehicle.axis, group, 'current', facing);
+        if (preview.target) addPerson(preview.target, preview.targetGround, STATES.unknown, group, preview.targetHidden === true, facing, pixelRatio);
       }
       a.world.add(group);
       a.overlay = group;
