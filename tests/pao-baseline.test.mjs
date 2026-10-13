@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {suggestedSetup} from '../src/suggestions.mjs';
+import {suggestedSetup,crossingText} from '../src/suggestions.mjs';
 import {devDataPresent,loadDevelopmentScene,signedClearance,appIntersects,boxesOverlap,percentile,clickToGround,suggestionConsistency,
   setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters,GROUNDED_DIR} from '../scripts/evaluation/pao-baseline.mjs';
 
@@ -38,12 +38,13 @@ test('baseline helpers: upright box overlap and nearest-rank percentile',()=>{
 
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
 const skip=devDataPresent()?false:'AV2 8c development data is local-only and not present';
-// The expected numbers belong to these data pins (grounded-v3.1, protocol v3.1); other pins run the invariant checks only.
-const PINS={ground:'b92ddab7f6323aec16044f9b34ef4b097437776b76cb12535072e8e1c938a305',suggestions:'b0bed508f0c6a6a85b7ce9d851227b338450741e1e2e24f1417109e0949357b9'};
+// The expected numbers belong to these data pins (grounded-v3.2, protocol v3.2; the same numbers as grounded-v3.1);
+// other pins run the invariant checks only.
+const PINS={ground:'556bc31b922c59853fe9e6e1d4cf9bcb8d8f7f6863de46835272f53235236115',suggestions:'86b2e5a134fbed2fc8ee778da78341aa60da86df044b08ffbc4ca87be32f7dae'};
 
-test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked-end range and its own invariants',{skip},async()=>{
+test('baseline on AV2 8c (protocol v3.2): contract values, metric C, the Blocked-end range and its own invariants',{skip},async()=>{
   const {scene,entry}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions);
-  assert.equal(GROUNDED_DIR,'grounded-v3.1/');
+  assert.equal(GROUNDED_DIR,'grounded-v3.2/');
   const pinned=entry.ground.sha256===PINS.ground&&entry.suggestions.sha256===PINS.suggestions;
   const first=firstLoad(scene,setup),click=clickToGround(scene),consistency=suggestionConsistency(scene),sweep=setbackSweepBaseline(scene,setup),end=blockedEndRange(scene,setup);
   for(const k of ['child','adult']) {
@@ -62,6 +63,8 @@ test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked
   assert.deepEqual(click.fractionalClickBands.map(x=>x.band),click.bands.map(x=>x.band));
   assert.doesNotMatch(JSON.stringify([first,click,consistency,sweep,end,honesty]),/park/i);
   if(!pinned)return;
+  // Protocol v3.2: the crosswalk chip shows the measured paint-offset bound (the only first-load change from v3.1).
+  assert.equal(crossingText(scene.suggestions.crossing),'crosswalk mapped ±0.18 m');
   // Contract A6: first load Unknown / Unknown, the averaged box misses the line by 0.0624 m at a 0.4198 m setback.
   assert.deepEqual([first.current,first.proposed],['unknown','unknown']);near(first.clearanceM,.06241,1e-4,'first-load clearance');near(first.baselineSetbackM,.41981,1e-4);
   // Metric C: the points the app uses lie on their mapped points; the stored vehicle-front pixelUV ray hit does not (raster

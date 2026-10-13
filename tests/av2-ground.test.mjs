@@ -467,16 +467,18 @@ test('mapped ground: model-written answers and labels never call a vehicle parke
   assert.equal(runTool(legacyScene,'ask',ds,'declare_scenario',{...declaration,parked_vehicle:true}).error,'Unexpected field parked_vehicle.');
 });
 
-// ------------------------------------------------------------------ AV2 8c (protocol v3.1) local data
+// ------------------------------------------------------------------ AV2 8c (protocol v3.2) local data
 // The prepared AV2 scene is CC BY-NC-SA data kept out of public/ and dist/; it lives in ignored local evaluation folders.
-// The current folder is grounded-v3.1/ (app contract sections A0-A10); grounded-v3/, grounded-v2/ and grounded/ are
-// history the loader refuses. Files from two grounded folders are never mixed.
-const AV2=new URL('../.local/evaluation/av2-map-first-2026-10-11/',import.meta.url),ID='av2-pao-8c52d911-2658849',GROUNDED_DIR='grounded-v3.1/';
+// The current folder is grounded-v3.2/ (app contract sections A0-A12): the same geometry and results as grounded-v3.1/,
+// with the crosswalk paint-offset bound filled in ("±0.18 m"). grounded-v3.1/ is history (still loadable: protocol v3.1
+// is not defective); grounded-v3/ is refused, and grounded-v2/ and grounded/ use earlier schemas. Files from two grounded
+// folders are never mixed.
+const AV2=new URL('../.local/evaluation/av2-map-first-2026-10-11/',import.meta.url),ID='av2-pao-8c52d911-2658849',GROUNDED_DIR='grounded-v3.2/';
 const local=existsSync(new URL(GROUNDED_DIR+'scene.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
 const skip=local?false:'AV2 8c data is local-only and not present';
 const GROUNDED=new Set(['scene.json','ground.json','terrain.bin','suggestions.json']);
 const av2Bytes=name=>readFile(new URL((GROUNDED.has(name)?GROUNDED_DIR:'assembled/')+name,AV2));
-// Serves the contract's directory: assembled buffers plus every grounded-v3.1 file, with optional replacements.
+// Serves the contract's directory: assembled buffers plus every grounded-v3.2 file, with optional replacements.
 const av2Fetch=(replace={})=>async path=>{
   const name=path.split('/').at(-1);
   if(Object.hasOwn(replace,name))return replace[name]===null?new Response(null,{status:404}):new Response(replace[name]);
@@ -485,7 +487,7 @@ const av2Fetch=(replace={})=>async path=>{
 };
 const entry=local?JSON.parse(await readFile(new URL(GROUNDED_DIR+'catalog-entry.json',AV2),'utf8')):null;
 const loadAV2=(replace,overrides={})=>{const e={...entry,...overrides};return loadScene(av2Fetch(replace),ID,e.metadataSha256,undefined,e.suggestions,e.ground);};
-// Contract section A5 (grounded-v3.1; the same geometry as grounded-v3), asserted to 1e-6 m. pixel: the integer anchor
+// Contract section A5 (grounded-v3.2; the same geometry as grounded-v3.1 and grounded-v3), asserted to 1e-6 m. pixel: the integer anchor
 // (marker and nudge anchor); pixelUV: the exact projection the app evaluates while the suggestion is untouched;
 // anchorResidual: how far the integer anchor alone would land from the mapped point.
 const EXPECTED={
@@ -503,12 +505,12 @@ const FRONT=[7.387527453571465,-1.3148510826921616,15.653817825089043];
 
 test('AV2 8c: the contract pins load and the runtime rule reproduces every prepared vector, fractional positions and the 30 m limit',{skip},async()=>{
   assert.deepEqual(Object.keys(entry).sort(),['ground','id','label','metadataSha256','suggestions']);
-  assert.equal(entry.metadataSha256,'08e8b763cff9f86e12fe6f9c9b907b206c10dad37ac22b6c231fd467c1151843');
-  assert.deepEqual(entry.ground,{file:'ground.json',sha256:'b92ddab7f6323aec16044f9b34ef4b097437776b76cb12535072e8e1c938a305'});
-  assert.deepEqual(entry.suggestions,{file:'suggestions.json',sha256:'b0bed508f0c6a6a85b7ce9d851227b338450741e1e2e24f1417109e0949357b9'});
+  assert.equal(entry.metadataSha256,'c2453ac1afbc35aca794ccd93f42c6f8c43f40da87bb9b34bc6fba18ac17206a');
+  assert.deepEqual(entry.ground,{file:'ground.json',sha256:'556bc31b922c59853fe9e6e1d4cf9bcb8d8f7f6863de46835272f53235236115'});
+  assert.deepEqual(entry.suggestions,{file:'suggestions.json',sha256:'86b2e5a134fbed2fc8ee778da78341aa60da86df044b08ffbc4ca87be32f7dae'});
   const s=await loadAV2();
   assert.equal(s.measurements.groundPolicy,'mappedGround');assert.equal(s.ground.terrain.sha256,'2f7a2914ddfb89593a086514ad9ceab6c8f7eb25087e467cae4c4fc371b8f082');
-  assert.equal(s.ground.schemaVersion,2);assert.equal(s.ground.protocol.sha256,'6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92');
+  assert.equal(s.ground.schemaVersion,2);assert.equal(s.ground.protocol.sha256,'1cef13e625ba8d0c0c00203c0bda6e256536173c4607ac79807e3e40dd173cf7');
   assert.deepEqual([s.ground.placementRangeLimitMeters,s.ground.alongRayUncertainty.heightBandMeters,s.ground.alongRayUncertainty.method],[30,.075,'fitThisDevelopmentScene']);
   assert.equal(s.ground.support.count,3055);assert.equal(s.groundSupportXZ.length,2*3055);assert.equal(s.terrainHeights.length,409*408);
   assert.equal(s.ground.license.attribution,'(c) 2021 Argo AI, LLC');assert.equal(roadTolerance(s),.08);
@@ -526,8 +528,9 @@ test('AV2 8c: the contract pins load and the runtime rule reproduces every prepa
     const anchor=mappedGroundHit(s,e.pixel).point;near(Math.hypot(anchor[0]-raw.mappedPoint[0],anchor[2]-raw.mappedPoint[2]),e.anchorResidual,1e-6,key);
   }
   // The 21 runtime vectors: the three pixelUV positions, the three integer anchors, the 13 v2 vector pixels and a 30 m
-  // boundary pair 0.002 px apart on column 373 (v 150.595 is refused, v 150.597 is placed 29.998 m away).
-  const vectors=JSON.parse(await readFile(new URL('runtime-test-vectors-v3.1.json',AV2),'utf8'));
+  // boundary pair 0.002 px apart on column 373 (v 150.595 is refused, v 150.597 is placed 29.998 m away). Protocol v3.2
+  // changes no runtime rule: its vectors equal the v3.1 ones exactly (v3.2-app/make-runtime-vectors-v3.2.py checks this).
+  const vectors=JSON.parse(await readFile(new URL('runtime-test-vectors-v3.2.json',AV2),'utf8'));
   assert.deepEqual([vectors.groundSha256,vectors.suggestionsSha256,vectors.protocolSha256],[entry.ground.sha256,entry.suggestions.sha256,s.ground.protocol.sha256]);
   assert.equal(vectors.vectors.length,21);
   const kinds={};for(const v of vectors.vectors)kinds[v.kind]=(kinds[v.kind]??0)+1;
@@ -622,11 +625,15 @@ test('AV2 8c: suggestions open the comparison with no clicks, in the averaged an
   assert.deepEqual(Object.fromEntries(Object.entries(scenario.support).map(([k,v])=>[k,[v.supportClass,v.hidden,v.alongRayUncertaintyM]])),
     {crossing:['map-only',true,EXPECTED.crossing.alongRay],parking:['map-only',true,null],target:['map-only',false,EXPECTED.target.alongRay]});
   const current={pixels:setup.pixels,vehicle:setup.vehicle,targetHeight:setup.targetHeight},status=suggestionStatus(raw,setup,current);
-  // The crosswalk chip shows the crossing's own error (protocol v3.1 crossingError.display), never its along-ray figure.
-  assert.deepEqual(status.parts.map(p=>`${p.text} ${p.note}`),['crosswalk mapped · paint offset pending measurement (mapped, not observed; hidden)',
+  // The crosswalk chip shows the crossing's own error (protocol v3.2 crossingError, measured from paint protocol v4), never
+  // its along-ray figure: ±0.18 m is a bound (|measured offset| + 2 × spread, rounded up), never the offset itself.
+  assert.deepEqual(raw.crossing.crossingError,{basis:'mapped near edge',status:'measured',label:'±0.18 m',plusMinusM:.18,
+    evidence:{file:'.local/evaluation/pao-paint/results/8c52d911-2658849-v4.json',sha256:'2680ec78ac03b6348dc8bb10ca2c78a5c623e664203b5b6fc1b98684dbb6f240'}});
+  assert.deepEqual(status.parts.map(p=>`${p.text} ${p.note}`),['crosswalk mapped ±0.18 m (mapped, not observed; hidden)',
     'stationary vehicle (mapped, not observed; hidden)','child 1.1 m (default; mapped, not observed)']);
-  assert.equal(crossingText(raw.crossing),'crosswalk mapped · paint offset pending measurement');
-  assert.match(status.parts[0].title,/mapped near edge; paint offset pending measurement$/);assert.doesNotMatch(status.parts[0].title,/±|along the pixel ray/);
+  assert.equal(crossingText(raw.crossing),'crosswalk mapped ±0.18 m');
+  assert.ok(status.parts[0].title.endsWith('mapped near edge; ±0.18 m bounds the paint offset (|measured offset| + 2 × spread; development-grade, not calibrated)'),status.parts[0].title);
+  assert.doesNotMatch(status.parts[0].title,/along the pixel ray|1\.03|offset is/);
   for(const [e,text] of [[{status:'measured',label:'±0.25 m',plusMinusM:.25},'crosswalk mapped ±0.25 m'],[{status:'unmeasured',label:'paint offset unmeasured'},'crosswalk mapped · paint offset unmeasured'],
     [{status:'unresolved',label:'paint offset unresolved'},'crosswalk mapped · paint offset unresolved']])assert.equal(crossingText({label:'crosswalk mapped',crossingError:e}),text);
   assert.match(status.parts[1].title,/^stationary vehicle \(AV2 annotation\); reason for stopping unknown.* · annotated pose$/);
@@ -921,7 +928,12 @@ test('AV2 8c: stale, tampered, reworded or earlier-schema suggestions and ground
     'integer anchor check':[r=>{r.person.integerPixelCheck.residualM=0;},/person\.integerPixelCheck disagrees/],
     'integer anchor reason':[r=>{r.person.integerPixelCheck={reason:'Too far to place (over 30 m).'};},/person\.integerPixelCheck disagrees/],
     'uncertainty':[r=>{r.crossing.alongRayUncertaintyM=1.2111531809435245;},/crossing disagrees/],
-    'crossing error status':[r=>{r.crossing.crossingError.status='measured';},/crossingError must be a measured offset/],
+    'crossing error status':[r=>{r.crossing.crossingError.status='pending-measurement';},/crossingError must be a measured offset/],
+    'crossing error status unmeasured':[r=>{r.crossing.crossingError.status='unmeasured';},/crossingError must be a measured offset/],
+    'crossing error bound':[r=>{r.crossing.crossingError.plusMinusM=.17;},/crossingError must be a measured offset/],
+    'crossing error bound over 5 m':[r=>{Object.assign(r.crossing.crossingError,{plusMinusM:5.5,label:'±5.50 m'});},/crossingError must be a measured offset/],
+    'crossing error evidence':[r=>{r.crossing.crossingError.evidence=null;},/crossingError must be a measured offset/],
+    'crossing error evidence hash':[r=>{r.crossing.crossingError.evidence.sha256='not-a-hash';},/crossingError must be a measured offset/],
     'crossing error label':[r=>{r.crossing.crossingError.label='±1.03 m';},/crossingError must be a measured offset/],
     'crossing error fields':[r=>{r.crossing.paintOffset={status:'unmeasured'};},/unexpected field crossing\.paintOffset/],
     'averaged pose count':[r=>{r.vehicle.pose.annotations=113;},/must match exactly one annotated \(averaged\) cuboid/],

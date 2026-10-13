@@ -426,7 +426,8 @@ def epoch_of(doc):
 
 @unittest.skipUnless((V31 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v3.1 files absent')
 class RealV31SuggestionTests(unittest.TestCase):
-    """grounded-v3.1 (protocol v3.1) is current; it reproduces byte for byte from the current script."""
+    """grounded-v3.1 (protocol v3.1) was the app's 8c folder until October 13, 2026 (now grounded-v3.2, same geometry); it
+    reproduces byte for byte from the current script."""
 
     def test_real_v3_1_suggestions_reproduce_and_match_expected_values(self):
         stored = (V31 / 'suggestions.json').read_bytes(); doc = json.loads(stored)

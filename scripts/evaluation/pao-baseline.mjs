@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Palo Alto accuracy harness (tasks M0, M2, M4d). Loads the local AV2 8c development scene (current folder GROUNDED_DIR,
-// protocol v3.1) the way tests/av2-ground.test.mjs does and measures the app's own geometry (src/*.mjs) against named
+// protocol v3.2) the way tests/av2-ground.test.mjs does and measures the app's own geometry (src/*.mjs) against named
 // references. Development-grade, AV2-referenced numbers from one development scene: not surveyed, not held-out, never a
 // passed gate. Metric K (LiDAR shadow) is computed by v3.1-analysis/metric_k.py next to the grounded folder.
 //
@@ -18,7 +18,7 @@ import {loadScene} from '../../src/scene.mjs';
 import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
   TOO_CLOSE_TO_CALL_M} from '../../src/geometry.mjs';
 import {setbackSweep,actorConflicts} from '../../src/scenario-assistant.mjs';
-import {suggestedSetup} from '../../src/suggestions.mjs';
+import {suggestedSetup,crossingText} from '../../src/suggestions.mjs';
 
 export const ROOT=new URL('../../',import.meta.url);
 export const DEV={id:'av2-pao-8c52d911-2658849',dir:new URL('.local/evaluation/av2-map-first-2026-10-11/',ROOT)};
@@ -41,8 +41,9 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Output names for the app's pixel keys (its vehicle-front key is not used in written results).
 const pixelsOut=p=>({crossing:p.crossing,vehicleFront:p.parking,person:p.target});
 
-// The current grounded folder (app contract): protocol v3.1. Earlier folders are history and the app refuses them.
-export const GROUNDED_DIR='grounded-v3.1/';
+// The current grounded folder (app contract): protocol v3.2, the same geometry and results as grounded-v3.1/ with the
+// crosswalk paint-offset bound filled in. Earlier folders are history (grounded-v3/ and older are refused by the app).
+export const GROUNDED_DIR='grounded-v3.2/';
 export const devDataPresent=()=>existsSync(new URL(GROUNDED_DIR+'scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
   &&existsSync(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir));
 
@@ -496,10 +497,11 @@ export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=
     note:'Node only, single process, warm module cache except the cold load; browser load and drag latency are measured separately'};
 }
 
-// ---------------------------------------------------------------- expected values (app contract A5-A7, protocol v3.1)
+// ---------------------------------------------------------------- expected values (app contract A5-A7, protocol v3.2)
 // The protocol v2 planning-lane reproduction (first-load gap 0.0251 m, residuals 0.144/0.177/0.210 m, 41 touching rows) is
 // recorded in baseline-2026-10-12.json and after-m1-fixes-2026-10-12/; the app no longer loads protocol v2 data. These
-// are the contract's protocol v3 values (grounded-v3.1 has the same geometry), from independent preparation-side code.
+// are the contract's protocol v3 values (grounded-v3.1 and grounded-v3.2 have the same geometry), from independent
+// preparation-side code.
 function expectations(b) {
   const checks=[];
   const check=(name,expected,measured,tolerance)=>checks.push({name,expected,measured,tolerance,pass:measured!=null&&Math.abs(measured-expected)<=tolerance});
@@ -519,7 +521,7 @@ function expectations(b) {
   check('metric C person point used (m)',0,b.suggestionConsistency.roles.person.pointUsed.horizontalM,1e-6);
   check('metric C vehicle front point used (m)',0,b.suggestionConsistency.roles.vehicleFront.pointUsed.horizontalM,1e-6);
   check('stored vehicle-front pixelUV ray hit residual (m), contract A5 (metric C NOT met there)',1.02848,b.suggestionConsistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1e-4);
-  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 has the same geometry)',checks,allPass:checks.every(c=>c.pass)};
+  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 and grounded-v3.2 have the same geometry)',checks,allPass:checks.every(c=>c.pass)};
 }
 
 function provenance() {
@@ -542,7 +544,8 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}
     label:'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.',
     provenance:provenance(),
     split:{file:'split.json',lockSha256:lock?.sha256??null,fileSha256:splitBytes?sha(splitBytes):null,matchesLock:!!(lock&&splitBytes&&sha(splitBytes)===lock.sha256)},
-    scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions},
+    scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions,
+      crosswalkChip:crossingText(scene.suggestions.crossing)},
     conventions:{
       driverEye:`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`,
       target:`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`,

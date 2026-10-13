@@ -511,10 +511,12 @@ REAL = ROOT / '.local/evaluation/av2-map-first-2026-10-11'
 
 @unittest.skipUnless((REAL / 'grounded-v2/ground.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c files absent')
 class RealGroundTests(unittest.TestCase):
-    """grounded-v3.1 (protocol v3.1) is current and rebuilds byte for byte; grounded-v3, grounded-v2 and grounded/ are pinned history."""
+    """grounded-v3.2 (protocol v3.2) is the app's current 8c folder (since October 13, 2026); grounded-v3.1 (rebuilds byte for byte
+    apart from this script's own hash), grounded-v3, grounded-v2 and grounded/ are pinned history."""
 
     def test_real_layers_are_pinned_and_reproducible(self):
-        for folder, freeze in (('grounded-v3.1', 'protocol-v3.1-freeze.json'), ('grounded-v3', 'protocol-v3-freeze.json'),
+        for folder, freeze in (('grounded-v3.2', 'protocol-v3.2-freeze.json'), ('grounded-v3.1', 'protocol-v3.1-freeze.json'),
+                               ('grounded-v3', 'protocol-v3-freeze.json'),
                                ('grounded-v2', 'protocol-v2-freeze.json'), ('grounded', 'protocol-freeze.json')):
             if (REAL / folder / 'ground.json').exists():
                 with self.subTest(folder=folder):
@@ -536,6 +538,20 @@ class RealGroundTests(unittest.TestCase):
         self.assertEqual({k for k in v3.keys() | v31.keys() if v3.get(k) != v31.get(k)}, {'protocol', 'processingCodeHashes'})
         self.assertEqual((v31['protocol']['path'], v31['protocol']['sha256']), ('../protocol-v3.1.json', '6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92'))
         self.assertEqual((REAL / 'grounded-v3/terrain.bin').read_bytes(), (REAL / 'grounded-v3.1/terrain.bin').read_bytes())
+
+    @unittest.skipUnless((REAL / 'grounded-v3.2/ground.json').exists() and (REAL / 'grounded-v3.1/ground.json').exists(), 'v3.2 layer absent')
+    def test_v3_2_layer_differs_from_v3_1_only_in_its_protocol_and_code_record(self):
+        # Protocol v3.2's NaN map-height fix changes no stored value on 8c: same terrain bytes, same support rows and cuboids.
+        v31 = json.loads((REAL / 'grounded-v3.1/ground.json').read_bytes()); v32 = json.loads((REAL / 'grounded-v3.2/ground.json').read_bytes())
+        self.assertEqual({k for k in v31.keys() | v32.keys() if v31.get(k) != v32.get(k)}, {'protocol', 'processingCodeHashes'})
+        self.assertEqual((v32['protocol']['path'], v32['protocol']['sha256']), ('../protocol-v3.2.json', '1cef13e625ba8d0c0c00203c0bda6e256536173c4607ac79807e3e40dd173cf7'))
+        old, new = v31['processingCodeHashes'], v32['processingCodeHashes']
+        self.assertEqual({k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}, {'california/prepare_av2_ground.py'})
+        self.assertEqual((REAL / 'grounded-v3.1/terrain.bin').read_bytes(), (REAL / 'grounded-v3.2/terrain.bin').read_bytes())
+        scenes = [json.loads((REAL / folder / 'scene.json').read_bytes()) for folder in ('grounded-v3.1', 'grounded-v3.2')]
+        for scene in scenes:
+            del scene['measurements']['ground']['sha256']
+        self.assertEqual(scenes[0], scenes[1])
 
     @unittest.skipUnless((REAL / 'grounded-v3.1/ground.json').exists(), 'v3.1 layer absent')
     def test_v3_layer_differs_from_v2_only_where_protocol_v3_says_and_v3_1_rebuilds_byte_for_byte(self):
