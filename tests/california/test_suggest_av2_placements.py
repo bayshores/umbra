@@ -30,6 +30,22 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def protocol_v32(**parameters):
+    """The fixture protocol v3 with the protocol v3.2 crossingApplicability section (parameters may be overridden to test refusal)."""
+    protocol = copy.deepcopy(fixture.PROTOCOL_V3); protocol['protocolRevision'] = '3.2'
+    protocol['crossingApplicability'] = {'parameters': {**tool.APPLICABILITY_PARAMETERS, **parameters}, 'refusalCodes': list(tool.REFUSAL_CODES)}
+    return protocol
+
+
+def crossing_edges(edge1, edge2):
+    """edit_map: replace crossing 77's edges with world (x, z) end points on the flat mapped ground."""
+    def edit(native_map):
+        crossing = native_map['pedestrian_crossings']['77']
+        for name, ends in (('edge1', edge1), ('edge2', edge2)):
+            crossing[name] = [fixture.point(x, fixture.GROUND_Y, z) for x, z in ends]
+    return edit
+
+
 class SuggestionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
@@ -222,6 +238,114 @@ class SuggestionTests(unittest.TestCase):
         self.assertEqual({k: v for k, v in objects['crossing'].items() if k != 'crossingError'},
                          {k: v for k, v in base['crossing'].items() if k != 'crossingError'})
 
+    def test_measured_crossing_error_is_offset_plus_two_combined_spreads(self):
+        # protocol v3.2: plusMinusM = |offsetM| + 2 x combinedM (the far end of the development-grade range), rounded up.
+        evidence = {'file': '../../pao-paint/results/x.json', 'sha256': 'b' * 64}
+        def error(offset, combined, value=None):
+            value = abs(offset) + 2 * combined if value is None else value
+            return tool.crossing_error({'crossingError': {'perCrossing': {'77': {'status': 'measured', 'plusMinusM': value, 'offsetM': offset,
+                                                                                    'combinedM': combined, 'evidence': evidence}}}}, '77')
+        self.assertEqual(error(0.04613553806463408, 0.06440719002038603)['label'], '±0.18 m')   # 8c52d911 / 2658849
+        self.assertEqual(error(0.1801640186836544, 0.03893304951645912)['label'], '±0.26 m')    # c780d53a / 2069452
+        self.assertEqual(error(-0.1, 0.05)['plusMinusM'], .2)                                   # the sign never shrinks the band
+        for bad in (dict(value=0.04613553806463408), dict(combined=-0.01), dict(offset=float('nan'))):
+            args = {'offset': 0.04613553806463408, 'combined': 0.06440719002038603, **bad}
+            with self.assertRaises(ValueError):
+                error(**args)
+        # In a v3.2 document the measured entry changes only crossingError and adds its limitation line.
+        protocol = protocol_v32(); entry = {'status': 'measured', 'offsetM': 0.1801640186836544, 'combinedM': 0.03893304951645912,
+                                            'evidence': evidence}
+        protocol['crossingError']['perCrossing']['77'] = {**entry, 'plusMinusM': 0.1801640186836544 + 2 * 0.03893304951645912}
+        measured = self.document(self.grounded('v32m', protocol=protocol)); pending = self.document(self.grounded('v32p', protocol=protocol_v32()))
+        self.assertEqual(measured['crossing']['crossingError']['label'], '±0.26 m')
+        self.assertEqual({k: v for k, v in measured['crossing'].items() if k != 'crossingError'},
+                         {k: v for k, v in pending['crossing'].items() if k != 'crossingError'})
+        self.assertIn(tool.MEASURED_ERROR_LIMITATION, measured['limitations']); self.assertNotIn(tool.MEASURED_ERROR_LIMITATION, pending['limitations'])
+
+    def test_v3_2_guard_leaves_an_applicable_crossing_unchanged(self):
+        # The fixture crossing is square to the lane and ahead: v3.2 places exactly what v3 places. Only the road-axis reason
+        # (skew is now a limit) and one limitation line differ.
+        for annotations in (True, False):
+            v32 = self.document(self.grounded(f'v32-{annotations}', protocol=protocol_v32(), annotations=annotations))
+            v3 = self.document(self.grounded(f'v3-{annotations}', annotations=annotations))
+            for key in ('crossing', 'vehicle', 'person', 'curb'):
+                self.assertEqual(v32[key], v3[key], key)
+            self.assertEqual({**v32['roadAxis'], 'reason': None}, {**v3['roadAxis'], 'reason': None})
+            self.assertEqual((v32['roadAxis']['reason'], v3['roadAxis']['reason']), (tool.ROAD_AXIS_REASON_V32, tool.ROAD_AXIS_REASON))
+            self.assertEqual(v32['limitations'], v3['limitations'][:-1] + [tool.APPLICABILITY_LIMITATION] + v3['limitations'][-1:])
+            self.assertEqual(v32['crossing']['status'], 'mapped')
+
+    def test_v3_2_refuses_a_crossing_the_model_does_not_fit(self):
+        cases = {  # name: (edge1, edge2, refusal codes, text in the reason)
+            'skewed 50 deg': ([(6, 20 + 6 * math.tan(math.radians(50))), (-6, 20 - 6 * math.tan(math.radians(50)))],
+                              [(6, 24 + 6 * math.tan(math.radians(50))), (-6, 24 - 6 * math.tan(math.radians(50)))],
+                              ['crossing-skew-over-limit'], 'is 50.0 degrees from perpendicular to the lane (limit 45)'),
+            # 453e-like: a crossing almost along the lane, beside it; the lane chord meets its line far behind the camera.
+            'along the lane': ([(8, 10), (8.5, 30)], [(10, 10), (10.5, 30)],
+                               ['crossing-skew-over-limit', 'crossing-point-off-edge-segment', 'crossing-point-behind-camera'],
+                               'm behind the camera (along the road axis)'),
+            'meets behind': ([(24, 10), (36, 20)], [(24, 14), (36, 24)], ['crossing-point-off-edge-segment', 'crossing-point-behind-camera'],
+                             'The ego lane chord meets the near-edge line 10.00 m behind the camera'),
+            'short edge': ([(-3, 20), (-6, 20)], [(-3, 24), (-6, 24)], ['crossing-point-off-edge-segment'],
+                           'The ego lane chord meets the near-edge line 3.00 m beyond the end of the mapped edge (3.00 m long).'),
+            'edge behind': ([(6, -2), (-6, -2)], [(6, 24), (-6, 24)], ['crossing-edge-not-ahead', 'crossing-point-behind-camera'],
+                            'Crossing edge1 midpoint is -2.00 m along the road axis, not ahead of the camera.'),
+            # The lane chord meets the edge, but the stationary vehicle's centre line (x = -4) misses it by 1 m.
+            'vehicle line': ([(6, 20), (-3, 20)], [(6, 24), (-3, 24)], ['crossing-point-off-edge-segment'],
+                             'The current vehicle centre line meets the near-edge line 1.00 m beyond the end of the mapped edge (9.00 m long).'),
+        }
+        for name, (edge1, edge2, codes, text) in cases.items():
+            with self.subTest(name):
+                tag = name.replace(' ', '-')
+                doc = self.document(self.grounded(tag, protocol=protocol_v32(), edit_map=crossing_edges(edge1, edge2)))
+                c = doc['crossing']
+                self.assertEqual(set(c), {'status', 'supportClass', 'nearEdge', 'reason', 'crossingError'})
+                self.assertEqual((c['status'], c['supportClass'], c['nearEdge'], c['crossingError']), ('unknown', 'unknown', 'edge1', PENDING))
+                self.assertTrue(c['reason'].startswith(tool.REFUSAL_PREFIX + ' to crossing 77: '), c['reason'])
+                self.assertTrue(c['reason'].endswith(f'Refusal: {", ".join(codes)}.'), c['reason'])
+                self.assertIn(text, c['reason'])
+                for key in ('vehicle', 'person', 'curb'):  # nothing anchored on a refused crossing is placed
+                    self.assertEqual(doc[key]['status'], 'unknown', key); self.assertNotIn('pixelUV', doc[key])
+                    self.assertIn('crossing model does not apply here', doc[key]['reason'])
+                self.assertEqual((doc['person']['label'], doc['curb']['label']), ('child', 'curb (map edge proxy)'))
+                axis = doc['roadAxis']
+                self.assertEqual((axis['status'], axis['nearEdge'], axis['reason']), ('mapped', 'edge1', tool.ROAD_AXIS_REASON_V32))
+                self.assertTrue(math.isfinite(axis['skewDeg']))
+                self.assertIn(tool.APPLICABILITY_LIMITATION, doc['limitations'])
+                self.assertNotIn(b'park', tool.canonical(doc).lower())
+        # The same maps under protocol v3 (no guard): an edge behind still aborts the run, the others are not refused.
+        with self.assertRaisesRegex(ValueError, 'not ahead of the camera'):
+            self.document(self.grounded('v3-edge-behind', edit_map=crossing_edges(*cases['edge behind'][:2])))
+        old = self.document(self.grounded('v3-skewed', edit_map=crossing_edges(*cases['skewed 50 deg'][:2])))
+        self.assertNotIn(tool.REFUSAL_PREFIX, tool.canonical(old).decode())
+        self.assertAlmostEqual(old['roadAxis']['skewDeg'], 50, places=9)
+
+    def test_v3_2_protocol_must_carry_the_exact_applicability_section(self):
+        scene, ground, terrain, positions, eligible, protocol, _ = tool.load(**self.grounded('v32', protocol=protocol_v32()))
+        missing = {k: v for k, v in protocol.items() if k != 'crossingApplicability'}
+        with self.assertRaisesRegex(ValueError, 'needs its crossingApplicability'):
+            tool.suggest(scene, ground, terrain, positions, eligible, missing)
+        for changed in (protocol_v32(maxSkewDeg=60.0)['crossingApplicability'],
+                        {**protocol['crossingApplicability'], 'refusalCodes': list(reversed(tool.REFUSAL_CODES))}):
+            with self.assertRaisesRegex(ValueError, 'exactly the parameters and refusal codes'):
+                tool.suggest(scene, ground, terrain, positions, eligible, {**protocol, 'crossingApplicability': changed})
+
+    def test_along_ray_limitation_names_the_band_method(self):
+        fitted = tool.along_ray_limitation({'method': 'fitThisDevelopmentScene'})
+        self.assertEqual(fitted, 'The along-ray uncertainty uses a height band fitted on this development scene\'s LiDAR ground returns; it '
+                                 'describes the mapped-ground height error along the pixel ray, not the crossing position or a physical accuracy bound.')
+        protocol = copy.deepcopy(fixture.PROTOCOL_V3)
+        protocol['alongRayUncertainty']['heightBand'].update(method='fixed', heightBandMeters=.075, fittedOn='fixture development scenes')
+        doc = self.document(self.grounded('fixed', protocol=protocol))
+        self.assertEqual(doc['tolerances']['alongRayHeightBandMeters'], .075)
+        self.assertFalse(any('fitted on this development scene' in t for t in doc['limitations']))
+        self.assertIn('The along-ray uncertainty uses a fixed height band fitted on development scenes (fixture development scenes); this '
+                      'scene\'s LiDAR ground returns only test it (heldOutResiduals); it describes the mapped-ground height error along the '
+                      'pixel ray, not the crossing position or a physical accuracy bound.', doc['limitations'])
+        self.assertIn(fitted, self.document(self.grounded('fitted'))['limitations'])
+        with self.assertRaisesRegex(ValueError, 'Unknown height band method'):
+            tool.along_ray_limitation({'method': 'guessed'})
+
     def test_protocol_v1_v2_and_schema_1_ground_are_refused(self):
         v2_paths = self.grounded('v2', protocol=fixture.PROTOCOL)  # a v2 protocol builds a schema-1 ground layer
         with self.assertRaisesRegex(ValueError, 'Protocol v3 pixelSelection'):
@@ -310,7 +434,16 @@ class RealV31SuggestionTests(unittest.TestCase):
         self.assertEqual(sha((REAL / 'protocol-v3.1.json').read_bytes()), paths['protocol_sha256'])
         self.assertEqual(paths['protocol_sha256'], '6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92')
         with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
-            self.assertEqual(tool.canonical(tool.document(*tool.load(**paths))), stored)
+            rebuilt = json.loads(tool.canonical(tool.document(*tool.load(**paths))))
+        # The NaN-height outline fix (shared ground script, stored 9dd444a9...) and the protocol v3.2 guard (this script, stored
+        # 918e2bf7...) changed only the two generator hashes: a protocol without crossingApplicability runs unchanged.
+        stored_hashes = ('918e2bf7135dd5483d08c0e1b6ee9c53a6c9ca7247ef10bded1b15efcfdb0ef9',
+                         '9dd444a9d9b2914b1b2920115353a88ab0a578bb105b103b4c66724ffdd6f84d')
+        self.assertEqual((doc['generator']['sha256'], doc['generator']['sharedSha256']), stored_hashes)
+        self.assertEqual((rebuilt['generator']['sha256'], rebuilt['generator']['sharedSha256']),
+                         (sha(SCRIPT.read_bytes()), sha((ROOT / doc['generator']['sharedScript']).read_bytes())))
+        rebuilt['generator']['sha256'], rebuilt['generator']['sharedSha256'] = stored_hashes
+        self.assertEqual(tool.canonical(rebuilt), stored)
         self.assertEqual((doc['schemaVersion'], doc['generatedUtc']), (3, '2026-10-12T11:51:45Z'))
         self.assertEqual(doc['tolerances'], {'roadToleranceMeters': .08, 'supportHeightAgreementMeters': .08, 'supportRadiusMeters': .5,
                                              'maxRangeMeters': 60.0, 'placementRangeLimitMeters': 30.0, 'alongRayHeightBandMeters': .075})
@@ -358,8 +491,83 @@ class RealV31SuggestionTests(unittest.TestCase):
             self.assertNotIn(b'park', path.read_bytes().lower(), path.name)
 
 
+V32 = REAL / 'grounded-v3.2'
+GUARD = ROOT / '.local/evaluation/pao-accuracy/scene-builder-v4.1/453e5558-20499018-guard-check'
+GUARD_ASSEMBLED = ROOT / '.local/evaluation/av2-453e-2026-10-12/assembled'
+GUARD_PROTOCOL = 'protocol-v3.2-453e5558-20499018-guard-check'
+
+
+@unittest.skipUnless((V32 / 'suggestions.json').exists() and (V31 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(),
+                     'real 8c v3.2 files absent')
+class RealV32SuggestionTests(unittest.TestCase):
+    """grounded-v3.2 (protocol v3.2, development 8c): same geometry as grounded-v3.1; only the crossing error (paint v4
+    measurement), the pins, the generator hashes, the road-axis reason and two limitation lines differ."""
+
+    def test_real_v3_2_suggestions_reproduce_from_the_current_script(self):
+        stored = (V32 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
+        paths = real_paths('grounded-v3.2', 'protocol-v3.2-freeze.json', 'protocol-v3.2.json')
+        self.assertEqual(paths['protocol_sha256'], '1cef13e625ba8d0c0c00203c0bda6e256536173c4607ac79807e3e40dd173cf7')
+        self.assertEqual(sha((REAL / 'protocol-v3.2.json').read_bytes()), paths['protocol_sha256'])
+        with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
+            rebuilt = tool.canonical(tool.document(*tool.load(**paths)))
+        self.assertEqual(rebuilt, stored)
+        self.assertEqual(json.loads((V32 / 'catalog-entry.json').read_bytes())['suggestions']['sha256'], sha(stored))
+
+    def test_v3_2_differs_from_v3_1_only_in_the_allowed_fields(self):
+        old = json.loads((V31 / 'suggestions.json').read_bytes()); new = json.loads((V32 / 'suggestions.json').read_bytes())
+        error = new['crossing']['crossingError']
+        self.assertEqual({k: x for k, x in error.items() if k != 'evidence'},
+                         {'basis': 'mapped near edge', 'status': 'measured', 'label': '±0.18 m', 'plusMinusM': .18})
+        evidence = ROOT / error['evidence']['file']
+        if evidence.exists():
+            self.assertEqual(sha(evidence.read_bytes()), error['evidence']['sha256'])
+        self.assertEqual({k: x for k, x in new['crossing'].items() if k != 'crossingError'}, {k: x for k, x in old['crossing'].items() if k != 'crossingError'})
+        self.assertEqual(old['crossing']['crossingError'], PENDING)
+        for key in ('vehicle', 'person', 'curb', 'tolerances', 'license', 'sceneId', 'generatedUtc', 'schemaVersion'):
+            self.assertEqual(new[key], old[key], key)
+        self.assertEqual({k: x for k, x in new['roadAxis'].items() if k != 'reason'}, {k: x for k, x in old['roadAxis'].items() if k != 'reason'})
+        self.assertIn('refuses the crossing model (protocol v3.2)', new['roadAxis']['reason'])
+        self.assertEqual([x for x in new['limitations'] if x in old['limitations']], old['limitations'])
+        self.assertEqual(len(new['limitations']), len(old['limitations']) + 2)
+        changed = {k for k in set(old) | set(new) if old.get(k) != new.get(k)}
+        self.assertEqual(changed, {'crossing', 'generator', 'inputs', 'limitations', 'protocolSha256', 'roadAxis'})
+        self.assertEqual({k for k in new['inputs'] if new['inputs'][k] != old['inputs'][k]}, {'scene.json', 'ground.json', 'protocol.json'})
+        # Same terrain bytes: the NaN map-height fix changes no stored height on 8c.
+        self.assertEqual((V32 / 'terrain.bin').read_bytes(), (V31 / 'terrain.bin').read_bytes())
+
+    def test_no_form_of_the_banned_word_in_v3_2_outputs(self):
+        for path in (*sorted(V32.iterdir()), REAL / 'protocol-v3.2.json', REAL / 'protocol-v3.2-freeze.json'):
+            self.assertNotIn(b'park', path.read_bytes().lower(), path.name)
+
+
+@unittest.skipUnless((GUARD / 'grounded/suggestions.json').exists() and (GUARD_ASSEMBLED / 'scene.json').exists(), 'real 453e guard-check files absent')
+class Real453eGuardCheckTests(unittest.TestCase):
+    """453e5558 / crossing 20499018 (development): the mapped crossing runs along the road, so protocol v3.2 refuses the
+    crossing model and every object anchored on it stays Unknown with the named refusal."""
+
+    def test_guard_check_refuses_and_reproduces(self):
+        stored = (GUARD / 'grounded/suggestions.json').read_bytes(); doc = json.loads(stored)
+        freeze = json.loads((GUARD / f'{GUARD_PROTOCOL}-freeze.json').read_bytes())
+        self.assertEqual(sha((GUARD / f'{GUARD_PROTOCOL}.json').read_bytes()), freeze['sha256'])
+        paths = dict(grounded=GUARD / 'grounded', metadata_sha256=sha((GUARD / 'grounded/scene.json').read_bytes()), buffers_dir=GUARD_ASSEMBLED,
+                     protocol_path=GUARD / f'{GUARD_PROTOCOL}.json', protocol_sha256=freeze['sha256'])
+        with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
+            self.assertEqual(tool.canonical(tool.document(*tool.load(**paths))), stored)
+        crossing = doc['crossing']
+        self.assertEqual((crossing['status'], crossing['supportClass']), ('unknown', 'unknown'))
+        self.assertTrue(crossing['reason'].startswith('Crossing model does not apply to crossing 20499018: '))
+        self.assertTrue(crossing['reason'].endswith('Refusal: crossing-skew-over-limit, crossing-point-off-edge-segment.'))
+        self.assertNotIn('behind the camera', crossing['reason'])
+        for key in ('vehicle', 'person', 'curb'):
+            self.assertEqual(doc[key]['status'], 'unknown', key)
+            self.assertIn('crossing model does not apply here', doc[key]['reason'], key)
+        self.assertEqual((doc['roadAxis']['laneId'], doc['roadAxis']['nearEdge'], round(doc['roadAxis']['skewDeg'], 3)), ('326068517', 'edge1', 89.996))
+        self.assertNotIn(b'park', stored.lower())
+
+
 @unittest.skipUnless((V3 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v3 files absent')
 class RealV3HistoricalSuggestionTests(unittest.TestCase):
+
     """grounded-v3 (protocol v3) is history: pinned by hash and written by the previous version of the script (sha256 5f2d9c7a...).
     The current script on protocol v3 reproduces its content except the two generator hashes."""
 

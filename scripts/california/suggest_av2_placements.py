@@ -12,6 +12,10 @@ unknown) and a hidden flag (ray passes through an annotated cuboid). Missing evi
 Protocol v3 only (exactProjection): each object stores the exact floating projection of its mapped point
 (pixelUV, the position the app evaluates) and the integer pixel containing it (the display and nudge anchor).
 Protocols v1/v2 are refused: their outputs are historical and were written by earlier versions of this script.
+Protocol v3.2 (crossingApplicability) adds a guard: when the mapped-edge crossing model does not apply (near edge more than
+45 degrees from perpendicular to the lane, an edge not ahead of the camera, or the centre line meeting the near-edge line off
+the mapped edge or behind the camera), no crossing point is emitted; the crossing and everything anchored on it stay Unknown
+with the named refusal in the reason. A protocol without that section runs unchanged (v3, v3.1).
 """
 import argparse
 from datetime import datetime, timezone
@@ -50,6 +54,22 @@ BANNED = b'park'
 SUPPORT_LABEL = {'observed-nearby': 'observed nearby', 'map-only': 'mapped, not observed', 'unknown': 'unknown'}
 CROSSING_ERROR_LABELS = {'unmeasured': 'paint offset unmeasured', 'pending-measurement': 'paint offset pending measurement',
                          'unresolved': 'paint offset unresolved'}
+# protocol v3.2 crossingApplicability: the exact parameters and refusal codes this script implements. The protocol must carry
+# exactly these (a different value needs a new script and protocol version, never a silent reinterpretation).
+APPLICABILITY_PARAMETERS = {'maxSkewDeg': 45.0, 'minForwardMeters': 0.0, 'segmentToleranceMeters': 0.0}
+REFUSAL_CODES = ('crossing-edge-not-ahead', 'crossing-skew-over-limit', 'crossing-parallel-to-lane',
+                 'crossing-point-off-edge-segment', 'crossing-point-behind-camera')
+REFUSAL_PREFIX = 'Crossing model does not apply'
+ROAD_AXIS_REASON = 'Chord of the mapped ego lane; a declared vehicle moves along the reverse direction. Skew is reported, never a limit.'
+ROAD_AXIS_REASON_V32 = ('Chord of the mapped ego lane; a declared vehicle moves along the reverse direction. A near edge more than '
+                        '45 degrees from perpendicular to this axis refuses the crossing model (protocol v3.2).')
+APPLICABILITY_LIMITATION = ('The mapped-edge crossing model applies only when both crossing edges are ahead of the camera, the near '
+                            'edge is within 45 degrees of perpendicular to the lane, and the centre line meets the mapped near edge '
+                            'segment ahead of the camera; otherwise the crossing, and the vehicle, person and curb anchored on it, '
+                            'stay Unknown with the named refusal.')
+MEASURED_ERROR_LIMITATION = ('A measured crossing error is the largest distance between the mapped near edge and the paint edge '
+                             'within the measured range: |offset| + 2 x combined spread from the frozen LiDAR paint method, '
+                             'rounded up to 0.01 m. It is development-grade, not calibrated, and excludes systematic errors.')
 
 
 def generated_utc():
@@ -193,10 +213,52 @@ class Context:
                 best = (name, forward, p0, u)
         return best
 
+    def crossing_edges(self):
+        """Both mapped crossing edges as (name, forward, p0, u, p1), with the same arithmetic as near_edge() but no
+        requirement: protocol v3.2 refuses the crossing model instead of aborting the run."""
+        edges = []
+        for name in ('edge1', 'edge2'):
+            e = np.asarray(self.ground['crossing'][name], float)[:, [0, 2]]; p0, p1 = e[0], e[-1]
+            u = unit(p1 - p0); u = u if u @ self.r > 0 else -u
+            edges.append((name, float(((p0 + p1) / 2) @ self.a), p0, u, p1))
+        return edges
+
     def curb_lateral_at(self, forward):
         start = self.m0 + (forward - self.m0 @ self.a) * self.a
         s = curb_scan(start, self.r, self.polygons, self.ground['boundaryEpsilonMeters'])
         return None if s is None else float(start @ self.r + s)
+
+
+def applicability_rules(protocol):
+    """protocol v3.2 crossingApplicability parameters, or None for a protocol without that section (v3, v3.1 run unchanged)."""
+    spec = protocol.get('crossingApplicability')
+    if spec is None:
+        require(protocol.get('protocolRevision') != '3.2', 'Protocol v3.2 needs its crossingApplicability section')
+        return None
+    require(isinstance(spec, dict) and spec.get('parameters') == APPLICABILITY_PARAMETERS and spec.get('refusalCodes') == list(REFUSAL_CODES),
+            'crossingApplicability must carry exactly the parameters and refusal codes this script implements')
+    return dict(APPLICABILITY_PARAMETERS)
+
+
+def point_problems(ctx, point, p0, p1, rules, line):
+    """protocol v3.2: where a centre line meets the near-edge line, the point must lie on the mapped edge segment (p0..p1,
+    within segmentToleranceMeters) and ahead of the camera (forward along the road axis > minForwardMeters)."""
+    seg = np.asarray(p1, float) - p0; length = float(np.linalg.norm(seg)); s = float((np.asarray(point, float) - p0) @ seg) / length
+    tol = rules['segmentToleranceMeters']; problems = []
+    if s < -tol or s > length + tol:
+        outside = -s if s < 0 else s - length
+        problems.append(('crossing-point-off-edge-segment',
+                         f'The {line} meets the near-edge line {outside:.2f} m beyond the end of the mapped edge ({length:.2f} m long).'))
+    forward = float(np.asarray(point, float) @ ctx.a)
+    if forward <= rules['minForwardMeters']:
+        problems.append(('crossing-point-behind-camera',
+                         f'The {line} meets the near-edge line {-forward:.2f} m behind the camera (along the road axis).'))
+    return problems
+
+
+def refusal_reason(crossing_id, problems):
+    codes = sorted({code for code, _ in problems}, key=REFUSAL_CODES.index)
+    return f'{REFUSAL_PREFIX} to crossing {crossing_id}: ' + ' '.join(text for _, text in problems) + f' Refusal: {", ".join(codes)}.'
 
 
 def crossing_error(protocol, crossing_id):
@@ -209,6 +271,11 @@ def crossing_error(protocol, crossing_id):
         require(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 5 and isinstance(evidence, dict) and
                 set(evidence) == {'file', 'sha256'} and isinstance(evidence['sha256'], str) and len(evidence['sha256']) == 64,
                 'A measured crossing error needs plusMinusM (0-5 m) and its evidence {file, sha256}')
+        if 'offsetM' in entry or 'combinedM' in entry:  # protocol v3.2: plusMinusM = |offset| + 2 x combined spread
+            offset, combined = entry.get('offsetM'), entry.get('combinedM')
+            require(all(type(x) is float and math.isfinite(x) for x in (offset, combined)) and combined >= 0 and
+                    abs(float(value) - (abs(offset) + 2 * combined)) <= 1e-12,
+                    'A measured crossing error must equal |offsetM| + 2 x combinedM')
         shown = math.ceil(float(value) * 100 - 1e-9) / 100
         return {**base, 'label': f'±{shown:.2f} m', 'plusMinusM': shown, 'evidence': dict(evidence)}
     require(status in CROSSING_ERROR_LABELS, f'Unknown crossing error status {status!r}')
@@ -269,11 +336,50 @@ def default_vehicle(ctx, edge_p0, edge_u, curb_at_edge):
     return None, 'Default vehicle lateral did not converge.'
 
 
+def refused(ctx, ground, protocol, edge_name, skew, problems):
+    """protocol v3.2: the crossing model does not apply. No crossing point is emitted; the crossing and the vehicle, person
+    and curb anchored on it are Unknown with the named refusal; the road axis stays the mapped lane chord."""
+    crossing_id = ground['crossing']['id']; reason = refusal_reason(crossing_id, problems)
+    anchored = 'Not placed: {} is anchored on the crossing, and the crossing model does not apply here (see the crossing reason).'
+    crossing = {'status': 'unknown', 'supportClass': 'unknown', 'nearEdge': edge_name, 'reason': reason,
+                'crossingError': crossing_error(protocol, crossing_id)}
+    vehicle = {'status': 'unknown', 'supportClass': 'unknown', 'reason': anchored.format('the vehicle selection')}
+    person = {'status': 'unknown', 'label': protocol['declaredDefaults']['person']['label'], 'supportClass': 'unknown',
+              'reason': anchored.format('the declared person')}
+    curb = {'status': 'unknown', 'label': 'curb (map edge proxy)', 'reason': anchored.format('the curb proxy')}
+    return {'crossing': crossing, 'roadAxis': road_axis(ctx, ground, skew, edge_name, ROAD_AXIS_REASON_V32), 'curb': curb,
+            'vehicle': vehicle, 'person': person}
+
+
+def road_axis(ctx, ground, skew, edge_name, reason):
+    return {'status': 'mapped', 'label': 'road axis (mapped ego lane)', 'laneId': ground['egoLane']['id'],
+            'directionOfTravel': [float(ctx.a[0]), 0., float(ctx.a[1])], 'skewDeg': skew, 'nearEdge': edge_name,
+            'cameraInLane': bool(inside_polygons([0., 0.], [ctx.lane_polygon])[0]), 'reason': reason}
+
+
 def suggest(scene, ground, terrain, positions, eligible, protocol):
     ctx = Context(scene, ground, terrain, positions, eligible, protocol)
-    edge_name, edge_forward, p0, eu = ctx.near_edge()
+    rules = applicability_rules(protocol); problems = []
+    if rules is None:  # protocol v3 / v3.1: unchanged (an edge not ahead aborts the run)
+        edge_name, edge_forward, p0, eu = ctx.near_edge()
+    else:
+        edges = ctx.crossing_edges()
+        problems = [('crossing-edge-not-ahead', f'Crossing {name} midpoint is {forward:.2f} m along the road axis, not ahead of the camera.')
+                    for name, forward, *_ in edges if forward <= rules['minForwardMeters']]
+        edge_name, edge_forward, p0, eu = ctx.near_edge() if not problems else min(edges, key=lambda e: e[1])[:4]
+        p1 = next(e[4] for e in edges if e[0] == edge_name)
     skew = 90 - math.degrees(math.acos(min(1., abs(float(eu @ ctx.a)))))
     start, _ = intersect(ctx.m0, ctx.a, p0, eu)
+    if rules is not None:
+        if skew > rules['maxSkewDeg']:
+            problems.append(('crossing-skew-over-limit', f'The near edge ({edge_name}) is {skew:.1f} degrees from perpendicular to the '
+                                                         f'lane (limit {rules["maxSkewDeg"]:g}).'))
+        if start is None:
+            problems.append(('crossing-parallel-to-lane', 'The ego lane chord never meets the near-edge line (parallel).'))
+        else:
+            problems += point_problems(ctx, start, p0, p1, rules, 'ego lane chord')
+        if problems:
+            return refused(ctx, ground, protocol, edge_name, skew, problems)
     s = curb_scan(start, eu, ctx.polygons, ground['boundaryEpsilonMeters'])
     curb_point = None if s is None else start + s * eu
     curb_at_edge = None if curb_point is None else float(curb_point @ ctx.r)
@@ -316,6 +422,11 @@ def suggest(scene, ground, terrain, positions, eligible, protocol):
             result_vehicle = ctx.place(chosen['front'], {**base, 'curbLateralAlongLengthM': chosen['curbAlongLength'], 'lateralFromCameraM': chosen['lateral']})
     if crossing_xz is None:
         crossing_xz = start
+    elif rules is not None:  # protocol v3.2: the vehicle centre line must also meet the mapped edge ahead of the camera
+        line = 'current vehicle centre line' if vehicle is not None else 'declared vehicle centre line'
+        problems = point_problems(ctx, crossing_xz, p0, p1, rules, line)
+        if problems:
+            return refused(ctx, ground, protocol, edge_name, skew, problems)
     crossing = ctx.place(crossing_xz, {'status': 'mapped', 'label': 'crosswalk mapped', 'nearEdge': edge_name,
                                       'reason': f'Mapped near edge ({edge_name}) of crossing {ground["crossing"]["id"]} on the current vehicle centre line.',
                                       'crossingError': crossing_error(protocol, ground['crossing']['id'])})
@@ -336,11 +447,8 @@ def suggest(scene, ground, terrain, positions, eligible, protocol):
         if curb_point is None else \
         {'status': 'mapped', 'label': 'curb (map edge proxy)', 'side': 'right', 'reason': 'Edge of the mapped drivable area right of the ego lane.',
          'nearEdgeXZ': [float(curb_point[0]), float(curb_point[1])], 'nearEdgeGroundY': ctx.height(curb_point), 'nearEdgeLateralM': curb_at_edge}
-    road_axis = {'status': 'mapped', 'label': 'road axis (mapped ego lane)', 'laneId': ground['egoLane']['id'],
-                 'directionOfTravel': [float(ctx.a[0]), 0., float(ctx.a[1])], 'skewDeg': skew, 'nearEdge': edge_name,
-                 'cameraInLane': bool(inside_polygons([0., 0.], [ctx.lane_polygon])[0]),
-                 'reason': 'Chord of the mapped ego lane; a declared vehicle moves along the reverse direction. Skew is reported, never a limit.'}
-    return {'crossing': crossing, 'roadAxis': road_axis, 'curb': curb, 'vehicle': result_vehicle, 'person': person}
+    axis = road_axis(ctx, ground, skew, edge_name, ROAD_AXIS_REASON if rules is None else ROAD_AXIS_REASON_V32)
+    return {'crossing': crossing, 'roadAxis': axis, 'curb': curb, 'vehicle': result_vehicle, 'person': person}
 
 
 def load(grounded, metadata_sha256, buffers_dir, protocol_path, protocol_sha256):
@@ -367,6 +475,17 @@ def load(grounded, metadata_sha256, buffers_dir, protocol_path, protocol_sha256)
     return scene, ground, terrain, positions, eligible, protocol, inputs
 
 
+def along_ray_limitation(spec):
+    """The along-ray limitation names how the height band was obtained: fitted here (development) or fixed (fitted on development
+    scenes and only tested on this scene's returns)."""
+    tail = 'it describes the mapped-ground height error along the pixel ray, not the crossing position or a physical accuracy bound.'
+    if spec['method'] == 'fixed':
+        return (f'The along-ray uncertainty uses a fixed height band fitted on development scenes ({spec["fittedOn"]}); this scene\'s '
+                f'LiDAR ground returns only test it (heldOutResiduals); ' + tail)
+    require(spec['method'] == 'fitThisDevelopmentScene', 'Unknown height band method')
+    return 'The along-ray uncertainty uses a height band fitted on this development scene\'s LiDAR ground returns; ' + tail
+
+
 def document(scene, ground, terrain, positions, eligible, protocol, inputs):
     objects = suggest(scene, ground, terrain, positions, eligible, protocol)
     doc = {'schemaVersion': 3, 'sceneId': scene['id'], 'sourceClass': 'mappedGround', 'generatedUtc': generated_utc(),
@@ -388,11 +507,13 @@ def document(scene, ground, terrain, positions, eligible, protocol, inputs):
                             'The person position and height are declared defaults, not detections.',
                             'Each object is evaluated at the exact floating projection of its mapped point (pixelUV); the integer pixel only '
                             'anchors display and small edits. pixelOffsetFromMappedM is internal consistency, not accuracy.',
-                            'The along-ray uncertainty uses a height band fitted on this development scene\'s LiDAR ground returns; it describes '
-                            'the mapped-ground height error along the pixel ray, not the crossing position or a physical accuracy bound.',
+                            along_ray_limitation(ground['alongRayUncertainty']),
                             f'Placements more than {ground["placementRangeLimitMeters"]:g} m from the camera (horizontal) are refused.',
                             *([REPLACEMENT_LIMITATION] if 'declaredReplacement' in protocol['currentVehicle'] and
                               objects['vehicle']['status'] == 'annotated' else []),
+                            *([APPLICABILITY_LIMITATION] if applicability_rules(protocol) is not None else []),
+                            *([MEASURED_ERROR_LIMITATION] if objects['crossing']['crossingError']['status'] == 'measured' and
+                              applicability_rules(protocol) is not None else []),
                             'Geometric visibility only, never Clear; not a safety, recognition or compliance judgment.']}
     require(BANNED not in canonical(doc).lower(), 'Suggestions must not use any form of the banned vehicle-status word')
     return doc

@@ -457,6 +457,14 @@ def _world(city, origin):
     return (np.asarray(city, float) - origin) @ WORLD_FROM_CITY.T
 
 
+def _world_xz(city, origin):
+    """Horizontal scene position only: world X = cityX - x0, world Z = -(cityY - y0). Element-wise, so a missing publisher
+    height (NaN cityZ) cannot blank X/Z (in _world's matrix product 0 * NaN = NaN). Same values as _world(...)[:, [0, 2]]
+    for finite heights; no height is read, filled or invented."""
+    c = np.asarray(city, float).reshape(-1, 3)
+    return np.column_stack([c[:, 0] - origin[0], -(c[:, 1] - origin[1])])
+
+
 def _xyz(points):
     return np.array([[q['x'], q['y'], q['z']] for q in points], float)
 
@@ -569,7 +577,8 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     for key in sorted(vector_map['drivable_areas'], key=str):
         outline = _xyz(vector_map['drivable_areas'][key]['area_boundary'])
         require(len(outline) >= 3 and np.isfinite(outline[:, :2]).all(), 'Drivable outline needs finite XY vertices')
-        w = _world(outline, origin); areas.append({'id': str(vector_map['drivable_areas'][key]['id']), 'outline': w[:, [0, 2]].tolist()})
+        # Outlines are horizontal; publisher maps can carry NaN heights in them (453e5558: 321 vertices in 9 of 14 outlines).
+        areas.append({'id': str(vector_map['drivable_areas'][key]['id']), 'outline': _world_xz(outline, origin).tolist()})
     crossing = vector_map['pedestrian_crossings'][p_scene['crossingId']]
     edges = {}
     for name in ('edge1', 'edge2'):
@@ -579,7 +588,10 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     lane = vector_map['lane_segments'][lane_id]
     bounds = {}
     for name in ('left_lane_boundary', 'right_lane_boundary'):
-        b = _xyz(lane[name]); require(len(b) >= 2 and np.isfinite(b[:, :2]).all(), 'Finite lane boundaries required')
+        # ground.json stores full XYZ lane vertices (the app requires finite 3-vectors), so a missing height is refused, not filled.
+        b = _xyz(lane[name])
+        require(len(b) >= 2 and np.isfinite(b[:, :2]).all(), 'Finite lane boundaries required')
+        require(np.isfinite(b[:, 2]).all(), f'Ego lane {name} has a missing (NaN) publisher height; it is not filled')
         bounds[name] = _world(b, origin).tolist()
 
     raster = prepare_av2.ground_raster(captured['groundRaster']); sim2 = parse(captured['groundTransform'])

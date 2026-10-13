@@ -6,6 +6,7 @@ curb with its front 1 m before the crossing. Nothing here is real data.
 
 BuilderTests run builder protocol version 3 (the v3 rules, still selectable); V4RuleTests cover the version 4 candidate
 rules (candidate-frame vehicle eligibility, Unknown when a real vehicle occupies the default spot, frame target variants);
+V41RuleTests cover the version 4.1 rule 1 filter (clusters outside the drivable area and moving tracks are ignored);
 V3ReproducibilityTests compare the version 3 path with the frozen builder at commit cb2f497.
 """
 import argparse
@@ -148,12 +149,13 @@ class Fixture:
 
     def write_protocol(self, **changes):
         """The frozen builder protocol fields the builder checks: parameters, version, runtime code hashes and pins.
-        Version 3: parameters; version 4: parametersByVariant (one entry per frame-target variant)."""
+        Version 3: parameters; version 4 and 4.1: parametersByVariant (one entry per frame-target variant)."""
         if self.version == 3:
             doc = {'builderVersion': 3, 'parameters': tool.PARAMETERS_V3, 'code': tool.runtime_code_hashes(3)}
         else:
-            doc = {'builderVersion': 4, 'parametersByVariant': {n: tool.v4_parameters(t) for n, t in self.variants.items()},
-                   'code': tool.runtime_code_hashes(4)}
+            make = tool.v41_parameters if self.version == 4.1 else tool.v4_parameters
+            doc = {'builderVersion': self.version, 'parametersByVariant': {n: make(t) for n, t in self.variants.items()},
+                   'code': tool.runtime_code_hashes(self.version)}
         doc.update({'split': {'sha256': sha(self.split.read_bytes())}, 'placementProtocol': {'sha256': sha(self.placement.read_bytes())}})
         doc.update(changes)
         self.protocol.write_text(json.dumps(doc))
@@ -558,13 +560,33 @@ def frozen_v3_tree(dest):
     return Path(dest)
 
 
-def without_builder_identity(selection_bytes):
+def committed_hashes(commit, names):
+    """sha256 of each file as committed at commit (git show); None when git or the commit is unavailable."""
+    out = {}
+    for name in names:
+        try:
+            out[name] = sha(subprocess.run(['git', '-C', str(ROOT), 'show', f'{commit}:{name}'], check=True, capture_output=True).stdout)
+        except (OSError, subprocess.CalledProcessError):
+            return None
+    return out
+
+
+def without_builder_identity(selection_bytes, changed=()):
     """selection.json minus the fields that name the builder file or the protocol file itself (its own sha256, the
-    runtime code hash of build_av2_scene.py, the builder protocol path/sha256): everything else must be identical."""
+    runtime code hash of build_av2_scene.py, the builder protocol path/sha256) and the recorded hashes of the shared
+    files named in changed (files edited after the freeze, e.g. prepare_av2_ground.py in v4.1): everything else must be
+    identical."""
     doc = json.loads(selection_bytes)
-    doc['builder'].pop('sha256'); doc['builder']['runtimeCode'].pop('scripts/california/build_av2_scene.py')
+    doc['builder'].pop('sha256')
+    for name in {'scripts/california/build_av2_scene.py', *changed}:
+        doc['builder']['runtimeCode'].pop(name)
     doc['inputs'].pop('builderProtocol')
     return doc
+
+
+def changed_since(recorded):
+    """The runtime files whose current sha256 differs from the recorded one (a dict of path -> sha256)."""
+    return tuple(name for name, digest in sorted(recorded.items()) if sha((ROOT / name).read_bytes()) != digest)
 
 
 class V4RuleTests(unittest.TestCase):
@@ -743,6 +765,92 @@ class V4RuleTests(unittest.TestCase):
         self.assertEqual(tool.LOCK_PATH_V4, ROOT / '.local/evaluation/pao-accuracy/protocol-lock.json')
 
 
+class V41RuleTests(unittest.TestCase):
+    """Builder protocol version 4.1: rule 1 ignores a near-crossing stationary cluster whose centre is outside the mapped
+    drivable area (y below -6 here) and any of its tracks that moves more than 1.0 m from its first annotated position.
+    Both cases are forced to the window frame at ego x 16 (near edge 24 m), where the car is inside the split rule's view
+    but not at the reference pose (ego x 21.5), so only rule 1 can make it qualify."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def frame(self, version, name, **options):
+        fx = Fixture(self.root / f'{name}-{version}', version=version, evidence=[], expected_blocked=False, **options)
+        selection = tool.build(fx.args(output='out', diagnostic_camera_timestamp=frame_at(16.0)))
+        self.assertEqual((selection['mode'], len(selection['evaluatedFrames'])), ('diagnostic-forced-frame', 1))
+        self.assertEqual(selection['splitRule']['selectionRuleTracks'], [])
+        return selection, selection['evaluatedFrames'][0]
+
+    def test_v4_1_ignores_a_moving_track(self):
+        # 0.034 m per sweep: one stationary cluster from sweeps 0-29 (centre x 28.49), but the track moves 1.326 m in all.
+        options = dict(car_x=28.0, car_y=-5.0, drift=0.034)
+        s4, f4 = self.frame(4, 'moving', **options)
+        self.assertEqual(f4['vehicleRuleAtFrame']['frameTracks'], [CAR])
+        self.assertEqual(f4['outcome'], 'infeasible')
+        self.assertIn('No qualifying stationary vehicle passes the placement protocol checks at this sweep.', f4['reasons'])
+        self.assertIn('Track is not stationary under the protocol (>= 3.0 s, <= 1.0 m).', f4['vehicleChecks']['failures'][CAR])
+        s41, f41 = self.frame(4.1, 'moving', **options)
+        self.assertEqual(s41['builder']['version'], 4.1)
+        rule = f41['vehicleRuleAtFrame']
+        self.assertEqual((rule['frameTracks'], rule['qualifyingTracks'], rule['ignoredFrameTracks']), ([], [], [CAR]))
+        self.assertEqual(f41['outcome'], tool.OCCUPIED)  # the moving car still occupies the declared default spot
+        self.assertEqual((s41['status'], s41['result']['state']), (tool.OCCUPIED, 'Unknown'))
+        cluster = s41['frameRuleV41']['clusters'][0]
+        self.assertEqual((cluster['tracks'], cluster['centreInsideDrivable'], cluster['ignoredTracks']), ([CAR], True, [CAR]))
+        self.assertAlmostEqual(cluster['trackMotion'][CAR]['maxDisplacementFromFirstM'], 39 * 0.034, places=6)
+        self.assertEqual(cluster['reasons'][CAR], ['track aaaaaaaa moves 1.33 m from its first annotated position (more than 1 m)'])
+        occupant = f41['defaultSpotOccupants'][0]
+        self.assertEqual(occupant['track'], CAR)
+        self.assertIn('ignored by the builder v4.1 frame rule: track aaaaaaaa moves 1.33 m from its first annotated position (more than 1 m)',
+                      occupant['whyNotQualifying'])
+        self.assertTrue(any(line.startswith('Builder v4.1:') for line in s41['limitations']))
+        self.assertEqual(s41['frameRuleV41']['parameters'], tool.FRAME_RULE_V41)
+
+    def test_v4_1_ignores_a_cluster_outside_the_drivable_area(self):
+        options = dict(car_x=29.0, car_y=-6.5)  # stationary, centre 0.5 m outside the drivable outline (y = -6)
+        _s4, f4 = self.frame(4, 'outside', **options)
+        self.assertEqual(f4['vehicleRuleAtFrame']['frameTracks'], [CAR])
+        self.assertIn('Box centre is outside the mapped drivable area.', f4['vehicleChecks']['failures'][CAR])
+        self.assertIn('No qualifying stationary vehicle passes the placement protocol checks at this sweep.', f4['reasons'])
+        s41, f41 = self.frame(4.1, 'outside', **options)
+        self.assertEqual(f41['vehicleRuleAtFrame']['ignoredFrameTracks'], [CAR])
+        self.assertNotIn('No qualifying stationary vehicle passes the placement protocol checks at this sweep.', f41['reasons'])
+        cluster = s41['frameRuleV41']['clusters'][0]
+        self.assertFalse(cluster['centreInsideDrivable'])
+        self.assertLessEqual(cluster['trackMotion'][CAR]['maxDisplacementFromFirstM'], 1.0)
+        self.assertEqual(cluster['reasons'][CAR], ['cluster centre (city 29.00, -6.50) is outside the mapped drivable area'])
+        self.assertEqual(f41['outcome'], tool.OCCUPIED)
+
+    def test_v4_1_leaves_a_qualifying_stationary_car_unchanged(self):
+        target = frame_at(28.0)
+        s4 = tool.build(Fixture(self.root / 'v4', on_disk=[target], version=4).args())
+        s41 = tool.build(Fixture(self.root / 'v41', on_disk=[target], version=4.1).args())
+        self.assertEqual((s4['status'], s41['status']), ('plan-written', 'plan-written'))
+        for key in ('cameraTimestampNs', 'lidarTimestampNs', 'nearEdgeM', 'rankInWindow', 'egoLaneId', 'crop', 'currentVehicle', 'captureDistanceM'):
+            self.assertEqual(s4['chosen'][key], s41['chosen'][key], key)
+        self.assertEqual(s41['chosen']['vehicleRuleAtFrame']['ignoredFrameTracks'], [])
+        self.assertEqual(s41['frameRuleV41']['clusters'][0]['ignoredTracks'], [])
+
+    def test_v4_1_protocol_is_checked(self):
+        fx = Fixture(self.root, version=4.1)
+        fx.write_protocol(parametersByVariant={n: tool.v4_parameters(t) for n, t in tool.V4_VARIANTS.items()})
+        with self.assertRaisesRegex(ValueError, 'parameters differ'):
+            tool.build(fx.args(output='v4-parameters'))
+        params = tool.v41_parameters(tool.V4_VARIANTS['v4-12']); params['vehicle']['frameRuleIgnore']['trackMaxDisplacementFromFirstOverM'] = 1.5
+        fx.write_protocol(parametersByVariant={'v4-12': params})
+        with self.assertRaisesRegex(ValueError, 'parameters differ'):
+            tool.build(fx.args(output='threshold'))
+        v4 = Fixture(self.root / 'v4', version=4)
+        v4.write_protocol(parametersByVariant={n: tool.v41_parameters(t) for n, t in tool.V4_VARIANTS.items()})
+        with self.assertRaisesRegex(ValueError, 'parameters differ'):
+            tool.build(v4.args(output='v41-in-v4'))
+        self.assertEqual(tool.runtime_code_hashes(4.1), tool.runtime_code_hashes(4))
+        self.assertFalse(any((self.root / n).exists() for n in ('v4-parameters', 'threshold')))
+
+
 class V3ReproducibilityTests(unittest.TestCase):
     """A builder version 3 protocol still runs the v3 rules: the same selection and plan as the frozen builder file at
     commit cb2f497 (run as its own process), apart from the fields naming the builder file and protocol file."""
@@ -778,8 +886,9 @@ class V3ReproducibilityTests(unittest.TestCase):
                 selection = tool.build(fx.args(output='new')); new = fx.root / 'new'
                 self.assertEqual(selection['builder']['version'], 3)
                 self.assertEqual(sorted(p.name for p in old.iterdir()), sorted(p.name for p in new.iterdir()))
-                self.assertEqual(without_builder_identity((old / 'selection.json').read_bytes()),
-                                 without_builder_identity((new / 'selection.json').read_bytes()))
+                changed = changed_since(frozen_code)
+                self.assertEqual(without_builder_identity((old / 'selection.json').read_bytes(), changed),
+                                 without_builder_identity((new / 'selection.json').read_bytes(), changed))
                 if (old / 'plan.json').exists():
                     self.assertEqual((old / 'plan.json').read_bytes(), (new / 'plan.json').read_bytes())
 
@@ -790,27 +899,40 @@ class RealDataTests(unittest.TestCase):
     BASE = ROOT / '.local'
     FROZEN = BASE / 'evaluation/pao-accuracy/scene-builder/builder-protocol-v3.json'
     FROZEN_V4 = BASE / 'evaluation/pao-accuracy/scene-builder-v4/builder-protocol-v4.json'
+    FROZEN_V41 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.1/builder-protocol-v4.1.json'
+    V4_COMMIT = '772fdce'  # builder v4 runs only from these committed files (v4.1 changed the builder and shared scripts)
     V3_RUN = BASE / 'evaluation/pao-accuracy/scene-builder/v3/runs/8c52d911-2658849'
     PROTOCOL_V3_SHA = '9c22c1f613ebbbd292fe92ead485ffedafffcbfc2f039fd12ad136dc14172393'
     LOG = '8c52d911-fe34-3424-9864-d3fdfac38064'
 
     def test_frozen_protocols_match_this_builder(self):
-        for path, version in ((self.FROZEN_V4, 4), (self.FROZEN, 3)):
+        found = 0
+        for path, version in ((self.FROZEN_V41, 4.1), (self.FROZEN_V4, 4), (self.FROZEN, 3)):
             freeze = path.with_name(path.stem + '-freeze.json')
             if not (path.exists() and freeze.exists()):
-                self.skipTest(f'frozen builder protocol v{version} absent')
+                continue
+            found += 1
             raw = path.read_bytes(); protocol = json.loads(raw)
             self.assertEqual(sha(raw), json.loads(freeze.read_bytes())['sha256'])
             self.assertEqual(protocol['builderVersion'], version)
             self.assertEqual(set(protocol['code']), set(tool.RUNTIME_CODE_BY_VERSION[version]))
-            if version == 4:  # this builder file and every shared module are the frozen v4 ones
-                self.assertEqual(protocol['code'], tool.runtime_code_hashes(4))
+            if version == 4.1:  # this builder file and every shared module are the frozen v4.1 ones
+                self.assertEqual(protocol['code'], tool.runtime_code_hashes(4.1))
+                for name, params in protocol['parametersByVariant'].items():
+                    self.assertEqual(params, tool.v41_parameters(params['frame']['target']), name)
+                self.assertEqual({n: p['frame']['target'] for n, p in protocol['parametersByVariant'].items()}, tool.V4_VARIANTS)
+            elif version == 4:  # v4 parameters are still selectable; its code block names the 772fdce files
                 for name, params in protocol['parametersByVariant'].items():
                     self.assertEqual(params, tool.v4_parameters(params['frame']['target']), name)
-                self.assertEqual({n: p['frame']['target'] for n, p in protocol['parametersByVariant'].items()}, tool.V4_VARIANTS)
+                self.assertNotEqual(protocol['code']['scripts/california/build_av2_scene.py'], sha(Path(tool.__file__).read_bytes()))
+                committed = committed_hashes(self.V4_COMMIT, tool.RUNTIME_CODE_BY_VERSION[4])
+                if committed is not None:
+                    self.assertEqual(protocol['code'], committed)
             else:  # v3 parameters are still selectable; its code block names the cb2f497 files (this file changed in v4)
                 self.assertEqual(protocol['parameters'], tool.PARAMETERS_V3)
                 self.assertNotEqual(protocol['code']['scripts/california/build_av2_scene.py'], sha(Path(tool.__file__).read_bytes()))
+        if not found:
+            self.skipTest('no frozen builder protocol on disk')
 
     def v3_args(self, out, protocol, protocol_sha):
         ev = self.BASE / 'evaluation'; inv = ev / 'av2-second-observation-2026-10-05/inventories'
@@ -850,8 +972,10 @@ class RealDataTests(unittest.TestCase):
             tool.build(self.v3_args(Path(temp) / 'new', copy_path, sha(copy_path.read_bytes())))
             new = Path(temp) / 'new'
             self.assertEqual((new / 'plan.json').read_bytes(), (self.V3_RUN / 'plan.json').read_bytes())
-            self.assertEqual(without_builder_identity((new / 'selection.json').read_bytes()),
-                             without_builder_identity((self.V3_RUN / 'selection.json').read_bytes()))
+            recorded = json.loads((self.V3_RUN / 'selection.json').read_bytes())['builder']['runtimeCode']
+            changed = changed_since(recorded)
+            self.assertEqual(without_builder_identity((new / 'selection.json').read_bytes(), changed),
+                             without_builder_identity((self.V3_RUN / 'selection.json').read_bytes(), changed))
 
     def test_hand_frame_anchors_match_the_pipeline(self):
         ev = self.BASE / 'evaluation'; log = '8c52d911-fe34-3424-9864-d3fdfac38064'

@@ -40,6 +40,14 @@ version 3 protocol runs the version 3 rules unchanged):
                       app's capture distance along the lane, every anchor at least 12 m from the camera);
   * freeze guards   - scripts/rectified_calibration.py is hashed, imported modules must come from the hashed files,
                       and the held-out lock sits at one fixed path and must name the variant and an approval.
+
+Builder version 4.1 (development-only candidate; version 4 rules otherwise unchanged, and a version 3 or 4 protocol runs its
+own rules unchanged): rule 1 (a cluster qualifying at a frame) ignores a near-crossing stationary cluster whose centre lies
+outside the mapped drivable area, and ignores any of its tracks that moves: over all annotations of the track in the log (in
+time order, exact ego pose at each annotation timestamp, city XY = (R [tx, ty, tz] + t)[:2]), the largest horizontal distance
+from its first annotated position is more than 1.0 m (the placement protocol's stationary displacement test,
+prepare_av2_ground.cuboids_from_annotations). A track whose motion cannot be computed (an ego pose is missing) is not ignored.
+Every ignored cluster and track is recorded with its numbers. The split rule's reference-pose tracks are unchanged.
 """
 import argparse
 import copy
@@ -75,8 +83,11 @@ ground_tool = suggest_tool.ground_tool  # the prepare_av2_ground module instance
 # v4: candidate-frame vehicle eligibility, Unknown when a real vehicle occupies the default spot, frame target as a
 #     protocol parameter with named variants, rectified_calibration.py hashed, module origins checked, fixed lock path.
 #     A protocol with builderVersion 3 runs the v3 rules and writes the v3 outputs (only this file's own hash differs).
-BUILDER_VERSION = 4  # the newest version this file runs
-SUPPORTED_VERSIONS = (3, 4)
+# v4.1: rule 1 ignores near-crossing clusters whose centre is outside the drivable area, and tracks that move more than
+#     1.0 m from their first annotated position (c780d53a: track 564ba6ab, 13 m right of the lane, moves 1.5 m, made four
+#     frames infeasible under v4). A builderVersion 4 protocol runs the v4 rules unchanged.
+BUILDER_VERSION = 4.1  # the newest version this file runs
+SUPPORTED_VERSIONS = (3, 4, 4.1)
 MAX_FILE = 16_000_000
 S3 = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 SIDES = ('left', 'right')
@@ -90,7 +101,7 @@ RUNTIME_CODE_V3 = ('scripts/california/build_av2_scene.py', 'scripts/california/
                    'scripts/prepare-stereo-crop.py')
 # v4 adds rectified_calibration.py (imported by prepare-stereo-crop.py when the output is published; audit finding).
 RUNTIME_CODE = RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',)
-RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE}
+RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE}
 # v4: modules imported by name must be the hashed files (a same-named file earlier on sys.path would run unhashed code).
 MODULE_FILES = {'common': 'scripts/sponsors/common.py', 'prepare_av2': 'scripts/california/prepare_av2.py',
                 'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py'}
@@ -146,6 +157,20 @@ def v4_parameters(target):
     return params
 
 
+# v4.1 rule 1 filter (the only parameter block v4.1 adds; vehicle.frameRuleIgnore in the frozen protocol):
+#   clusterCentreOutsideDrivable       - true: a cluster whose centre (split-rule cityXY, unrounded) lies outside the
+#                                        union of mapped drivable outlines (even-odd per outline, city XY) is ignored;
+#   trackMaxDisplacementFromFirstOverM - a track whose largest horizontal distance from its first annotated position
+#                                        (all annotations of the track in the log) is more than this is ignored.
+FRAME_RULE_V41 = {'clusterCentreOutsideDrivable': True, 'trackMaxDisplacementFromFirstOverM': 1.0}
+
+
+def v41_parameters(target):
+    """The full v4.1 parameter object for one frame target: v4_parameters(target) plus vehicle.frameRuleIgnore."""
+    params = v4_parameters(target); params['vehicle']['frameRuleIgnore'] = copy.deepcopy(FRAME_RULE_V41)
+    return params
+
+
 def _sha(path):
     return digest(Path(path).read_bytes())
 
@@ -159,7 +184,7 @@ def runtime_code_hashes(version=BUILDER_VERSION):
 # ------------------------------------------------------------------ freeze guards
 def protocol_rules(protocol, variant):
     """(version, parameters) of the frozen builder protocol: version 3 carries exactly PARAMETERS_V3 (no variant);
-    version 4 carries named variants (parametersByVariant) and --protocol-variant picks one."""
+    version 4 and 4.1 carry named variants (parametersByVariant) and --protocol-variant picks one."""
     version = protocol.get('builderVersion')
     require(version in SUPPORTED_VERSIONS, f'Builder protocol version must be one of {SUPPORTED_VERSIONS}')
     if version == 3:
@@ -167,11 +192,11 @@ def protocol_rules(protocol, variant):
         require(protocol.get('parameters') == PARAMETERS_V3, 'Builder protocol parameters differ from this builder')
         return version, PARAMETERS_V3
     variants = protocol.get('parametersByVariant')
-    require(isinstance(variants, dict) and variants and 'parameters' not in protocol, 'A builder version 4 protocol needs parametersByVariant')
+    require(isinstance(variants, dict) and variants and 'parameters' not in protocol, f'A builder version {version} protocol needs parametersByVariant')
     require(isinstance(variant, str) and variant in variants,
             'Choose one of the protocol variants with --protocol-variant: ' + ', '.join(sorted(variants)))
-    params = variants[variant]
-    require(isinstance(params, dict) and params == v4_parameters((params.get('frame') or {}).get('target')),
+    params = variants[variant]; expected = v41_parameters if version == 4.1 else v4_parameters
+    require(isinstance(params, dict) and params == expected((params.get('frame') or {}).get('target')),
             'Builder protocol parameters differ from this builder')
     return version, params
 
@@ -300,7 +325,7 @@ def load_poses(data):
 def load_annotations(data):
     table = prepare_av2.table(data, ['timestamp_ns', 'track_uuid', 'category', 'tx_m', 'ty_m', 'tz_m', 'length_m'])
     return {k: np.asarray(table.column(k).to_numpy(zero_copy_only=False)) for k in
-            ('timestamp_ns', 'track_uuid', 'category', 'tx_m', 'ty_m', 'length_m')}
+            ('timestamp_ns', 'track_uuid', 'category', 'tx_m', 'ty_m', 'tz_m', 'length_m')}
 
 
 def crossing_geometry(vector_map, crossing_id):
@@ -413,6 +438,46 @@ def frame_vehicle_rows(poses, t, centroid, rows, params):
                                 'crossingFwdM': float(fc), 'inStereoFov': bool(in_view), 'betweenEgoAndCrossing': bool(between), 'side': side},
                     'matchesAtReferencePose': r['matchesSelectionRule'],
                     'matchesAtFrame': bool(in_view and between and side == 'right')})
+    return out
+
+
+def track_motion(ann, poses, track):
+    """v4.1 motion test, the placement protocol's stationary displacement test (prepare_av2_ground.cuboids_from_annotations):
+    all annotations of the track in the log in time order; city XY = (R @ [tx, ty, tz] + t)[:2] with the exact ego pose at
+    each annotation timestamp; maxDisplacementFromFirstM = the largest horizontal distance from the first position.
+    None when an exact ego pose is missing (motion unknown)."""
+    rows = np.flatnonzero(ann['track_uuid'] == track)
+    rows = rows[np.argsort(ann['timestamp_ns'][rows], kind='stable')]
+    if not len(rows) or not all(int(ann['timestamp_ns'][i]) in poses['rigid'] for i in rows):
+        return None
+    xy = np.array([(poses['rigid'][int(ann['timestamp_ns'][i])][:3, :3] @ np.array([ann['tx_m'][i], ann['ty_m'][i], ann['tz_m'][i]], float) +
+                    poses['rigid'][int(ann['timestamp_ns'][i])][:3, 3])[:2] for i in rows])
+    return {'annotations': int(len(rows)), 'spanSeconds': (int(ann['timestamp_ns'][rows[-1]]) - int(ann['timestamp_ns'][rows[0]])) / 1e9,
+            'maxDisplacementFromFirstM': float(np.linalg.norm(xy - xy[0], axis=1).max())}
+
+
+def frame_rule_rows(rows, drivable, ann, poses, rule):
+    """v4.1 rule 1 filter for each near-crossing stationary cluster (site_vehicles rows, same order): whether its centre
+    lies inside the mapped drivable union, each track's motion, and the tracks rule 1 ignores with the reasons."""
+    outlines = [np.asarray(d, float)[:, :2] for d in drivable]; limit = rule['trackMaxDisplacementFromFirstOverM']
+    out = []
+    for r in rows:
+        inside = bool(ground_tool.inside_polygons(np.asarray(r['cityXY'], float), outlines)[0])
+        motion = {track: track_motion(ann, poses, track) for track in r['tracks']}
+        ignored = {}
+        for track in r['tracks']:
+            why = []
+            if rule['clusterCentreOutsideDrivable'] and not inside:
+                why.append('cluster centre (city {:.2f}, {:.2f}) is outside the mapped drivable area'.format(*r['cityXY']))
+            m = motion[track]
+            if m is not None and m['maxDisplacementFromFirstM'] > limit:
+                why.append(f"track {track[:8]} moves {m['maxDisplacementFromFirstM']:.2f} m from its first annotated position "
+                           f'(more than {limit:g} m)')
+            if why:
+                ignored[track] = why
+        out.append({'cityXY': r['cityXY'], 'tracks': r['tracks'], 'centreInsideDrivable': inside, 'trackMotion': motion,
+                    'motionUnknownTracks': sorted(t for t, m in motion.items() if m is None),
+                    'ignoredTracks': sorted(ignored), 'reasons': {t: ignored[t] for t in sorted(ignored)}})
     return out
 
 
@@ -583,6 +648,8 @@ def occupant_record(c, chosen, geo, ctx, rows_at_frame):
         rec['whyNotQualifying'] = ['not a stationary annotated vehicle cluster within 12 m of the crossing (split rule)']
     else:
         at = row['atFrame']; why = []
+        if track in (row.get('frameRuleV41') or {}).get('reasons', {}):  # v4.1 only
+            why.extend(f'ignored by the builder v4.1 frame rule: {text}' for text in row['frameRuleV41']['reasons'][track])
         if not at['inStereoFov']:
             why.append(f"outside the split rule's stereo view at this frame (forward {at['vehFwdM']:.2f} m, bearing {at['bearingDeg']:.1f} deg)")
         if not at['betweenEgoAndCrossing']:
@@ -647,10 +714,19 @@ def evaluate_frame(frame, ctx, site_tracks):
     qualifying = site_tracks
     if v4:
         rows_at_frame = frame_vehicle_rows(poses, t, ctx['viewCentroid'], ctx['siteRows'], PARAMETERS['vehicle'])
-        frame_tracks = sorted({track for r in rows_at_frame if r['matchesAtFrame'] for track in r['tracks']})
+        ignored = set()
+        if ctx['version'] == 4.1:  # rule 1 ignores clusters outside the drivable area and moving tracks
+            for r, rule in zip(rows_at_frame, ctx['frameRuleRows'], strict=True):
+                require(r['cityXY'] == rule['cityXY'] and r['tracks'] == rule['tracks'], 'Frame rule rows out of order')
+                r['frameRuleV41'] = {k: rule[k] for k in ('centreInsideDrivable', 'ignoredTracks', 'reasons')}
+                if r['matchesAtFrame']:
+                    ignored |= set(rule['ignoredTracks'])
+        frame_tracks = sorted({track for r in rows_at_frame if r['matchesAtFrame'] for track in r['tracks']} - ignored)
         qualifying = sorted(set(site_tracks) | set(frame_tracks))
         out['vehicleRuleAtFrame'] = {'referencePoseTracks': sorted(site_tracks), 'frameTracks': frame_tracks, 'qualifyingTracks': qualifying,
                                      'rows': rows_at_frame}
+        if ctx['version'] == 4.1:
+            out['vehicleRuleAtFrame']['ignoredFrameTracks'] = sorted(ignored)
     defaults = ctx['placementProtocol']['declaredDefaults']; vehicle = None; checks = {}
     present = sorted(track for track in qualifying if any(c['track'] == track for c in cuboids))
     for track in present:
@@ -942,6 +1018,8 @@ def build(args):
         ctx.update({'version': version, 'target': params['frame']['target'], 'siteRows': site_rows,
                     'viewCentroid': np.nanmean(np.vstack([edges['edge1'], edges['edge2']])[:, :2], 0),  # analyze.py centroid
                     'clusterTracks': {track for cl in clusters for track in cl['tracks']}})
+    if version == 4.1:
+        ctx['frameRuleRows'] = frame_rule_rows(site_rows, drivable, ann, poses, params['vehicle']['frameRuleIgnore'])
     evaluated = []
     for frame in order:
         origin = (poses['rigid'][frame['cameraTimestampNs']] @ rect['egoFromLeft'])[:3, 3] if frame['cameraTimestampNs'] in poses['rigid'] else np.zeros(3)
@@ -989,6 +1067,17 @@ def build(args):
                         'Stationary means only that the annotation stayed in place; no reason for stopping is stated or implied.']}
     if version >= 4:
         v4_selection_fields(selection, params, variant, window, evaluated)
+    if version == 4.1:
+        selection['frameRuleV41'] = {'parameters': params['vehicle']['frameRuleIgnore'], 'clusters': ctx['frameRuleRows'],
+                                     'rule': ('At each frame, rule 1 ignores a near-crossing stationary cluster whose centre is outside the '
+                                              'mapped drivable area and any of its tracks whose largest horizontal distance from its first '
+                                              'annotated position (all annotations of the track in the log, exact ego poses) is more than '
+                                              f"{params['vehicle']['frameRuleIgnore']['trackMaxDisplacementFromFirstOverM']:g} m. A track "
+                                              'whose motion is unknown is not ignored. Reference-pose (split rule) tracks are unchanged.')}
+        selection['limitations'].insert(4, 'Builder v4.1: at a frame, a near-crossing stationary cluster whose centre is outside the mapped '
+                                           'drivable area is ignored, and so is any of its tracks that moves more than 1.0 m from its first '
+                                           'annotated position; the split rule tracks at the reference pose are unchanged and still go '
+                                           'through the placement protocol checks.')
     if cross_check['status'] == 'mismatch':
         selection['status'] = 'split-rule-mismatch'
     elif chosen is None:
@@ -1016,7 +1105,8 @@ def build(args):
         if version >= 4:
             selection['chosen'].update({'captureDistanceM': chosen['captureDistanceM'], 'anchorDistancesM': chosen['anchorDistancesM'],
                                         'vehicleRuleAtFrame': {k: chosen['vehicleRuleAtFrame'][k] for k in
-                                                               ('referencePoseTracks', 'frameTracks', 'qualifyingTracks')}})
+                                                               ('referencePoseTracks', 'frameTracks', 'qualifyingTracks', 'ignoredFrameTracks')
+                                                               if k in chosen['vehicleRuleAtFrame']}})
             before = evaluated[:chosen['rankInTargetOrder'] - 1]
             selection['framesBeforeChosen'] = {'count': len(before),
                                                'outcomes': {o: sum(e['outcome'] == o for e in before) for o in sorted({e['outcome'] for e in before})},

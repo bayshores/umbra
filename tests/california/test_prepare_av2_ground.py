@@ -135,16 +135,20 @@ def uv_of(world):
     return uv
 
 
-def write_fixture(root, split=False, moving=False, protocol=None, returns=None, eligible=None, annotations=None):
+def write_fixture(root, split=False, moving=False, protocol=None, returns=None, eligible=None, annotations=None, edit_map=None):
     """Analytic stand-ins for an assembled scene, its preparation and AV2 sources. Returns build() keyword arguments.
-    protocol/returns/eligible/annotations replace PROTOCOL, RETURNS, ELIGIBLE and the annotation table (v3 tests)."""
+    protocol/returns/eligible/annotations replace PROTOCOL, RETURNS, ELIGIBLE and the annotation table (v3 tests);
+    edit_map(vector_map) changes the native map in place before it is written (NaN heights are written as the NaN token)."""
     protocol = PROTOCOL if protocol is None else protocol
     returns = RETURNS if returns is None else np.asarray(returns, float)
     eligible = ELIGIBLE if eligible is None else np.asarray(eligible, np.uint8)
     root = Path(root); prepared = root / 'prepared'; assembled = root / 'assembled'; sources = root / 'sources'
     for d in (prepared, assembled, sources):
         d.mkdir(parents=True)
-    files = {'map.json': json.dumps(vector_map(split)).encode(), 'sim2.json': json.dumps(SIM2).encode()}
+    native_map = vector_map(split)
+    if edit_map is not None:
+        edit_map(native_map)
+    files = {'map.json': json.dumps(native_map).encode(), 'sim2.json': json.dumps(SIM2).encode()}
     stream = BytesIO(); np.save(stream, raster()); files['ground.npy'] = stream.getvalue()
     for name, table in (('poses.feather', pose_table()), ('annotations.feather', annotation_table(moving) if annotations is None else annotations)):
         feather.write_feather(table, sources / name); files[name] = (sources / name).read_bytes()
@@ -301,6 +305,41 @@ class GroundBuildTests(unittest.TestCase):
         changed = json.dumps(scene).encode(); Path(args['scene_path']).write_bytes(changed)
         with self.assertRaisesRegex(ValueError, 'unvalidated ground required'):
             tool.build(**dict(args, scene_sha256=sha(changed)))
+        self.assertFalse(args['output'].exists())
+
+    def test_nan_height_drivable_outlines_keep_their_horizontal_position(self):
+        # Publisher maps can carry NaN heights in drivable outlines (453e5558's map: 321 vertices in 9 of 14 outlines).
+        # Heights are not used for outlines, so the layer must equal the finite-height layer (no fill, no crash).
+        def nan_heights(native):
+            native['drivable_areas']['1']['area_boundary'][2]['z'] = float('nan')           # the outline under the crossing
+            native['drivable_areas']['3'] = {'id': 3, 'area_boundary': [dict(point(x, 0, z), z=float('nan'))  # off to the side
+                                                                         for x, z in ((20, 0), (30, 0), (30, 10), (20, 10))]}
+        def finite_heights(native):
+            native['drivable_areas']['3'] = {'id': 3, 'area_boundary': [point(x, 0, z) for x, z in ((20, 0), (30, 0), (30, 10), (20, 10))]}
+        nan_args = write_fixture(self.root / 'nan', edit_map=nan_heights); finite_args = write_fixture(self.root / 'finite', edit_map=finite_heights)
+        self.assertIn(b'NaN', Path(nan_args['scene_path']).parents[1].joinpath('sources/map.json').read_bytes())
+        tool.build(**nan_args); tool.build(**finite_args)
+        nan_layer = json.loads((nan_args['output'] / 'ground.json').read_bytes())
+        finite_layer = json.loads((finite_args['output'] / 'ground.json').read_bytes())
+        self.assertEqual([a['outline'] for a in nan_layer['drivableAreas']],
+                         [[[-6., -5.], [6., -5.], [6., 60.], [-6., 60.]], [[20., 0.], [30., 0.], [30., 10.], [20., 10.]]])
+        for key in ('drivableAreas', 'crossing', 'egoLane', 'support', 'cuboids', 'terrain'):
+            self.assertEqual(nan_layer[key], finite_layer[key], key)
+        self.assertEqual((nan_args['output'] / 'terrain.bin').read_bytes(), (finite_args['output'] / 'terrain.bin').read_bytes())
+
+    def test_world_xz_equals_the_matrix_conversion_for_finite_heights(self):
+        rng = np.random.default_rng(7); city_xyz = ORIGIN + rng.uniform(-80, 80, (200, 3))
+        np.testing.assert_array_equal(tool._world_xz(city_xyz, ORIGIN), tool._world(city_xyz, ORIGIN)[:, [0, 2]])
+        city_xyz[::3, 2] = np.nan
+        self.assertTrue(np.isfinite(tool._world_xz(city_xyz, ORIGIN)).all())
+        self.assertFalse(np.isfinite(tool._world(city_xyz, ORIGIN)[:, [0, 2]]).all())  # the defect the helper avoids
+
+    def test_nan_ego_lane_height_is_refused_not_filled(self):
+        def nan_lane(native):
+            native['lane_segments']['43186931']['left_lane_boundary'][1]['z'] = float('nan')
+        args = write_fixture(self.root / 'a', edit_map=nan_lane)
+        with self.assertRaisesRegex(ValueError, r'Ego lane left_lane_boundary has a missing \(NaN\) publisher height'):
+            tool.build(**args)
         self.assertFalse(args['output'].exists())
 
 
@@ -538,6 +577,13 @@ class RealGroundTests(unittest.TestCase):
                     return {k: str((base / v).resolve()) if k == 'path' else resolved(v, base) for k, v in value.items()}
                 return [resolved(v, base) for v in value] if isinstance(value, list) else value
             rebuilt = json.loads((out / 'ground.json').read_bytes())
+            # The NaN-height outline fix changed only this script's own hash (9dd444a9... recorded in grounded-v3.1); every
+            # other value must rebuild exactly.
+            ground_code = 'california/prepare_av2_ground.py'
+            self.assertEqual(rebuilt['processingCodeHashes'][ground_code], sha((ROOT / 'scripts' / ground_code).read_bytes()))
+            self.assertEqual(v3['processingCodeHashes'][ground_code], '9dd444a9d9b2914b1b2920115353a88ab0a578bb105b103b4c66724ffdd6f84d')
+            for layer in (rebuilt, v3):
+                del layer['processingCodeHashes'][ground_code]
             self.assertEqual(resolved(rebuilt, out), resolved(v3, REAL / 'grounded-v3.1'))
             # scene.json pins ground.json's bytes and hash, which differ only by those relative path strings.
             scenes = [json.loads((base / 'scene.json').read_bytes()) for base in (out, REAL / 'grounded-v3.1')]
