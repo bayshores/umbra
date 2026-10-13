@@ -390,8 +390,8 @@ test('a withheld answer gets a note true to why',()=>{
   const long='Compact car: blocked 2.58-4.08 m. '.repeat(9);
   assert.equal(checkAnswer(long.slice(0,34),allowed).ok,true);
   assert.equal(withheldNote(checkAnswer(long,allowed)),'Nemotron\'s answer was withheld: too long.');
-  assert.equal(withheldNote(checkAnswer('Blocked from 2.6 m to 9.25 m.',allowed)),'Nemotron\'s answer was withheld: used a number Umbra did not compute.');
-  assert.equal(withheldNote(checkAnswer('The child is visible from 4.33 m.',allowed)),'Nemotron\'s answer was withheld: used wording Umbra does not allow.');
+  assert.equal(withheldNote(checkAnswer('Blocked from 2.6 m to 9.25 m.',allowed)),'Nemotron\'s answer was withheld: used a number umbra did not compute.');
+  assert.equal(withheldNote(checkAnswer('The child is visible from 4.33 m.',allowed)),'Nemotron\'s answer was withheld: used wording umbra does not allow.');
   assert.equal(withheldNote(checkAnswer('  ',allowed)),'Nemotron returned no wording.');
 });
 
@@ -460,7 +460,7 @@ test('a computed number used for another quantity is withheld',()=>{
     'The stationary vehicle is 0.69 ft from the crossing.','The vehicle is 1.88 ft wide.','A vehicle width of 1.1 m.','Its setback is 1.47 m.','The vehicle sits 13.53 ft back.',
     'The 1.49 m tall child is not blocked by the vehicle (rest unknown).']) {
     const r=checkAnswer(claim,allowed,{mapped:true});
-    assert.deepEqual([r.ok,r.kind],[false,'role'],claim);assert.match(r.reason,/is not Umbra's computed /,claim);
+    assert.deepEqual([r.ok,r.kind],[false,'role'],claim);assert.match(r.reason,/is not umbra's computed /,claim);
     assert.equal(withheldNote(r),'Nemotron\'s answer was withheld: used a computed number for the wrong quantity.');
     assert.equal(checkAnswer(claim,allowed).kind,'role',`${claim} (measured-depth scene too)`);
   }

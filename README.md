@@ -1,4 +1,4 @@
-# Umbra
+# umbra
 
 A local, single-workspace parking visibility comparison using real DrivingStereo images, sparse reference-depth data and an explicitly estimated NVIDIA reconstruction. The runtime contains no procedural street, built-in actor dimension tables, fabricated unknown volume, or demo response. A scene may ship a prepared, hash-pinned `suggestions.json` that pre-places the crossing, vehicle and person; each suggestion is labeled detected or declared default (on local map-first scenes, mapped or annotated) and stays editable. Dimensions suggested by the optional NVIDIA Nemotron assistant also appear as declared, editable what-if values. Missing assets and invalid inputs stop the comparison explicitly.
 
@@ -55,9 +55,9 @@ Schema 3 `suggestions.json` (protocol v3, from `scripts/california/suggest_av2_p
 
 ## NVIDIA Nemotron assistant (Nebius Token Factory)
 
-Once the crossing, vehicle and person are placed (by suggestion or by hand), the assistant row under the header accepts a plain-English what-if, such as "box truck 10 ft back, child". NVIDIA Nemotron 3.5 Lightning, called at runtime through the Nebius Token Factory chat API with tool calling, declares the vehicle size, person height and distance. Umbra applies them to the normal fields and computes Blocked or Unknown with its own geometry. Nemotron then writes a short answer from those computed results.
+Once the crossing, vehicle and person are placed (by suggestion or by hand), the assistant row under the header accepts a plain-English what-if, such as "box truck 10 ft back, child". NVIDIA Nemotron 3.5 Lightning, called at runtime through the Nebius Token Factory chat API with tool calling, declares the vehicle size, person height and distance. umbra applies them to the normal fields and computes Blocked or Unknown with its own geometry. Nemotron then writes a short answer from those computed results.
 
-Check distances asks Nemotron to pick your vehicle plus up to three common vehicle types. Umbra tests each one locally at every 0.25 m of setback and shows where the declared vehicle stops blocking the line from the driver eye to the person's height point. The 15 ft and 20 ft marks are shown as reference. California Vehicle Code §22500(n) uses 20 ft for parking near crosswalks. Umbra does not decide legal compliance. Click a row to apply that vehicle and distance.
+Check distances asks Nemotron to pick your vehicle plus up to three common vehicle types. umbra tests each one locally at every 0.25 m of setback and shows where the declared vehicle stops blocking the line from the driver eye to the person's height point. The 15 ft and 20 ft marks are shown as reference. California Vehicle Code §22500(n) uses 20 ft for parking near crosswalks. umbra does not decide legal compliance. Click a row to apply that vehicle and distance.
 
 Nemotron never chooses image points or coordinates and never decides visibility. Every value it declares stays visible and editable. Every computed result carries one phrase: "blocked", "not blocked by the vehicle (rest unknown)" only when the line misses the box and nothing else made it Unknown, or "unknown (reason)", such as "unknown (too close to call)". Nemotron is told to use these phrases word for word. Answers that use unsupported wording, numbers absent from the computed results, a number for the wrong quantity, or "not blocked" where the computed result says otherwise are replaced by the app's own computed line. Dragging, sliders and comparisons never call the model.
 

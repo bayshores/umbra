@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-// Shared switches for Umbra's motion: every animated feature stops while the tab is hidden and stays off when the
+// Shared switches for umbra's motion: every animated feature stops while the tab is hidden and stays off when the
 // computer's Reduce Motion setting is on. Both hooks follow changes made while the page is open.
 const QUERY = '(prefers-reduced-motion: reduce)';
 export const prefersReducedMotion = () => typeof matchMedia === 'function' && matchMedia(QUERY).matches;

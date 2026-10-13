@@ -26,9 +26,9 @@ function ExampleRequest() {
   </li>;
 }
 
-// The chat with Bloop, Umbra's assistant persona. Bloop's words come from NVIDIA Nemotron through Nebius Token
-// Factory (named in the header); Nemotron only declares what-if values, and Umbra computes every result, which the
-// log shows as its own "Umbra" lines. The one Bloop on screen lives in this header and shows the app's mood.
+// The chat with Bloop, umbra's assistant persona. Bloop's words come from NVIDIA Nemotron through Nebius Token
+// Factory (named in the header); Nemotron only declares what-if values, and umbra computes every result, which the
+// log shows as its own "umbra" lines. The one Bloop on screen lives in this header and shows the app's mood.
 // While a run is in progress the controls are aria-disabled rather than disabled, so keyboard focus stays where it was.
 export default function AssistantBar({ messages, question, onQuestion, askHint, checkHint, running, onAsk, onCheck, mood, renderSweep }) {
   const busy = !!running, ready = !askHint && !busy, log = useRef(null), field = useRef(null);
@@ -52,7 +52,7 @@ export default function AssistantBar({ messages, question, onQuestion, askHint, 
     <ol className="chat-log" ref={log} aria-live="polite" aria-label="Messages">
       {!messages.length && !running && <ExampleRequest/>}
       {messages.map(m => <li key={m.id} className={'msg msg--' + m.from + (m.kind ? ' msg--' + m.kind : '')}>
-        <span className="msg-author">{m.from === 'you' ? 'You' : m.from === 'bloop' ? 'Bloop' : 'Umbra'}</span>
+        <span className="msg-author">{m.from === 'you' ? 'You' : m.from === 'bloop' ? 'Bloop' : 'umbra'}</span>
         {m.kind === 'result' ? <p className="msg-result">
             <DotText text={STATE_TITLE[m.state] ?? m.state} pitch={3} className={'dot-text--' + m.state} animate/>
             <span className="msg-result-at">{m.setback} m</span></p>

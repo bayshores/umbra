@@ -41,7 +41,7 @@ MAX_FILE = 16 * 1024 * 1024
 EPS = 1e-9
 LICENSE = {'id': 'CC-BY-NC-SA-4.0', 'attribution': '(c) 2021 Argo AI, LLC', 'source': 'Argoverse 2 Sensor Dataset',
            'changes': 'Mapped drivable areas, crossing edges, ego lane, a ground-raster window and annotated cuboids converted to '
-                      'Umbra scene coordinates; LiDAR support rows selected by a frozen protocol. No endorsement implied.'}
+                      'umbra scene coordinates; LiDAR support rows selected by a frozen protocol. No endorsement implied.'}
 # Held-out tests, controls and reserve of the frozen Palo Alto split (.local/evaluation/pao-accuracy/split.json, sha256
 # 47f64fe0...). Nothing is ever fitted on these logs; the protocol v3 band fit refuses them.
 HELD_OUT_LOG_PREFIXES = ('88f47a10', '3153b5b3', 'd33f667d', 'fd5c6932', '25e5c600', 'e1d68dde', 'a91d4c7b', '4a60c567', 'b6c4361a')

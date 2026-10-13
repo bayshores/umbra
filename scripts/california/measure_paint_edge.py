@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Development-only LiDAR paint-edge measurement for one mapped AV2 pedestrian crossing (Umbra M3).
+"""Development-only LiDAR paint-edge measurement for one mapped AV2 pedestrian crossing (umbra M3).
 
 Measures where the painted crosswalk starts along the approach direction from a fixed number of
 stacked AV2 LiDAR sweeps, without image vision, and reports the signed offset from the HD-map near

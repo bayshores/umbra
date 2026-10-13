@@ -1,5 +1,5 @@
 // Server-owned Nemotron proxy (Nebius Token Factory). Fetch API only: shared by the Vite middleware and the Sites worker.
-// The model only declares what-if values and words results; Umbra's geometry stays the only source of blocked/unknown.
+// The model only declares what-if values and words results; umbra's geometry stays the only source of blocked/unknown.
 export const MODEL='nvidia/Nemotron-3_5-Lightning';
 export const MAX_COMPLETION_TOKENS=600;
 export const ENDPOINT='https://api.tokenfactory.nebius.com/v1/chat/completions';
@@ -16,20 +16,20 @@ const label=description=>({type:'string',minLength:1,maxLength:40,description:de
 const fn=(name,description,properties,required)=>({type:'function',function:{name,description,parameters:{type:'object',properties,required,additionalProperties:false}}});
 const width=num(0.5,3.5,'Vehicle width in meters'),height=num(0.5,4.5,'Vehicle height in meters'),length=num(1,20,'Vehicle length in meters');
 export const TOOLS={
-  declare_scenario:fn('declare_scenario','Declare the what-if vehicle box, the person target height and, only when the user gives one, the distance from the crossing to the vehicle front. Umbra applies the values and computes the result.',{
+  declare_scenario:fn('declare_scenario','Declare the what-if vehicle box, the person target height and, only when the user gives one, the distance from the crossing to the vehicle front. umbra applies the values and computes the result.',{
     vehicle_label:label('Short vehicle type, e.g. box truck'),vehicle_width_m:width,vehicle_height_m:height,vehicle_length_m:length,
     target_label:label('Short person type, e.g. child'),target_height_m:num(0.3,2.5,'Height in meters of the tested point on the person, e.g. head height'),
     setback_value:{type:'number',exclusiveMinimum:0,description:'Distance from the crossing to the vehicle front, as the user gave it'},
     setback_unit:{type:'string',enum:['m','ft'],description:'Unit of setback_value'},
   },['vehicle_label','vehicle_width_m','vehicle_height_m','vehicle_length_m','target_label','target_height_m']),
-  sweep_setbacks:fn('sweep_setbacks','Test each vehicle at a range of distances from the crossing. Umbra computes where the vehicle blocks the driver-eye-to-person line.',{
+  sweep_setbacks:fn('sweep_setbacks','Test each vehicle at a range of distances from the crossing. umbra computes where the vehicle blocks the driver-eye-to-person line.',{
     vehicles:{type:'array',minItems:1,maxItems:4,items:{type:'object',properties:{label:label('Short vehicle type'),width_m:width,height_m:height,length_m:length},required:['label','width_m','height_m','length_m'],additionalProperties:false}},
   },['vehicles']),
 };
 export const MODE_TOOLS={ask:['declare_scenario','sweep_setbacks'],check:['sweep_setbacks']};
 
-const CORE=`You set up what-if scenarios for Umbra. Umbra tests, on a real recorded street, whether a declared vehicle (a box) crosses the line from the driver eye (the recording camera's position) to one point at a person's declared height. The crossing, vehicle front and person are fixed points on the scene's road.
-Use the tools to declare values. Umbra computes every result; never compute, estimate or guess one yourself.
+const CORE=`You set up what-if scenarios for umbra. umbra tests, on a real recorded street, whether a declared vehicle (a box) crosses the line from the driver eye (the recording camera's position) to one point at a person's declared height. The crossing, vehicle front and person are fixed points on the scene's road.
+Use the tools to declare values. umbra computes every result; never compute, estimate or guess one yourself.
 - For vehicle or person types the user names, use typical real-world dimensions for that type (never copy the current size) and say they are typical assumptions.
 - If the user speaks in feet, give distances in feet (setback_unit "ft"); otherwise use meters.
 - After tool results arrive, answer in at most two short sentences (under 240 characters) using only numbers from the tool results, each for its own quantity.
@@ -41,7 +41,7 @@ export const SYSTEM_PROMPTS={
 Mode: scenario setup.
 - Call declare_scenario for the scenario the user describes. For a vehicle or person the user does not mention, reuse the facts' values and labels. Include setback_value and setback_unit only when the user gives a distance from the crossing.
 - Call sweep_setbacks only if the user asks how far back the vehicle must be or asks about distances. Labels are plain names like "box truck".
-- If the request is off-topic, say in one sentence that you only set up Umbra scenarios; call no tool.`,
+- If the request is off-topic, say in one sentence that you only set up umbra scenarios; call no tool.`,
   check:`${CORE}
 Mode: distance check.
 - Call sweep_setbacks exactly once with the facts' declared vehicle labeled "your vehicle" plus up to three common vehicle types (e.g. compact car, SUV, delivery van) with typical dimensions. Use plain-name labels.
@@ -98,7 +98,7 @@ function invalid(body) {
 }
 
 function upstreamBody({mode,question,context,turns=[]}) {
-  const facts=`\nScenario facts computed by Umbra (JSON): ${JSON.stringify(context)}`;
+  const facts=`\nScenario facts computed by umbra (JSON): ${JSON.stringify(context)}`;
   return {model:MODEL,temperature:0,n:1,stream:false,service_tier:'default',
     max_completion_tokens:MAX_COMPLETION_TOKENS,tool_choice:'auto',tools:MODE_TOOLS[mode].map(n=>TOOLS[n]),
     chat_template_kwargs:{enable_thinking:false},

@@ -305,7 +305,7 @@ export function isStillSuggested(key,current,provenance) {
 // The status line parts for the values still on screen, whether anything suggested was edited, and the Nemotron
 // context entry. A vehicle or person is listed only while both its point and its size still hold the suggestion; the
 // default vehicle's distance is shown only while the crossing it was measured from is also still suggested.
-// Context strings carry no numbers: Umbra's computed facts already hold every value.
+// Context strings carry no numbers: umbra's computed facts already hold every value.
 export function suggestionStatus(suggestions,setup,current) {
   const p=setup.provenance,s=suggestions,
     value=key=>key==='vehicle'?current.vehicle:key==='targetHeight'?current.targetHeight:current.pixels?.[key],

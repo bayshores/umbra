@@ -43,7 +43,7 @@ export function createFileBudget(file,limitUsd) {
         if(error.code!=='EEXIST')throw error;
         // The lock covers one read and one append; an old one was left by a process that died holding it.
         try{if(Date.now()-statSync(lock).mtimeMs>STALE_LOCK_MS)unlinkSync(lock);}catch{}
-        if(Date.now()-start>LOCK_WAIT_MS)throw new Error(`Nemotron usage log is locked; remove ${lock} if no Umbra server is running.`);
+        if(Date.now()-start>LOCK_WAIT_MS)throw new Error(`Nemotron usage log is locked; remove ${lock} if no umbra server is running.`);
         Atomics.wait(pause,0,0,5);
       }
     }

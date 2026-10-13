@@ -103,13 +103,13 @@ test('upstream request is fixed by the server for each mode',async t=>{
   assert.deepEqual(c.body.tools.map(t=>t.function.name),['sweep_setbacks']);
   assert.deepEqual(a.body.messages[0],{role:'system',content:SYSTEM_PROMPTS.ask});
   assert.deepEqual(c.body.messages[0],{role:'system',content:SYSTEM_PROMPTS.check});
-  assert.equal(a.body.messages[1].content,`Question: ${ask.question}\nScenario facts computed by Umbra (JSON): ${JSON.stringify(context)}`);
-  assert.match(c.body.messages[1].content,/^Run the distance check[^\n]*\nScenario facts computed by Umbra \(JSON\): /);
+  assert.equal(a.body.messages[1].content,`Question: ${ask.question}\nScenario facts computed by umbra (JSON): ${JSON.stringify(context)}`);
+  assert.match(c.body.messages[1].content,/^Run the distance check[^\n]*\nScenario facts computed by umbra \(JSON\): /);
   assert.ok(c.body.messages[1].content.endsWith(JSON.stringify(context)));
   for(const prompt of Object.values(SYSTEM_PROMPTS)) {
     assert.ok(prompt.length<=1800,`${prompt.length} characters`);
     assert.match(prompt,/never compute, estimate or guess/);
-    // Results are worded only with Umbra's own phrases (an Unknown that is too close to call is never "not blocked").
+    // Results are worded only with umbra's own phrases (an Unknown that is too close to call is never "not blocked").
     assert.match(prompt,/Give each result word for word as its "result" or "short" phrase in the facts or tool results; say "not blocked by the vehicle" only where that phrase does\./);
     assert.doesNotMatch(prompt,/Unknown: the vehicle misses the line|measured/);
     assert.match(prompt,/Never say why a vehicle is stopped or name its make or model\./);
