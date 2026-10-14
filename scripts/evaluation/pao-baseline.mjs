@@ -5,11 +5,13 @@
 // numbers from one development scene: not surveyed, not held-out, never a passed gate. Metric K (LiDAR shadow) is computed
 // by v3.1-analysis/metric_k.py next to the grounded folder.
 //
-//   node scripts/evaluation/pao-baseline.mjs [--date YYYY-MM-DD] [--out DIR] [--no-coverage] [--samples N]
-//   node scripts/evaluation/pao-baseline.mjs --timing-only [--date YYYY-MM-DD] [--out DIR] [--sweeps N]
+//   node scripts/evaluation/pao-baseline.mjs [--scene DIR] [--date YYYY-MM-DD] [--out DIR] [--no-coverage] [--samples N]
+//   node scripts/evaluation/pao-baseline.mjs --timing-only [--scene DIR] [--date YYYY-MM-DD] [--out DIR] [--sweeps N]
 //
 // Writes DIR/baseline-<UTC date>.json (default DIR .local/evaluation/pao-accuracy/), or with --timing-only DIR/timing-<UTC
 // date>.json (metric J alone: scene load, first result, createScenario and the setback sweep at both target heights).
+// --scene: a built scene folder holding assembled/ and grounded/ (scene-builder-v4.3 and M7 run_heldout.py layout) instead
+// of the 8c development scene; the file names then carry the scene id, and the 8c expectations are not checked.
 // Never overwrites a file. Reads only local files.
 //
 // Since shape-v1 (baseline schemaVersion 3) the app's Blocked is no longer "the line cuts at least 0.10 m into the box":
@@ -23,10 +25,11 @@ import {execFileSync} from 'node:child_process';
 import {performance} from 'node:perf_hooks';
 import os from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import path from 'node:path';
 import {loadScene} from '../../src/scene.mjs';
 import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
-  TOO_CLOSE_TO_CALL_M} from '../../src/geometry.mjs';
-import {setbackSweep,actorConflicts} from '../../src/scenario-assistant.mjs';
+  TOO_CLOSE_TO_CALL_M,SIZE_LIMITS} from '../../src/geometry.mjs';
+import {setbackSweep,actorConflicts,scenarioFacts,allowedNumbersFrom,checkAnswer} from '../../src/scenario-assistant.mjs';
 import {suggestedSetup,crossingText} from '../../src/suggestions.mjs';
 
 export const ROOT=new URL('../../',import.meta.url);
@@ -58,20 +61,25 @@ export const GROUNDED_DIR='grounded-v3.4/';
 export const devDataPresent=()=>existsSync(new URL(GROUNDED_DIR+'scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
   &&existsSync(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir));
 
+// The 8c development scene's folders, and those of a built scene folder (DIR/assembled/ and DIR/grounded/).
+export const DEV_DIRS=Object.freeze({assembled:new URL('assembled/',DEV.dir),grounded:new URL(GROUNDED_DIR,DEV.dir)});
+export const sceneDirs=dir=>{const base=pathToFileURL(path.resolve(dir)+path.sep);return Object.freeze({assembled:new URL('assembled/',base),grounded:new URL('grounded/',base)});};
+
 // Serves the contract's directory like tests/av2-ground.test.mjs: assembled buffers plus every file of the current
 // grounded folder (never files from two grounded folders). cache holds file bytes, so a second load with the same cache
-// measures loadScene without disk reads.
-export async function loadDevelopmentScene(cache=new Map()) {
-  const entry=JSON.parse(await readFile(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir),'utf8'));
-  const fetch=async path=>{
-    const name=path.split('/').at(-1);
-    if(!path.startsWith(`/scenes/${DEV.id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
+// measures loadScene without disk reads. dirs: another scene's folders (sceneDirs); the scene id is its catalog entry's.
+export async function loadDevelopmentScene(cache=new Map(),dirs=DEV_DIRS) {
+  const entry=JSON.parse(await readFile(new URL('catalog-entry.json',dirs.grounded),'utf8')),id=entry.id;
+  if(dirs===DEV_DIRS&&id!==DEV.id)throw new Error(`The development catalog entry names ${id}, not ${DEV.id}.`);
+  const fetch=async url=>{
+    const name=url.split('/').at(-1);
+    if(!url.startsWith(`/scenes/${id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
     try{
-      if(!cache.has(name))cache.set(name,await readFile(new URL((GROUNDED.has(name)?GROUNDED_DIR:'assembled/')+name,DEV.dir)));
+      if(!cache.has(name))cache.set(name,await readFile(new URL(name,GROUNDED.has(name)?dirs.grounded:dirs.assembled)));
       return new Response(cache.get(name));
     }catch{return new Response(null,{status:404});}
   };
-  return {scene:await loadScene(fetch,DEV.id,entry.metadataSha256,undefined,entry.suggestions,entry.ground),entry};
+  return {scene:await loadScene(fetch,id,entry.metadataSha256,undefined,entry.suggestions,entry.ground),entry};
 }
 
 // Nearest-rank percentile (sorted[ceil(p n) - 1]); the median is the lower middle value for an even count.
@@ -171,7 +179,7 @@ export function clickToGround(scene) {
     return {band:`${a}-${b} m`,candidates:inBand.length,placed:placed.length,unknown,
       horizontalErrorM:stats(e),medianSignedAlongRayM:r(percentile(placed.map(x=>x.along),.5)),
       shownUncertaintyCoverage:placed.length?r(placed.filter(x=>x.error<=x.shown).length/placed.length,3):null,
-      shownUncertaintyM:{median:r(percentile(shown,.5)),p95:r(percentile(shown,.95))}};
+      shownUncertaintyM:{median:r(percentile(shown,.5)),p95:r(percentile(shown,.95)),max:r(shown.length?Math.max(...shown):null)}};
   });
   return {
     reference:'camera-visible LiDAR ground returns of the scene sweep (protocol v2 cameraVisibleReturn; ground gate on mapped height)',
@@ -182,6 +190,9 @@ export function clickToGround(scene) {
     bands:bin(BANDS,GROUND_GATE_M),fractionalClickBands:bin(BANDS,GROUND_GATE_M,'fractional'),
     strictGate:{groundGateM:STRICT_GROUND_GATE_M,bands:bin(BANDS,STRICT_GROUND_GATE_M)},
     laneBandsForReproduction:bin(LANE_BANDS,GROUND_GATE_M),
+    metricBPoints:{band:'12-25 m',click:'integer',groundGateM:GROUND_GATE_M,
+      definition:'every placed point of the 12-25 m integer-click band as [horizontal error, shown along-ray uncertainty], metres, full precision (pools metric B over sites)',
+      points:rows.filter(x=>x.range>=12&&x.range<25&&Math.abs(x.dy)<=GROUND_GATE_M&&x.unknown===undefined).map(x=>[x.error,x.shown])},
   };
 }
 
@@ -521,14 +532,66 @@ export function firstLoad(scene,setup) {
     targetHeightM:Number(setup.targetHeight),targetGround:sc.targetGround.map(n=>r(n,6))};
 }
 
+// ---------------------------------------------------------------- I. fixed bad-sentence set (protocol lock metrics.I)
+// The set of tests/av2-ground.test.mjs ("answer check catches invented stop reasons ...": 11 wording and 4 role sentences,
+// written on 8c, each of which passed the M1 check), with each number replaced by this scene's value of the same role:
+// 0.42 m by the suggested setback, 1.49 m by the suggested vehicle's height and 1.88 m by its width (two decimals, as
+// written). Each must fail the app's answer check (checkAnswer on a mapped scene) with the same kind. Values that are
+// equal at two decimals would make a role sentence true, so they fail the check by name.
+export const BAD_SENTENCES=Object.freeze({
+  wording:['The car pulled over 0.42 m from the crossing.','The car is out of gas at 0.42 m.','It has a flat tire.','It is letting a passenger out.',
+    'The crossing position comes from LiDAR.','The LiDAR shows the crossing 0.42 m away.','The stationary vehicle is exactly 0.42 m back.','The setback is verified.',
+    'This is ground truth.','The stationary vehicle is a Tesla Model S.','It is a Toyota.'],
+  role:['The stationary vehicle is 1.49 m from the intersection.','It is set back 1.49 m.','It sits 1.88 m from the stop line.','The setback is 1.49 m.']});
+export function badSentenceCheck(scene,setup) {
+  const sc=createScenario(scene,setup.input),allowed=allowedNumbersFrom(scenarioFacts(scene,sc));
+  const values={'0.42':sc.baselineSetback,'1.49':Number(setup.vehicle.height),'1.88':Number(setup.vehicle.width)};
+  if(!Object.values(values).every(Number.isFinite))return {error:'The suggested setback or vehicle size is not a number.',pass:false};
+  const text=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v.toFixed(2)])),distinct=new Set(Object.values(text)).size===3,rows=[];
+  for(const [kind,list] of Object.entries(BAD_SENTENCES))for(const written of list) {
+    const sentence=written.replace(/0\.42|1\.49|1\.88/g,m=>text[m]),res=checkAnswer(sentence,allowed,{mapped:true});
+    rows.push({kind,sentence,ok:res.ok,checkKind:res.kind??null,pass:!res.ok&&res.kind===kind});
+  }
+  return {source:'tests/av2-ground.test.mjs fixed bad-sentence set (October 12 audit), numbers replaced by this scene\'s values',
+    values:{setbackM:text['0.42'],vehicleHeightM:text['1.49'],vehicleWidthM:text['1.88']},distinctValues:distinct,
+    rows,failures:rows.filter(x=>!x.pass).length,pass:distinct&&rows.every(x=>x.pass)};
+}
+
+// Metric I "0 out-of-range inputs accepted": the suggested setup with one field just outside its SIZE_LIMITS range, not a
+// number, empty or not positive, or one pixel outside the recorded image. Each must make createScenario throw; the
+// unchanged setup must not (so a refusal is the field's own). expectedMessage: the refusal names that field's rule.
+const PIXEL_ROLE=Object.freeze({crossing:'crossing',parking:'vehicleFront',target:'person'});
+export function outOfRangeCheck(scene,setup) {
+  const base=setup.input,{width,height}=scene.camera,cases=[],step=.01;
+  const vehicle=(k,v)=>({...base,vehicle:{...base.vehicle,[k]:v}});
+  for(const k of ['width','height','length'])for(const [label,v] of [['below',String(SIZE_LIMITS[k][0]-step)],['above',String(SIZE_LIMITS[k][1]+step)],['not a number','NaN'],['empty',''],['negative','-1']])
+    cases.push({field:`vehicle.${k}`,value:v,label,input:vehicle(k,v),expectedMessage:`Vehicle ${k} must be a number from`});
+  for(const [label,v] of [['below',String(SIZE_LIMITS.targetHeight[0]-step)],['above',String(SIZE_LIMITS.targetHeight[1]+step)],['not a number','NaN'],['empty',''],['negative','-1']])
+    cases.push({field:'targetHeight',value:v,label,input:{...base,targetHeight:v},expectedMessage:'Target height must be a number from'});
+  for(const k of ['proposedSetback','driverDistance'])for(const [label,v] of [['zero','0'],['negative','-1'],['not a number','NaN'],['empty','']])
+    cases.push({field:k,value:v,label,input:{...base,[k]:v},expectedMessage:k==='proposedSetback'?'Proposed setback must be a positive number.':'Driver distance must be a positive number.'});
+  for(const key of ['crossing','parking','target'])for(const [label,px] of [['left of the image',[-1,base.pixels[key][1]]],['right of the image',[width,base.pixels[key][1]]],
+    ['above the image',[base.pixels[key][0],-1]],['below the image',[base.pixels[key][0],height]],['not a whole pixel',[base.pixels[key][0]+.5,base.pixels[key][1]]]])
+    cases.push({field:`pixels.${PIXEL_ROLE[key]}`,value:px,label,input:{...base,pixels:{...base.pixels,[key]:px}},expectedMessage:'Select a pixel inside the recorded image.'});
+  const rows=cases.map(({input,...c})=>{
+    try{createScenario(scene,input);return {...c,accepted:true,message:null,messageMatches:false};}
+    catch(e){return {...c,accepted:false,message:e.message,messageMatches:c.expectedMessage===null||e.message.startsWith(c.expectedMessage)};}
+  });
+  let control;
+  try{createScenario(scene,base);control={accepted:true};}catch(e){control={accepted:false,message:e.message};}
+  const accepted=rows.filter(x=>x.accepted).length;
+  return {definition:'metric I: out-of-range inputs accepted by createScenario (each case changes one field of the suggested setup; sizes 0.01 m outside src/geometry.mjs SIZE_LIMITS)',
+    sizeLimits:SIZE_LIMITS,control,cases:rows.length,accepted,messageMismatches:rows.filter(x=>!x.accepted&&!x.messageMatches).length,rows,pass:control.accepted&&accepted===0};
+}
+
 // ---------------------------------------------------------------- timing (Node only; browser timing is a later task)
 // firstLoadMs: the process's first loadDevelopmentScene (disk reads, cold code paths), measured by the caller.
-export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=null,firstResultMs=null}={}) {
+export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=null,firstResultMs=null,dirs=DEV_DIRS}={}) {
   const ms=f=>{const t=performance.now();f();return performance.now()-t;};
   const cache=new Map();
-  let t=performance.now();const {scene}=await loadDevelopmentScene(cache);const cold=performance.now()-t;
+  let t=performance.now();const {scene}=await loadDevelopmentScene(cache,dirs);const cold=performance.now()-t;
   const warm=[];
-  for(let i=0;i<loads;i++){t=performance.now();await loadDevelopmentScene(cache);warm.push(performance.now()-t);}
+  for(let i=0;i<loads;i++){t=performance.now();await loadDevelopmentScene(cache,dirs);warm.push(performance.now()-t);}
   const create=[],sweep=[],vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(setup.vehicle[k])]));
   for(let i=0;i<creates;i++)create.push(ms(()=>createScenario(scene,setup.input)));
   const run=height=>setbackSweep(scene,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',...vehicle},height);
@@ -573,6 +636,10 @@ function expectations(b) {
   const band=b.clickToGround.bands.find(x=>x.band==='12-25 m'),far=b.clickToGround.bands.find(x=>x.band==='30-60 m');
   check('metric B 12-25 m shown-uncertainty coverage (integer click), run-receipt-v3 harnessMetricB',.962,band.shownUncertaintyCoverage,.001);
   check('metric B 30-60 m refused as too far (integer click), run-receipt-v3 harnessMetricB',516,far.unknown['Too far to place (over 30 m).']??0,0);
+  same('metric I bad-sentence set on 8c is the test file\'s own (0.42 / 1.49 / 1.88) and every sentence fails with its kind',
+    {values:{setbackM:'0.42',vehicleHeightM:'1.49',vehicleWidthM:'1.88'},pass:true},{values:b.metricI.values,pass:b.metricI.pass});
+  same('metric I out-of-range inputs: the suggested setup is accepted, all 43 changed ones refused, each size and number by its own rule',
+    {cases:43,accepted:0,messageMismatches:0,pass:true},(({cases,accepted,messageMismatches,pass})=>({cases,accepted,messageMismatches,pass}))(b.metricIOutOfRange));
   check('metric C crossing point used (m)',0,b.suggestionConsistency.roles.crossing.pointUsed.horizontalM,1e-6);
   check('metric C person point used (m)',0,b.suggestionConsistency.roles.person.pointUsed.horizontalM,1e-6);
   check('metric C vehicle front point used (m)',0,b.suggestionConsistency.roles.vehicleFront.pointUsed.horizontalM,1e-6);
@@ -590,17 +657,20 @@ function provenance() {
 }
 
 // The whole baseline. coverage: run every crop pixel (about 4 s); samples: random placements for honesty counters.
-export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}) {
-  const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
+// dirs: another built scene (sceneDirs); its baseline has no 8c expectations.
+export async function computeBaseline({coverage=true,samples=3000,timingRuns,dirs=DEV_DIRS}={}) {
+  const dev=dirs===DEV_DIRS;
+  const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(new Map(),dirs),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
   if(setup.error||!setup.input)throw new Error(`Suggested setup unavailable: ${setup.error}`);
   const sc=createScenario(scene,setup.input),firstResultMs=performance.now()-t0;
   const lock=existsSync(new URL('split.lock.json',OUT_DIR))?JSON.parse(await readFile(new URL('split.lock.json',OUT_DIR),'utf8')):null;
   const splitBytes=existsSync(new URL('split.json',OUT_DIR))?await readFile(new URL('split.json',OUT_DIR)):null;
   const b={schemaVersion:3,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
-    label:'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.',
+    label:dev?'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.'
+      :`Scene ${entry.id} (built scene folder): AV2-referenced, not surveyed. Its split role and run mode are in the scene's build receipt.`,
     provenance:provenance(),
     split:{file:'split.json',lockSha256:lock?.sha256??null,fileSha256:splitBytes?sha(splitBytes):null,matchesLock:!!(lock&&splitBytes&&sha(splitBytes)===lock.sha256)},
-    scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions,
+    scene:{id:entry.id,groundedFolder:dev?GROUNDED_DIR:fileURLToPath(dirs.grounded),protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions,
       crosswalkChip:crossingText(scene.suggestions.crossing),
       carShape:scene.carShape?{status:scene.carShape.status,track:scene.carShape.track,along:scene.carShape.along,lateral:scene.carShape.lateral,
         allTopsAtLeastH:scene.carShape.allTopsAtLeastH,shapeProtocolSha256:scene.ground.carShape.protocol.shapeProtocolSha256}:null},
@@ -615,7 +685,10 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}
     clickToGround:clickToGround(scene),
     suggestionConsistency:suggestionConsistency(scene),
     setbackSweep:setbackSweepBaseline(scene,setup),
-    blockedEnd:blockedEndRange(scene,setup),
+    // laneReconciliation explains the 8c planning lanes' numbers; other scenes leave it out.
+    blockedEnd:dev?blockedEndRange(scene,setup):(({laneReconciliation,...rest})=>rest)(blockedEndRange(scene,setup)),
+    metricI:badSentenceCheck(scene,setup),
+    metricIOutOfRange:outOfRangeCheck(scene,setup),
   };
   let list=null;
   if(coverage){const p=placeablePixels(scene);list=p.list;b.placeablePixels=p.summary;}
@@ -624,33 +697,34 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}
     b.honesty={sample:{count:sample.placements.length,attempts:sample.attempts,generator:sample.generator,rejected:sample.errors},
       ...honestyCounters(scene,setup,sample.placements)};
   }
-  b.timing=await timing(setup,{...timingRuns,firstLoadMs,firstResultMs});
-  b.expectations=expectations(b);
+  b.timing=await timing(setup,{...timingRuns,firstLoadMs,firstResultMs,dirs});
+  b.expectations=dev?expectations(b):{source:'none: the expectations are the 8c development scene\'s values',checks:[],allPass:null};
   return b;
 }
 
 async function main(argv) {
   const arg=k=>{const i=argv.indexOf(k);return i>=0?argv[i+1]:undefined;};
-  if(!devDataPresent())throw new Error('AV2 8c development data is local-only and not present.');
+  const dirs=arg('--scene')?sceneDirs(arg('--scene')):DEV_DIRS;
+  if(dirs===DEV_DIRS&&!devDataPresent())throw new Error('AV2 8c development data is local-only and not present.');
   const date=arg('--date')??new Date().toISOString().slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('--date must be YYYY-MM-DD');
   const out=arg('--out')?pathToFileURL(arg('--out').replace(/\/?$/,'/')):OUT_DIR,samples=arg('--samples')?Number(arg('--samples')):3000;
   let b,name;
   if(argv.includes('--timing-only')) {
     // Metric J alone: nothing else runs in this process before or during the measurements.
-    const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
+    const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(new Map(),dirs),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
     if(setup.error||!setup.input)throw new Error(`Suggested setup unavailable: ${setup.error}`);
     createScenario(scene,setup.input);
     const firstResultMs=performance.now()-t0,sweeps=arg('--sweeps')?Number(arg('--sweeps')):300;
     b={schemaVersion:1,kind:'pao-accuracy metric J timing',generatedUtc:new Date().toISOString(),provenance:provenance(),
-      scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,ground:entry.ground,suggestions:entry.suggestions},
+      scene:{id:entry.id,groundedFolder:dirs===DEV_DIRS?GROUNDED_DIR:fileURLToPath(dirs.grounded),ground:entry.ground,suggestions:entry.suggestions},
       gate:'setback sweep p50 <= 5 ms with the shape (shape-v2 prediction 12, metric J)',
-      timing:await timing(setup,{sweeps,firstLoadMs,firstResultMs})};
+      timing:await timing(setup,{sweeps,firstLoadMs,firstResultMs,dirs})};
     b.gatePass=b.timing.setbackSweepMs.p50<=5&&b.timing.setbackSweepAdultMs.p50<=5;
-    name=`timing-${date}.json`;
+    name=`timing-${dirs===DEV_DIRS?'':entry.id+'-'}${date}.json`;
   }else{
-    b=await computeBaseline({coverage:!argv.includes('--no-coverage'),samples});
-    name=`baseline-${date}.json`;
+    b=await computeBaseline({coverage:!argv.includes('--no-coverage'),samples,dirs});
+    name=`baseline-${dirs===DEV_DIRS?'':b.scene.id+'-'}${date}.json`;
   }
   const text=JSON.stringify(b,null,1)+'\n';
   if(/park/i.test(text))throw new Error('Baseline text uses banned vehicle-status wording.');
