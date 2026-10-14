@@ -1,6 +1,8 @@
 """Build the DEVELOPMENT known-answer validation set for the labeling protocol.
 
   python -I build_validation.py --protocol P.json --base DIR [--selection cases/selection.json]   # locked protocol
+        [--repeat-substitute PLANNED=NEXT]   # repeatCasesRule: the build excluded a planned real repeat case; NEXT is
+                                             # checked to be the built real car case with the most LiDAR interior points
   python -I build_validation.py --draft --protocol P.json --base OUTDIR --selection S.json        # unlocked trial build
   python -I build_validation.py --draft --synthetic-only --protocol P.json --base OUTDIR          # synthetic cases only,
         into a folder outside the repository (tool smoke tests; no selection file, no real cases, no coordinator folder)
@@ -391,6 +393,29 @@ def write_task_files(base, tasks, P, common_fields, instructions=None):
     return tasks_hash, internal_hash
 
 
+def repeat_substitute(label, tasks, key, excluded, substitutes):
+    """Protocol `repeatCasesRule`: when the build excluded a planned real repeat case, the coordinator names the next
+    case by the same rule (`--repeat-substitute PLANNED=NEXT`). Checked, not trusted: PLANNED must be a repeat case this
+    build excluded, and NEXT must be the built real car case with the most LiDAR interior points. Returns the label to
+    repeat and the substitution record (None when no substitution applies)."""
+    if label not in substitutes:
+        return label, None
+    require(any(x['case'].startswith(label) for x in excluded), f'repeat case {label} was not excluded by this build')
+    require(not any(key[t['taskId']]['caseLabel'].startswith(label) for t in tasks), f'repeat case {label} was built')
+    cars = [(key[t['taskId']]['case']['maxInteriorPoints'], key[t['taskId']]['caseLabel']) for t in tasks
+            if key[t['taskId']]['source'] == 'lidar' and key[t['taskId']]['kind'] == 'car' and 'repeatOf' not in key[t['taskId']]]
+    require(cars, 'no built real car case to repeat')
+    most = max(points for points, _ in cars)
+    best = [name for points, name in cars if points == most]
+    require(len(best) == 1, f'tie for the most LiDAR interior points: {best}')
+    require(best[0].startswith(substitutes[label]),
+            f'--repeat-substitute {label}={substitutes[label]} is not the next case by the rule: {best[0]} has the most LiDAR interior points ({most})')
+    excluded_reason = next(x['reason'] for x in excluded if x['case'].startswith(label))
+    return substitutes[label], {'planned': label, 'substitute': substitutes[label], 'substituteCase': best[0],
+                                'maxInteriorPoints': most, 'plannedExcludedBecause': excluded_reason,
+                                'rule': 'repeatCasesRule: the built real car case with the most LiDAR interior points'}
+
+
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('--draft', action='store_true')
@@ -399,9 +424,14 @@ def main(argv):
     parser.add_argument('--selection')
     parser.add_argument('--synthetic-only', action='store_true',
                         help='draft smoke test: synthetic cases only, written to --base outside the repository')
+    parser.add_argument('--repeat-substitute', action='append', default=[], metavar='PLANNED=NEXT',
+                        help='protocol repeatCasesRule: a planned real repeat case this build excluded, and the next case by the same rule')
     args = parser.parse_args(argv)
     draft, protocol_path, base = args.draft, Path(args.protocol), Path(args.base)
     synthetic_only = args.synthetic_only
+    require(all(x.count('=') == 1 for x in args.repeat_substitute), '--repeat-substitute takes PLANNED=NEXT')
+    substitutes = dict(x.split('=') for x in args.repeat_substitute)
+    require(len(substitutes) == len(args.repeat_substitute), '--repeat-substitute names the same planned case twice')
     if synthetic_only:
         require(draft, '--synthetic-only is a draft smoke test: add --draft')
         require(not isolation.inside_repo(base), '--synthetic-only writes its answer key under --base: use a folder outside the repository')
@@ -416,6 +446,7 @@ def main(argv):
         P, phash = load_protocol(protocol_path)
         require(selection['protocolSha256'] == phash, f'{selection_path.name} was not made with the locked protocol')
         require(not (base / 'validation-lock.json').exists(), 'validation-lock.json exists: the validation set is frozen')
+    require(set(substitutes) <= set(P['repeatCases']), f'--repeat-substitute names a case that is not in repeatCases: {sorted(substitutes)}')
     instructions = None
     if P.get('labelerInstructions'):
         path = protocol_path.parent / P['labelerInstructions']
@@ -488,7 +519,11 @@ def main(argv):
                 coverage.setdefault(task_id, {})[name[1:]] = entry[name]
     # blind repeats: same image (v1: and station columns), freshly jittered overview; scored for within-labeler precision.
     # v2 requires each repeat to run in a different fresh agent from its original (protocol labelers.isolation).
-    for label in P['repeatCases']:
+    substitutions = []
+    for planned in P['repeatCases']:
+        label, record = repeat_substitute(planned, tasks, key, excluded, substitutes)
+        if record:
+            substitutions.append(record)
         originals = [t for t in tasks if key[t['taskId']]['caseLabel'].startswith(label)]
         if synthetic_only and not originals:
             continue  # smoke test: real repeat cases are not built
@@ -509,7 +544,7 @@ def main(argv):
                     image={**orig['image'], 'path': relative(image_path)},
                     answerDir=f"{relative(base / 'sessions')}/<LABELER>/{task_id}/")
         tasks.append(task)
-        key[task_id] = dict(entry, repeatOf=orig['taskId'])
+        key[task_id] = dict(entry, repeatOf=orig['taskId'], **({'substituteFor': planned} if record else {}))
         if orig['taskId'] in coverage:
             coverage[task_id] = coverage[orig['taskId']]
     created = dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -539,6 +574,8 @@ def main(argv):
             'statement': 'Written before any labeler session. Scoring refuses if any hash differs.'}
     if internal_hash:
         lock['tasksInternalSha256'] = internal_hash
+    if substitutions:
+        lock['repeatSubstitutions'] = substitutions
     if sealed_spec:
         lock['sealed'] = sealed_spec
     if instructions:
