@@ -559,7 +559,8 @@ export function badSentenceCheck(scene,setup) {
 
 // Metric I "0 out-of-range inputs accepted": the suggested setup with one field just outside its SIZE_LIMITS range, not a
 // number, empty or not positive, or one pixel outside the recorded image. Each must make createScenario throw; the
-// unchanged setup must not (so a refusal is the field's own). expectedMessage: the refusal names that field's rule.
+// unchanged setup must not (so a refusal is the field's own). expectedMessage: the refusal names that field's rule; pass
+// also needs every refusal to carry it (a case refused by an earlier check does not test its own limit).
 const PIXEL_ROLE=Object.freeze({crossing:'crossing',parking:'vehicleFront',target:'person'});
 export function outOfRangeCheck(scene,setup) {
   const base=setup.input,{width,height}=scene.camera,cases=[],step=.01;
@@ -581,7 +582,7 @@ export function outOfRangeCheck(scene,setup) {
   try{createScenario(scene,base);control={accepted:true};}catch(e){control={accepted:false,message:e.message};}
   const accepted=rows.filter(x=>x.accepted).length;
   return {definition:'metric I: out-of-range inputs accepted by createScenario (each case changes one field of the suggested setup; sizes 0.01 m outside src/geometry.mjs SIZE_LIMITS)',
-    sizeLimits:SIZE_LIMITS,control,cases:rows.length,accepted,messageMismatches:rows.filter(x=>!x.accepted&&!x.messageMatches).length,rows,pass:control.accepted&&accepted===0};
+    sizeLimits:SIZE_LIMITS,control,cases:rows.length,accepted,messageMismatches:rows.filter(x=>!x.accepted&&!x.messageMatches).length,rows,pass:control.accepted&&accepted===0&&rows.every(x=>x.accepted||x.messageMatches)};
 }
 
 // ---------------------------------------------------------------- timing (Node only; browser timing is a later task)
@@ -661,8 +662,11 @@ function provenance() {
 export async function computeBaseline({coverage=true,samples=3000,timingRuns,dirs=DEV_DIRS}={}) {
   const dev=dirs===DEV_DIRS;
   const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(new Map(),dirs),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
-  if(setup.error||!setup.input)throw new Error(`Suggested setup unavailable: ${setup.error}`);
-  const sc=createScenario(scene,setup.input),firstResultMs=performance.now()-t0;
+  // Another scene without a complete suggested setup keeps the parts that need none (click-to-ground B, suggestion
+  // consistency C, placeable pixels); the parts that need one are listed in setupUnavailable, never filled in.
+  const setupError=setup.error||!setup.input?`Suggested setup unavailable: ${setup.error}`:null;
+  if(setupError&&dev)throw new Error(setupError);
+  const sc=setupError?null:createScenario(scene,setup.input),firstResultMs=performance.now()-t0;
   const lock=existsSync(new URL('split.lock.json',OUT_DIR))?JSON.parse(await readFile(new URL('split.lock.json',OUT_DIR),'utf8')):null;
   const splitBytes=existsSync(new URL('split.json',OUT_DIR))?await readFile(new URL('split.json',OUT_DIR)):null;
   const b={schemaVersion:3,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
@@ -675,23 +679,29 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns,dir
       carShape:scene.carShape?{status:scene.carShape.status,track:scene.carShape.track,along:scene.carShape.along,lateral:scene.carShape.lateral,
         allTopsAtLeastH:scene.carShape.allTopsAtLeastH,shapeProtocolSha256:scene.ground.carShape.protocol.shapeProtocolSha256}:null},
     conventions:{
-      driverEye:`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`,
-      target:`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`,
+      driverEye:sc?`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`:'no suggested setup (setupUnavailable)',
+      target:sc?`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`:'no suggested setup (setupUnavailable)',
       percentile:'nearest-rank: sorted[ceil(p n) - 1]',
       distances:'metres; horizontal means world X/Z',
       results:'Blocked or Unknown only (Clear removed); overlap is the sweep and facts label for the Unknown reason person or driver inside the vehicle box; other Unknown reasons (M1, shape-v1 height-not-proven) are row reasons',
     },
-    firstLoad:firstLoad(scene,setup),
     clickToGround:clickToGround(scene),
     suggestionConsistency:suggestionConsistency(scene),
+  };
+  let list=null;
+  if(coverage){const p=placeablePixels(scene);list=p.list;b.placeablePixels=p.summary;}
+  if(setupError) {
+    b.setupUnavailable={reason:setupError,missing:['firstLoad','setbackSweep','blockedEnd','metricI','metricIOutOfRange','honesty','timing'],
+      note:'these parts need the suggested setup; they are left out, never filled in'};
+    b.expectations={source:'none: the expectations are the 8c development scene\'s values',checks:[],allPass:null};
+    return b;
+  }
+  Object.assign(b,{firstLoad:firstLoad(scene,setup),
     setbackSweep:setbackSweepBaseline(scene,setup),
     // laneReconciliation explains the 8c planning lanes' numbers; other scenes leave it out.
     blockedEnd:dev?blockedEndRange(scene,setup):(({laneReconciliation,...rest})=>rest)(blockedEndRange(scene,setup)),
     metricI:badSentenceCheck(scene,setup),
-    metricIOutOfRange:outOfRangeCheck(scene,setup),
-  };
-  let list=null;
-  if(coverage){const p=placeablePixels(scene);list=p.list;b.placeablePixels=p.summary;}
+    metricIOutOfRange:outOfRangeCheck(scene,setup)});
   if(samples>0) {
     const sample=samplePlacements(scene,{count:samples});
     b.honesty={sample:{count:sample.placements.length,attempts:sample.attempts,generator:sample.generator,rejected:sample.errors},

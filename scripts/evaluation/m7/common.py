@@ -21,6 +21,7 @@ SPLIT_SHA = '47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4'
 LOCK_PATH = ROOT / '.local/evaluation/pao-accuracy/protocol-lock.json'
 ANCHOR_REL = 'scripts/evaluation/pao-lock-anchor.json'
 ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list and held-out label hashes, committed during M7
+LOST_SITES_REL = f'{ANCHOR_DIR}/lost-sites.json'  # protocol-lock statistics.lostSiteRule: {"lostSites": [{logId, crossingId, evidence}]}
 DEVELOPMENT_ROLES = ('development', 'development-optional')
 HELD_OUT_ROLES = ('held-out-blocked-test', 'held-out-left-side-case', 'held-out-control', 'held-out-control-declared-only')
 BUCKET = 'https://argoverse.s3.amazonaws.com/'
@@ -72,13 +73,33 @@ def write_new(path, data, mode=0o444):
 
 def site(log, crossing):
     """The split.json entry of this site (split.json checked against its frozen sha256)."""
-    raw = SPLIT.read_bytes()
-    if sha(raw) != SPLIT_SHA:
-        raise SystemExit('split.json differs from its frozen sha256')
-    hits = [s for s in json.loads(raw)['sites'] if s['logId'] == log and str(s['crossingId']) == str(crossing)]
+    hits = [s for s in split_sites() if s['logId'] == log and str(s['crossingId']) == str(crossing)]
     if len(hits) != 1:
         raise SystemExit(f'{log[:8]}/{crossing} is not one site of split.json')
     return hits[0]
+
+
+def split_sites():
+    """Every split.json site (split.json checked against its frozen sha256)."""
+    raw = SPLIT.read_bytes()
+    if sha(raw) != SPLIT_SHA:
+        raise SystemExit('split.json differs from its frozen sha256')
+    return json.loads(raw)['sites']
+
+
+def lost_sites():
+    """The committed lost-site list (statistics.lostSiteRule): tracked, unchanged since its commit, pushed. Returns
+    ({'<log8>/<crossing>', ...}, its sha256)."""
+    path = ROOT / LOST_SITES_REL
+    if not path.is_file():
+        raise SystemExit(f'{LOST_SITES_REL} does not exist: write the lost-site list (possibly empty) and commit it first')
+    if subprocess.run(['git', 'ls-files', '--error-unmatch', LOST_SITES_REL], cwd=ROOT, capture_output=True).returncode != 0 \
+            or git('status', '--porcelain', '--', LOST_SITES_REL).strip():
+        raise SystemExit(f'{LOST_SITES_REL} is not committed unchanged')
+    if subprocess.run(['git', 'diff', '--quiet', 'origin/main', '--', LOST_SITES_REL], cwd=ROOT, capture_output=True).returncode != 0:
+        raise SystemExit(f'{LOST_SITES_REL} differs from origin/main: push it first')
+    doc = json.loads(path.read_bytes())
+    return {f"{x['logId'][:8]}/{x['crossingId']}" for x in doc['lostSites']}, sha_file(path)
 
 
 def git(*args):

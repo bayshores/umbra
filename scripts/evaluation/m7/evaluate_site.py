@@ -10,14 +10,17 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
      scoring sweeps that ground.json carShape.sweeps.scoring lists, nothing else) and score, under metric F protocol v4
      (pinned in metricProtocols.F). No --box-rows-from: a held-out scene has no metric F v2 rows to reproduce.
   3. metric_k.py (the scene sweep; on a built-shape site also the scoring sweeps)
-  4. score.py site with the inputs that exist
-A failed step leaves its metrics "not scored" (its output is left out of score.py) and is listed in the receipt; the
-other steps still run. A site without a built scene goes straight to score.py. Nothing is downloaded here.
+  4. score.py site with the inputs that exist and the failed steps named (--failed-step)
+A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
+(B cannot pass, H is a miss at a Blocked-test site, the rest not scored); it is listed in the receipt and the other
+steps still run. A site without a built scene goes straight to score.py. Nothing is downloaded here. Step logs and
+error tails have the banned vehicle-status word masked (p*rk) before they are written.
 """
 import argparse
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -31,6 +34,11 @@ VARIANT = 'v4-18.5'  # run_heldout.py VARIANT
 F_DIR = '.local/evaluation/pao-accuracy/metric-f-shape-v2'
 F_PROTOCOL = ['--protocol', f'{F_DIR}/protocol-v4.json', '--protocol-lock', f'{F_DIR}/protocol-v4.lock.json']
 BUILT = ('built-shape', 'built-box')
+BANNED = re.compile('park', re.IGNORECASE)  # common.write_new refuses it; node traces can quote source lines
+
+
+def masked(text):
+    return BANNED.sub('p*rk', text)
 
 
 def main():
@@ -64,9 +72,9 @@ def main():
         for kind, text in (('stdout', result.stdout), ('stderr', result.stderr)):
             fd = os.open(out / f'{step}-{kind}.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
             with os.fdopen(fd, 'wb') as handle:
-                handle.write(text.encode())
+                handle.write(masked(text).encode())
         steps.append({'step': step, 'exit': result.returncode, 'seconds': round(time.time() - start, 2),
-                      **({'error': (result.stderr.strip() or result.stdout.strip())[-400:]} if result.returncode else {})})
+                      **({'error': masked((result.stderr.strip() or result.stdout.strip())[-400:])} if result.returncode else {})})
         return result.returncode == 0
 
     py = [sys.executable, '-I', '-B']
@@ -99,8 +107,9 @@ def main():
             inputs['metric-k'] = out / 'metric-k.json'
     if args.paint:
         inputs['paint'] = Path(args.paint).absolute()
+    failed = [x for s in steps if s['exit'] for x in ('--failed-step', s['step'])]
     scored = run('score', py + ['scripts/evaluation/m7/score.py', 'site', '--site', str(site), '--out', str(out / 'score.json'),
-                                *[x for k, v in inputs.items() for x in (f'--{k}', str(v))]])
+                                *[x for k, v in inputs.items() for x in (f'--{k}', str(v))], *failed])
     doc = {'kind': 'pao-m7-site-evaluation', 'mode': record['mode'], 'site': record['site'],
            'siteRecord': {'file': rel(found[0]), 'sha256': sha_file(found[0])},
            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256, 'buildOutcome': record['outcome'],
