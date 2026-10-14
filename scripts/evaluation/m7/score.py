@@ -30,6 +30,12 @@ from common import DEVELOPMENT_ROLES, HELD_OUT_ROLES, ROOT, now, rel, sha_file, 
 LABEL = 'AV2-referenced, development-grade, not surveyed'  # protocol-lock label
 B_LIMIT_M, B_COVERAGE = .76, .95
 A_OFFSET_M, A_AGREE_M = .30, .15
+A_FAIL_REASON = ('both paint v4 offsets are at least 0.30 m, agree within 0.15 m and paint v4 calls the edge resolved: the true '
+                 'offset is very likely at least about 0.20 m (not proven to be 0.30 m); a look-alike line before the crossing '
+                 '(bright band, stop line, faint first stripe) can also cause this, and the fail counts against the app either '
+                 'way (Sean, Oct 14)')
+PAINT_PROTOCOL_SHA = 'f9a52b440180e84c67d78dfb963849da73d7131f7bcaaf9ea6d0e94fafdfe273'  # paint.protocolV4
+PAINT_CODE_SHA = 'bd2c6996551e03fc39160cbcb718f314467334979264816dca4f14fd0f92617a'  # paint.codeV4
 ALPHA = .05
 BLOCKED_TEST = 'held-out-blocked-test'
 BUILT = ('built-shape', 'built-box')
@@ -115,15 +121,23 @@ def metric_a(paint_dir, record_sha):
     if sha_file(result) != receipt['outputs']['result.json']:
         raise SystemExit(f'{result} differs from its paint receipt')
     doc = load(result)
+    if (doc.get('protocolSha256'), doc.get('scriptSha256')) != (PAINT_PROTOCOL_SHA, PAINT_CODE_SHA):
+        raise SystemExit(f'{result} was not made by paint protocol v4 and code-v4 (protocolSha256/scriptSha256)')
     a, b = doc['estimatorA'].get('edgeSAtEval'), doc['estimatorB'].get('edgeSAtEval')
-    offsets = {'estimatorAM': a, 'estimatorBM': b, 'paintResult': {'file': rel(result), 'sha256': sha_file(result)}}
+    near = doc['nearEdge']
+    offsets = {'estimatorAM': a, 'estimatorBM': b, 'evalL': doc['frame']['evalL'],
+               'paintV4': {k: near.get(k) for k in ('status', 'label', 'reason')},
+               'paintResult': {'file': rel(result), 'sha256': sha_file(result)}}
     if a is None or b is None:
         return not_scored('an estimator measured no edge (no validated paint method)', **offsets)
     if abs(a - b) > A_AGREE_M + 1e-12:
-        return not_scored(f'unresolved: the estimators disagree by {abs(a - b):.3f} m (> {A_AGREE_M} m)', unresolved=True, **offsets)
-    if abs(a) >= A_OFFSET_M and abs(b) >= A_OFFSET_M:
-        return outcome('fail', f'both offsets are at least {A_OFFSET_M} m and agree within {A_AGREE_M} m', **offsets)
-    return not_scored('no validated paint method (A is fail-only); both offsets reported', **offsets)
+        return not_scored(f'estimators disagree by {abs(a - b):.3f} m (> {A_AGREE_M} m)', estimatorsDisagree=True, **offsets)
+    if abs(a) < A_OFFSET_M or abs(b) < A_OFFSET_M:
+        return not_scored('no validated paint method (A is fail-only); both offsets reported', **offsets)
+    if near['status'] != 'resolved':
+        return not_scored(f"both offsets are at least {A_OFFSET_M} m but paint v4 itself is not confident "
+                          f"(nearEdge {near['status']}: {near.get('reason')})", notConfirmedByPaintV4=True, **offsets)
+    return outcome('fail', A_FAIL_REASON, **offsets)
 
 
 def metric_b(baseline):
@@ -510,7 +524,7 @@ def summarize(args):
     d_errors = [abs(e['errorPx']) for _, d in scores for e in d['metrics']['D'].get('errors', [])]
     d_pooled = {'errors': len(d_errors), 'medianPx': statistics.median(d_errors), 'maxPx': max(d_errors),
                 'note': 'reported; each site must pass on its own'} if d_errors else None
-    a_unresolved = [n for n, (_, d) in zip(names, scores) if d['metrics']['A'].get('unresolved')]
+    a_flag = lambda key: [n for n, (_, d) in zip(names, scores) if d['metrics']['A'].get(key)]  # noqa: E731
     return {'kind': 'pao-m7-summary', 'label': LABEL, 'mode': next(iter(modes)), 'protocolLockSha256': next(iter(locks)),
             'sites': {n: {'role': d['site']['role'], 'build': d['build']['outcome'], 'score': {'file': rel(p), 'sha256': sha_file(p)}}
                       for n, (p, d) in zip(names, scores)},
@@ -518,7 +532,11 @@ def summarize(args):
             'outcomes': by_metric, 'reasons': reasons,
             'B': {'eachSitePasses': all(v == 'pass' for v in by_metric['B'].values()), 'pooled': b_pooled},
             'D': {'pooled': d_pooled},
-            'A': {'unresolvedSites': a_unresolved, 'failedSites': [n for n, v in by_metric['A'].items() if v == 'fail']},
+            'A': {'scoredSites': sum(v != 'not scored' for v in by_metric['A'].values()), 'sites': len(names),
+                  'failedSites': [n for n, v in by_metric['A'].items() if v == 'fail'],
+                  'estimatorsDisagreeSites': a_flag('estimatorsDisagree'), 'notConfirmedByPaintV4Sites': a_flag('notConfirmedByPaintV4'),
+                  'note': 'fail-only: "not scored" says nothing about the map, and A never passes; a fail means the true offset is '
+                          'very likely at least about 0.20 m, or a look-alike line fooled both estimators (counted against the app)'},
             'statistics': {'unit': 'one intersection', 'miss': miss,
                            'falseBlocked': false_blocked},
             'gate': 'incomplete (the visibility gate is never recorded as passed)',

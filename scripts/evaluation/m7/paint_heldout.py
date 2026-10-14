@@ -13,6 +13,7 @@ the locked ones: this file passes none. A failed paint step leaves metric A "not
 it never stops the scene build. Nothing here prints a measurement.
 """
 import argparse
+from importlib.metadata import version
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,7 @@ CODE = f'{PAINT}/code-v4/measure_paint_edge.py'
 CODE_SHA = 'bd2c6996551e03fc39160cbcb718f314467334979264816dca4f14fd0f92617a'
 SWEEP_COUNT = 15  # paint protocol v4 sweepSelection.count (checked against the protocol below)
 MAX_SWEEP = 4_000_000  # acquire.py MAX_BYTES
+PACKAGES = {'numpy': '2.3.1', 'scipy': '1.16.0', 'pyarrow': '20.0.0'}  # protocol-v4.lock.json environment.packages
 NICE = ['nice', '-n', '10']
 SOURCES = {'poses': 'city_SE3_egovehicle.feather', 'extrinsics': 'calibration/egovehicle_SE3_sensor.feather'}
 MAP_SOURCES = {'map': 'log_map_archive_', 'groundRaster': '_ground_height_surface____', 'groundTransform': '___img_Sim2_city.json'}
@@ -53,7 +55,7 @@ def main():
     mode.add_argument('--protocol-lock-sha256')
     mode.add_argument('--rehearse', action='store_true')
     args = parser.parse_args()
-    site_dir, out = Path(args.site).absolute(), Path(args.out).absolute()
+    site_dir, out = Path(args.site).resolve(), Path(args.out).resolve()
     if not out.is_relative_to(ROOT / '.local') or os.path.lexists(out):
         parser.error('--out must be a new folder under .local/')
     record, record_path = site_record(site_dir)
@@ -78,12 +80,16 @@ def main():
             raise SiteStop(step, (result.stderr.strip() or result.stdout.strip())[-400:])
 
     downloads = []
+    packages = {}
     try:
+        packages = {name: version(name) for name in PACKAGES}
         if sha_file(ROOT / CODE) != CODE_SHA or sha_file(ROOT / PROTOCOL) != PROTOCOL_SHA:
             raise SiteStop('pins', 'paint code-v4 or protocol v4 differs from its pinned sha256')
         protocol = json.loads((ROOT / PROTOCOL).read_bytes())
         if protocol['parameters']['sweepSelection']['count'] != SWEEP_COUNT:
             raise SiteStop('pins', 'paint protocol v4 sweep count is not 15')
+        if packages != PACKAGES:
+            raise SiteStop('pins', f'numpy/scipy/pyarrow {packages} differ from paint v4\'s locked {PACKAGES}')
         # 1. config.json from the site's receipted downloads (the same files the scene build used)
         by_path = {d['publisherPath']: d for d in record['downloads'] if d['kind'] == 'metadata'}
         data = site_dir / 'data' / log
@@ -139,6 +145,8 @@ def main():
         outcome, stop = 'measured', None
     except SiteStop as error:
         outcome, stop = 'not-scored', error
+    except Exception as error:  # anything unexpected still leaves a stop record; its message is not kept (it could hold a value)
+        outcome, stop = 'not-scored', SiteStop('unexpected', type(error).__name__)
     doc = {'kind': 'pao-m7-paint', 'mode': 'rehearsal (development site)' if args.rehearse else 'held-out',
            'site': {'logId': log, 'crossingId': str(crossing), 'role': entry['role']}, 'siteRecord': {'file': rel(record_path), 'sha256': sha_file(record_path)},
            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256,
@@ -148,7 +156,8 @@ def main():
            'steps': steps, 'downloads': downloads, 'downloadedBytes': sum(d['bytes'] for d in downloads),
            'outputs': {name: sha_file(out / name) for name in ('config.json', 'selection.json', 'receipts.json', 'result.json') if (out / name).is_file()},
            'driver': {'file': 'scripts/evaluation/m7/paint_heldout.py', 'sha256': sha_file(__file__)},
-           'python': {'executable': sys.executable, 'version': sys.version.split()[0]}, 'finishedUtc': now()}
+           'common': {'file': 'scripts/evaluation/m7/common.py', 'sha256': sha_file(common.__file__)},
+           'python': {'executable': sys.executable, 'version': sys.version.split()[0], 'packages': packages}, 'finishedUtc': now()}
     name = 'paint-receipt.json' if stop is None else 'paint-stopped.json'
     digest = write_new(out / name, doc)
     print(json.dumps({'site': f'{log[:8]}/{crossing}', 'paint': outcome, 'record': rel(out / name), 'sha256': digest}))
