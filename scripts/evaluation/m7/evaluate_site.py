@@ -11,7 +11,9 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
      (pinned in metricProtocols.F). No --box-rows-from: a held-out scene has no metric F v2 rows to reproduce.
   3. metric_k.py (the scene sweep; on a built-shape site also the scoring sweeps)
   4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after its sha256
-     is checked, with --site, --baseline, --metric-f-results (those that exist), --labels and --out labels-de.json
+     is checked, with --site, --baseline, --metric-f-results (those that exist), --labels and --out labels-de.json.
+     Held-out: --labels is required exactly for the sites the committed label manifest lists with labels, and must
+     have that sha256 (checked before the output folder is made); the receipt records its file name and sha256.
   5. score.py site with the inputs that exist and the failed steps named (--failed-step)
 A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
 (B cannot pass, H is a miss at a Blocked-test site, the rest not scored); it is listed in the receipt and the other
@@ -54,11 +56,9 @@ def main():
     mode.add_argument('--protocol-lock-sha256')
     mode.add_argument('--rehearse', action='store_true')
     args = parser.parse_args()
-    site, out = Path(args.site).absolute(), Path(args.out).absolute()
+    site, out = Path(args.site).resolve(), Path(args.out).resolve()
     if not out.is_relative_to(ROOT / '.local') or os.path.lexists(out):
         parser.error('--out must be a new folder under .local/')
-    if args.labels and not score.LABELS_ADDENDUM.exists():
-        parser.error('--labels needs the labels addendum (protocol-lock labels.scoringCondition)')
     found = [p for p in (site / 'build-receipt.json', site / 'site-stopped.json') if p.is_file()]
     if len(found) != 1:
         parser.error(f'{site} has no single site record (build-receipt.json or site-stopped.json)')
@@ -69,6 +69,25 @@ def main():
     if not args.rehearse and record['protocolLockSha256'] != args.protocol_lock_sha256:
         parser.error('the site folder was built under another lock')
     common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256)
+    # Labels: everything is checked before the output folder is made.
+    addendum_sha = common.labels_addendum(not args.rehearse, score.LABELS_ADDENDUM)
+    if not args.rehearse and record.get('labelsAddendumSha256', 'missing') != addendum_sha:
+        parser.error('the site was built under another labels addendum than the committed anchor')
+    if args.labels and addendum_sha is None:
+        parser.error('--labels needs the labels addendum (protocol-lock labels.scoringCondition)')
+    labels = {'name': Path(args.labels).name, 'sha256': sha_file(args.labels)} if args.labels else None  # never the folder
+    manifest = None
+    if not args.rehearse and addendum_sha:
+        entries, manifest_sha = common.labels_manifest(addendum_sha)
+        wanted = entries[f'{log[:8]}/{crossing}']
+        if (labels or {}).get('sha256') != wanted:
+            parser.error('--labels must be given exactly when the committed label manifest lists labels for this site, with that sha256')
+        manifest = {'file': common.LABELS_MANIFEST_REL, 'sha256': manifest_sha}
+    pinned = None
+    if labels and record['outcome'] in BUILT:
+        pinned = json.loads(score.LABELS_ADDENDUM.read_bytes())['deCode']['scorer']
+        if sha_file(ROOT / pinned['file']) != pinned['sha256']:
+            parser.error(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
     out.mkdir(parents=True)
     steps = []
 
@@ -111,22 +130,21 @@ def main():
         if run('metric-k', py + ['scripts/evaluation/metric_k.py', '--grounded', str(grounded), '--assembled', str(assembled),
                                  '--prepared', str(prepared), '--out', str(out / 'metric-k.json'), *k_sweeps]):
             inputs['metric-k'] = out / 'metric-k.json'
-        if score.LABELS_ADDENDUM.exists() and args.labels:
-            pinned = json.loads(score.LABELS_ADDENDUM.read_bytes())['deCode']['scorer']
-            if sha_file(ROOT / pinned['file']) != pinned['sha256']:
-                parser.error(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
+        if pinned:
             given = [x for k in ('baseline', 'metric-f-results') if k in inputs for x in (f'--{k}', str(inputs[k]))]
-            if run('labels-de', py + [pinned['file'], '--site', str(site), *given, '--labels', str(Path(args.labels).absolute()),
+            if run('labels-de', py + [pinned['file'], '--site', str(site), *given, '--labels', str(Path(args.labels).resolve()),
                                       '--out', str(out / 'labels-de.json')]):
                 inputs['labels-de'] = out / 'labels-de.json'
     if args.paint:
-        inputs['paint'] = Path(args.paint).absolute()
+        inputs['paint'] = Path(args.paint).resolve()
     failed = [x for s in steps if s['exit'] for x in ('--failed-step', s['step'])]
     scored = run('score', py + ['scripts/evaluation/m7/score.py', 'site', '--site', str(site), '--out', str(out / 'score.json'),
                                 *[x for k, v in inputs.items() for x in (f'--{k}', str(v))], *failed])
     doc = {'kind': 'pao-m7-site-evaluation', 'mode': record['mode'], 'site': record['site'],
            'siteRecord': {'file': rel(found[0]), 'sha256': sha_file(found[0])},
            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256, 'buildOutcome': record['outcome'],
+           'labelsAddendumSha256': addendum_sha, 'labels': labels, 'labelsManifest': manifest,
+           'paint': rel(inputs['paint']) if 'paint' in inputs else None,
            'steps': steps, 'notScoredBecauseAStepFailed': [s['step'] for s in steps if s['exit']],
            'outputs': {rel(p): sha_file(p) for p in sorted(out.rglob('*.json'))},
            'driver': {'file': 'scripts/evaluation/m7/evaluate_site.py', 'sha256': sha_file(__file__)},

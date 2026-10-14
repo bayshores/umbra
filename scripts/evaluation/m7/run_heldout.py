@@ -16,6 +16,8 @@ retries, each into a new empty folder. A builder status other than plan-written 
 builder's own rules). A calibration refusal by the builder is "not scored: calibration". Any other failure stops the
 site with the step named (site-stopped.json); it is never rerun. Nothing here prints an app result: the step logs hold
 the tools' own output, and the coordinator does not open grounded/ before the held-out label hashes are committed.
+The receipt records the labels addendum sha256 the run works under (held-out: its committed anchor; null when D and E
+are not scored); score.py refuses a held-out site built under another value.
 The shape sweeps follow the frozen shape-v2 attempt rule inside car_shape.py (4 attempts; a sweep that never matches is
 recorded as dropped).
 
@@ -72,7 +74,8 @@ class Build:
     def __init__(self, args, entry, lock):
         self.args, self.entry, self.lock = args, entry, lock
         self.log, self.crossing = args.log, str(args.crossing)
-        self.out = Path(args.out).absolute()
+        self.out = Path(args.out).resolve()
+        self.addendum = common.labels_addendum(not args.rehearse)  # held-out: equal to its committed anchor (checked in preflight)
         self.data = self.out / 'data' / self.log  # publisher layout; the builder needs the folder named by the log id
         self.logs = self.out / 'logs'
         self.held = [] if args.rehearse else ['--held-out-run', '--protocol-lock-sha256', args.protocol_lock_sha256]
@@ -339,6 +342,7 @@ class Build:
         doc = {'kind': 'pao-m7-site-build', 'mode': 'rehearsal (development site)' if self.args.rehearse else 'held-out',
                'site': {'logId': self.log, 'crossingId': self.crossing, 'role': self.entry['role']},
                'protocolLockSha256': None if self.args.rehearse else self.args.protocol_lock_sha256,
+               'labelsAddendumSha256': self.addendum,
                'variant': VARIANT, 'fixedBand': (not self.args.rehearse) or self.args.fixed_band, 'outcome': outcome,
                'stopped': None if stop is None else {'step': stop.step, 'reason': stop.reason,
                                                      'rule': 'protocol-lock dataAccess: the site stops, is not rerun, and counts like '
@@ -363,18 +367,19 @@ def main():
     args = parser.parse_args()
     if args.fixed_band and not args.rehearse:
         parser.error('--fixed-band is for rehearsals; held-out runs always use the fixed band')
-    out = Path(args.out).absolute()
+    out = Path(args.out).resolve()
     if not out.is_relative_to(ROOT / '.local'):
         parser.error('--out must be under .local/ (ignored by git): downloads are never committed')
     if os.path.lexists(out):
         parser.error(f'{out} exists; every run writes a new folder')
     entry, lock = common.guard(args.log, args.crossing, args.rehearse, args.protocol_lock_sha256)  # before any network or file access
+    build = Build(args, entry, lock)  # reads the labels addendum sha256 before any folder is made
     out.mkdir(parents=True)
     (out / 'logs').mkdir()
-    build = Build(args, entry, lock)
     try:
         outcome = build.build()
-    except SiteStop as stop:
+    except Exception as error:  # anything unexpected still stops the site with a record; its message is not kept (it could hold a value)
+        stop = error if isinstance(error, SiteStop) else SiteStop('unexpected', type(error).__name__)
         build.receipt('stopped', stop)
         print(json.dumps({'site': f'{args.log[:8]}/{args.crossing}', 'stopped': stop.step, 'record': rel(out / 'site-stopped.json')}))
         sys.exit(3)

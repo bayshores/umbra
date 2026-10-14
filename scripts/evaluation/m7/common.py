@@ -2,8 +2,8 @@
 
 Nothing here opens a held-out file. preflight() is the only way into held-out work: protocol-lock.json at its fixed path
 with the sha256 given, an approval block, the same sha256 in the tracked anchor on origin/main, an empty git status, a
-HEAD whose tracked files equal pipeline.commit except the anchor files (ANCHOR_REL and ANCHOR_DIR/), and every pinned
-file unchanged. The main checkout is used (ignored .local/ data and protocols live only there; a fresh worktree has none).
+HEAD whose tracked files equal pipeline.commit except the anchor files (ANCHOR_REL and ANCHOR_DIR/), every pinned
+file unchanged, and the labels addendum equal to its committed anchor (null: no addendum file). The main checkout is used (ignored .local/ data and protocols live only there; a fresh worktree has none).
 Rehearsal (development logs) skips the lock and anchor checks and nothing else.
 """
 from datetime import datetime, timezone
@@ -20,8 +20,12 @@ SPLIT = ROOT / '.local/evaluation/pao-accuracy/split.json'
 SPLIT_SHA = '47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4'
 LOCK_PATH = ROOT / '.local/evaluation/pao-accuracy/protocol-lock.json'
 ANCHOR_REL = 'scripts/evaluation/pao-lock-anchor.json'
-ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list and held-out label hashes, committed during M7
+ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list, labels addendum anchor and held-out label manifest
 LOST_SITES_REL = f'{ANCHOR_DIR}/lost-sites.json'  # protocol-lock statistics.lostSiteRule: {"lostSites": [{logId, crossingId, evidence}]}
+LABELS_ADDENDUM = ROOT / '.local/evaluation/pao-accuracy/lock/labels-addendum.json'  # protocol-lock labels.scoringCondition (4)
+ADDENDUM_ANCHOR_REL = f'{ANCHOR_DIR}/labels-addendum-anchor.json'  # {"labelsAddendumSha256": <sha256> or null (D/E not scored)}
+LABELS_MANIFEST_REL = f'{ANCHOR_DIR}/labels-manifest.json'  # {"labelsAddendumSha256", "sites": [{logId, crossingId, labelsSha256, reason}]}
+HEX64 = re.compile('[0-9a-f]{64}')
 DEVELOPMENT_ROLES = ('development', 'development-optional')
 HELD_OUT_ROLES = ('held-out-blocked-test', 'held-out-left-side-case', 'held-out-control', 'held-out-control-declared-only')
 BUCKET = 'https://argoverse.s3.amazonaws.com/'
@@ -32,9 +36,11 @@ CURL_SECONDS = 300
 
 
 class SiteStop(Exception):
-    """A step failed: the site stops with the step named (protocol-lock dataAccess); it is never rerun."""
+    """A step failed: the site stops with the step named (protocol-lock dataAccess); it is never rerun. The banned
+    vehicle-status word is masked (p*rk) in the reason, which can quote a tool's error output."""
 
     def __init__(self, step, reason):
+        reason = re.sub('park', 'p*rk', str(reason), flags=re.IGNORECASE)
         super().__init__(f'{step}: {reason}')
         self.step, self.reason = step, reason
 
@@ -87,19 +93,61 @@ def split_sites():
     return json.loads(raw)['sites']
 
 
-def lost_sites():
-    """The committed lost-site list (statistics.lostSiteRule): tracked, unchanged since its commit, pushed. Returns
-    ({'<log8>/<crossing>', ...}, its sha256)."""
-    path = ROOT / LOST_SITES_REL
+def committed(relative, what):
+    """A tracked anchor file: committed, unchanged since its commit, pushed (equal to origin/main). Returns (doc, sha256)."""
+    path = ROOT / relative
     if not path.is_file():
-        raise SystemExit(f'{LOST_SITES_REL} does not exist: write the lost-site list (possibly empty) and commit it first')
-    if subprocess.run(['git', 'ls-files', '--error-unmatch', LOST_SITES_REL], cwd=ROOT, capture_output=True).returncode != 0 \
-            or git('status', '--porcelain', '--', LOST_SITES_REL).strip():
-        raise SystemExit(f'{LOST_SITES_REL} is not committed unchanged')
-    if subprocess.run(['git', 'diff', '--quiet', 'origin/main', '--', LOST_SITES_REL], cwd=ROOT, capture_output=True).returncode != 0:
-        raise SystemExit(f'{LOST_SITES_REL} differs from origin/main: push it first')
-    doc = json.loads(path.read_bytes())
-    return {f"{x['logId'][:8]}/{x['crossingId']}" for x in doc['lostSites']}, sha_file(path)
+        raise SystemExit(f'{relative} does not exist: write {what} and commit it first')
+    if subprocess.run(['git', 'ls-files', '--error-unmatch', relative], cwd=ROOT, capture_output=True).returncode != 0 \
+            or git('status', '--porcelain', '--', relative).strip():
+        raise SystemExit(f'{relative} is not committed unchanged')
+    if subprocess.run(['git', 'diff', '--quiet', 'origin/main', '--', relative], cwd=ROOT, capture_output=True).returncode != 0:
+        raise SystemExit(f'{relative} differs from origin/main: push it first')
+    return json.loads(path.read_bytes()), sha_file(path)
+
+
+def lost_sites():
+    """The committed lost-site list (statistics.lostSiteRule). Returns ({'<log8>/<crossing>', ...}, its sha256)."""
+    doc, digest = committed(LOST_SITES_REL, 'the lost-site list (possibly empty)')
+    return {f"{x['logId'][:8]}/{x['crossingId']}" for x in doc['lostSites']}, digest
+
+
+def labels_addendum(held_out, path=LABELS_ADDENDUM):
+    """The labels addendum sha256 this M7 run works under, or None (D and E not scored). Held-out: the value in the
+    committed anchor, which the addendum file must equal (null: the file must not exist). Rehearsal: the file's sha256
+    if it exists."""
+    path = Path(path)
+    current = sha_file(path) if path.exists() else None
+    if not held_out:
+        return current
+    doc, _ = committed(ADDENDUM_ANCHOR_REL, 'the labels addendum anchor ({"labelsAddendumSha256": null} when D and E are not scored)')
+    anchored = doc.get('labelsAddendumSha256', 'missing')
+    if not (anchored is None or (isinstance(anchored, str) and HEX64.fullmatch(anchored))):
+        raise SystemExit(f'{ADDENDUM_ANCHOR_REL}: labelsAddendumSha256 must be a sha256 or null')
+    if anchored != current:
+        raise SystemExit(f'the labels addendum ({current or "no file"}) differs from its committed anchor ({anchored or "null"})')
+    return anchored
+
+
+def labels_manifest(addendum_sha):
+    """The committed held-out label manifest (labels.scoringCondition), for the anchored addendum: every held-out site of
+    split.json once, with its label aggregate's sha256 or null and a reason. Returns ({'<log8>/<crossing>': sha256 or
+    None}, its sha256)."""
+    doc, digest = committed(LABELS_MANIFEST_REL, 'the held-out label manifest')
+    if doc.get('labelsAddendumSha256') != addendum_sha:
+        raise SystemExit(f'{LABELS_MANIFEST_REL} names another labels addendum')
+    entries = {}
+    for x in doc.get('sites', []):
+        name, labels = f"{x['logId'][:8]}/{x['crossingId']}", x.get('labelsSha256')
+        ok = HEX64.fullmatch(labels) if isinstance(labels, str) else labels is None and str(x.get('reason') or '').strip()
+        if name in entries or not ok:
+            raise SystemExit(f'{LABELS_MANIFEST_REL}: repeated entry, or neither a labels sha256 nor a reason, for {name}')
+        entries[name] = labels
+    held = {f"{x['logId'][:8]}/{x['crossingId']}" for x in split_sites() if x['role'] in HELD_OUT_ROLES}
+    if set(entries) != held:
+        raise SystemExit(f'{LABELS_MANIFEST_REL} must name every held-out site once; missing {sorted(held - set(entries))}, '
+                         f'extra {sorted(set(entries) - held)}')
+    return entries, digest
 
 
 def git(*args):
@@ -158,6 +206,7 @@ def preflight(lock_sha256):
         for path, value in group.items():
             if sha_file(ROOT / path) != value:
                 raise SystemExit(f'{path} differs from its sha256 in the lock')
+    labels_addendum(True)
     return lock
 
 
