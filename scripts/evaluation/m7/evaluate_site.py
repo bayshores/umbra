@@ -2,7 +2,7 @@
 
   nice -n 10 /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -I -B scripts/evaluation/m7/evaluate_site.py \
       --site .local/evaluation/pao-accuracy/m7/<log8>-<crossing> --out .local/evaluation/pao-accuracy/m7/<log8>-<crossing>-eval \
-      [--paint <paint_heldout.py folder>] (--protocol-lock-sha256 <sha256> | --rehearse)
+      [--paint <paint_heldout.py folder>] [--labels <held-out label aggregate>] (--protocol-lock-sha256 <sha256> | --rehearse)
 
 Steps, each with nice -n 10 from the repository root, stdout and stderr kept in the output folder:
   1. pao-baseline.mjs --scene (metrics B, C, I; J's Node values)
@@ -10,7 +10,9 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
      scoring sweeps that ground.json carShape.sweeps.scoring lists, nothing else) and score, under metric F protocol v4
      (pinned in metricProtocols.F). No --box-rows-from: a held-out scene has no metric F v2 rows to reproduce.
   3. metric_k.py (the scene sweep; on a built-shape site also the scoring sweeps)
-  4. score.py site with the inputs that exist and the failed steps named (--failed-step)
+  4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after its sha256
+     is checked, with --site, --baseline, --metric-f-results (those that exist), --labels and --out labels-de.json
+  5. score.py site with the inputs that exist and the failed steps named (--failed-step)
 A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
 (B cannot pass, H is a miss at a Blocked-test site, the rest not scored); it is listed in the receipt and the other
 steps still run. A site without a built scene goes straight to score.py. Nothing is downloaded here. Step logs and
@@ -27,6 +29,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common  # noqa: E402
+import score  # noqa: E402
 from common import ROOT, now, rel, sha_file, write_new  # noqa: E402
 
 NICE = ['nice', '-n', '10']
@@ -46,6 +49,7 @@ def main():
     parser.add_argument('--site', required=True, help='the run_heldout.py output folder of this site')
     parser.add_argument('--out', required=True)
     parser.add_argument('--paint', help='the paint_heldout.py output folder of this crossing')
+    parser.add_argument('--labels', help='the held-out label aggregate for this site (only with the labels addendum)')
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--protocol-lock-sha256')
     mode.add_argument('--rehearse', action='store_true')
@@ -53,6 +57,8 @@ def main():
     site, out = Path(args.site).absolute(), Path(args.out).absolute()
     if not out.is_relative_to(ROOT / '.local') or os.path.lexists(out):
         parser.error('--out must be a new folder under .local/')
+    if args.labels and not score.LABELS_ADDENDUM.exists():
+        parser.error('--labels needs the labels addendum (protocol-lock labels.scoringCondition)')
     found = [p for p in (site / 'build-receipt.json', site / 'site-stopped.json') if p.is_file()]
     if len(found) != 1:
         parser.error(f'{site} has no single site record (build-receipt.json or site-stopped.json)')
@@ -105,6 +111,14 @@ def main():
         if run('metric-k', py + ['scripts/evaluation/metric_k.py', '--grounded', str(grounded), '--assembled', str(assembled),
                                  '--prepared', str(prepared), '--out', str(out / 'metric-k.json'), *k_sweeps]):
             inputs['metric-k'] = out / 'metric-k.json'
+        if score.LABELS_ADDENDUM.exists() and args.labels:
+            pinned = json.loads(score.LABELS_ADDENDUM.read_bytes())['deCode']['scorer']
+            if sha_file(ROOT / pinned['file']) != pinned['sha256']:
+                parser.error(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
+            given = [x for k in ('baseline', 'metric-f-results') if k in inputs for x in (f'--{k}', str(inputs[k]))]
+            if run('labels-de', py + [pinned['file'], '--site', str(site), *given, '--labels', str(Path(args.labels).absolute()),
+                                      '--out', str(out / 'labels-de.json')]):
+                inputs['labels-de'] = out / 'labels-de.json'
     if args.paint:
         inputs['paint'] = Path(args.paint).absolute()
     failed = [x for s in steps if s['exit'] for x in ('--failed-step', s['step'])]

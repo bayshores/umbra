@@ -2,14 +2,16 @@
 
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py site --site <run_heldout.py folder> --out <new file> \
       [--baseline <pao-baseline.mjs --scene output>] [--metric-f-results <metric_f_car_top.py score output>] \
-      [--metric-k <metric_k.py output>] [--paint <paint_heldout.py folder>] [--failed-step <evaluate_site.py step> ...]
+      [--metric-k <metric_k.py output>] [--paint <paint_heldout.py folder>] [--failed-step <evaluate_site.py step> ...] \
+      [--labels-de <the labels-addendum-pinned D/E scorer's output>]
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py summary --scores <site score> ... --out <new file>
 
 Every target is written as pass, fail or not scored (with its reason), using the locked rules (protocol-lock.json
 metrics, referenceBlocked and statistics). Each input is checked against the site: its ground.json sha256 (baseline,
 metric F rows, metric K; ground.json against the build receipt) or its site record sha256 (paint). A failed or missing
 step is handled like a site with no feasible frame for its targets: B cannot pass, H is a miss at a Blocked-test site,
-the rest are not scored; it never counts as a pass. A held-out summary must hold exactly the held-out sites minus the
+the rest are not scored; it never counts as a pass. D and E are scored only from the D/E file of the scorer that the labels
+addendum pins (protocol-lock labels.scoringCondition); without the addendum they are "not scored". A held-out summary must hold exactly the held-out sites minus the
 committed lost-site list. Nothing here changes a result the app shows.
 """
 import argparse
@@ -17,6 +19,7 @@ from collections import Counter
 import json
 import math
 import os
+import statistics
 from pathlib import Path
 import sys
 
@@ -35,6 +38,9 @@ F_PROTOCOL = ROOT / '.local/evaluation/pao-accuracy/metric-f-shape-v2/protocol-v
 F_STEPS = ('metric-f-rows', 'metric-f-profile', 'metric-f-score')  # evaluate_site.py step names
 I_SAMPLES = 3000  # pao-baseline.mjs default placement samples (honesty counters)
 NOT_SCORED_DE = 'not scored: reference not precise enough (no labels addendum; labels.scoringCondition not met)'
+DE_KIND = 'pao-m7-labels-de'  # the addendum-pinned D/E scorer's output (labels.scoringCondition)
+D_MEDIAN_PX, D_MAX_PX = 3.0, 6.0  # metrics.D, 1024 px width
+E_STATES = ('blocked', 'not blocked', 'unresolved')
 
 
 def outcome(result, reason=None, **extra):
@@ -228,25 +234,51 @@ def metric_f0(results):
                    violations={k: v['violations'] for k, v in heights.items()}, fullObjectsChecked=full.get('resultsChecked'))
 
 
-def metric_h(results, role):
+def e_overrides(results, e_rows):
+    """{(height, setbackM): E state} from the D/E file's E rows; each must be one of metric F's rows (the D/E scorer copies
+    the setbacks from the same results file)."""
+    if e_rows is None:
+        return {}
+    known = {(h, r['setbackM']) for h, v in results['heights'].items() if 'error' not in v for r in v['rows']}
+    out = {}
+    for r in e_rows:
+        key = (r['height'], r['setbackM'])
+        if key not in known:
+            raise SystemExit(f'E row {key} is not a metric F row of this site')
+        out[key] = r['e']
+    return out
+
+
+def metric_h(results, role, e_rows=None):
     """Recorded-vehicle measured-shape setback rows (never declared or default rows): reference-blocked = metric F
-    "supported" (E not scored); reported Blocked = the app's row state. The own-position nearest grid row is information."""
-    def tally(rows):
-        ref = [r for r in rows if r['class'] == 'supported']
+    "supported" or, when E is scored, E blocked at a resolved head point; E not blocked overrides F; an E-unresolved point
+    leaves the row to F (referenceBlocked). Reported Blocked = the app's row state. The own-position nearest grid row is
+    information."""
+    overrides = e_overrides(results, e_rows)
+
+    def reference(r, height):
+        e = overrides.get((height, r['setbackM']))
+        return {'blocked': True, 'not blocked': False}.get(e, r['class'] == 'supported')
+
+    def tally(rows, height):
+        ref = [r for r in rows if reference(r, height)]
+        listed = [r for r in rows if r['class'] in ('ambiguous', 'unresolved') and overrides.get((height, r['setbackM'])) in (None, 'unresolved')]
         return {'rows': len(rows), 'referenceBlocked': len(ref), 'reportedBlocked': sum(r['state'] == 'blocked' for r in ref),
                 'anyBlocked': any(r['state'] == 'blocked' for r in rows),
-                'notReferenceListed': dict(Counter(r['class'] for r in rows if r['class'] in ('ambiguous', 'unresolved'))),
+                'notReferenceListed': dict(Counter(r['class'] for r in listed)),
+                'eUsed': dict(Counter(overrides[(height, r['setbackM'])] for r in rows if (height, r['setbackM']) in overrides)),
                 'stateByClass': {f'{c}/{s}': n for (c, s), n in sorted(Counter((r['class'], r['state']) for r in rows).items())}}
     child_rows = results['heights']['child']['rows']
-    child = tally(child_rows)
-    adult = tally(results['heights']['adult']['rows']) if 'error' not in results['heights']['adult'] else results['heights']['adult']
+    child = tally(child_rows, 'child')
+    adult = tally(results['heights']['adult']['rows'], 'adult') if 'error' not in results['heights']['adult'] else results['heights']['adult']
     own = results['testedBox']['setbackM']
     near = min(child_rows, key=lambda r: abs(r['setbackM'] - own)) if child_rows else None
     info = {'child': child, 'adult': {**adult, 'note': 'reported, no target'},
             'ownPositionNearestRow': near and {'ownSetbackM': own, 'rowSetbackM': near['setbackM'], 'distanceM': abs(near['setbackM'] - own),
                                                'class': near['class'], 'state': near['state'],
                                                'note': 'the own setback is not on the 0.25 m row grid; information only'},
-            'rule': 'recorded vehicle\'s measured-shape setback rows; reference-blocked = metric F "supported"; target >= 50% reported Blocked'}
+            'rule': ('recorded vehicle\'s measured-shape setback rows; reference-blocked = metric F "supported" or E blocked '
+                     '(E not blocked overrides F; E unresolved leaves F); target >= 50% reported Blocked')}
     if role != BLOCKED_TEST and role not in DEVELOPMENT_ROLES:
         return not_scored('not a Blocked-test site', **info)
     if not child['anyBlocked']:
@@ -276,14 +308,66 @@ def metric_k(doc):
 
 # ---------------------------------------------------------------- site
 
+def labels_de(path, addendum, ground_sha, site):
+    """The D/E file for this site, made by the scorer the labels addendum pins, for this ground.json and this addendum."""
+    doc, pinned = load(path), addendum['deCode']['scorer']
+    named = doc.get('site') or {}
+    problems = [what for what, ok in (
+        ('kind', doc.get('kind') == DE_KIND),
+        ('site', named.get('logId') == site['logId'] and named.get('crossingId') == site['crossingId']),
+        ('ground.json', doc.get('groundSha256') == ground_sha),
+        ('labels addendum', doc.get('labelsAddendumSha256') == sha_file(LABELS_ADDENDUM)),
+        ('D/E scorer', doc.get('scorer') == {'file': pinned['file'], 'sha256': pinned['sha256']})) if not ok]
+    if problems:
+        raise SystemExit(f'D/E file {path} differs from this site in: {", ".join(problems)}')
+    if sha_file(ROOT / pinned['file']) != pinned['sha256']:
+        raise SystemExit(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
+    return doc
+
+
+def metric_d(doc):
+    """metrics.D: |error| at 1024 px width over L, R and the resolved roofline stations; median <= 3 px, max <= 6 px."""
+    d = doc['D']
+    if not d.get('labelledVehicle'):
+        return not_scored(d.get('reason') or 'no labelled recorded vehicle')
+    listed = {'errors': d['errorsPx1024'], 'unresolvedLabels': d.get('unresolvedLabels', [])}
+    values = [abs(e['errorPx']) for e in d['errorsPx1024']]
+    if not values:
+        return not_scored('no resolved label to compare', **listed)
+    median, largest = statistics.median(values), max(values)
+    ok = median <= D_MEDIAN_PX and largest <= D_MAX_PX
+    return outcome('pass' if ok else 'fail', None if ok else f'median {median:.2f} px, max {largest:.2f} px (limits 3, 6 at 1024 px)',
+                   medianPx=median, maxPx=largest, **listed)
+
+
+def metric_e(doc):
+    """metrics.E: 0 false Blocked (app plain Blocked where E is resolved not blocked) per site; no resolved point: not scored."""
+    e = doc['E']
+    if not e.get('labelledVehicle'):
+        return not_scored(e.get('reason') or 'no labelled recorded vehicle')
+    rows = e['rows']
+    bad = [r for r in rows if r.get('e') not in E_STATES or r.get('height') not in ('child', 'adult')]
+    if bad:
+        raise SystemExit(f'E rows with an unknown height or state: {bad[:3]}')
+    resolved = [r for r in rows if r['e'] != 'unresolved']
+    false = [{'height': r['height'], 'setbackM': r['setbackM']} for r in resolved if r['e'] == 'not blocked' and r['appState'] == 'blocked']
+    listed = {'rows': len(rows), 'resolved': len(resolved), 'byState': dict(Counter(r['e'] for r in rows)), 'falseBlocked': false,
+              'unresolvedRows': [{'height': r['height'], 'setbackM': r['setbackM']} for r in rows if r['e'] == 'unresolved'],
+              'assumption': e['assumption']}
+    if not resolved:
+        return not_scored('no resolved head point', **listed)
+    return outcome('fail' if false else 'pass', f'{len(false)} false Blocked' if false else None, **listed)
+
+
 def score_site(args):
     site = Path(args.site).absolute()
     record, record_path = site_record(site)
     role, built = record['site']['role'], record['outcome'] in BUILT
     test_site = role == BLOCKED_TEST or role in DEVELOPMENT_ROLES
     failed = sorted(set(args.failed_step or []))
-    if LABELS_ADDENDUM.exists():
-        raise SystemExit('a labels addendum exists: D and E scoring must be added to this script before scoring')
+    addendum = load(LABELS_ADDENDUM) if LABELS_ADDENDUM.exists() else None
+    if args.labels_de and addendum is None:
+        raise SystemExit('--labels-de needs the labels addendum (protocol-lock labels.scoringCondition)')
     ground_path = site / 'grounded/ground.json'
     ground_sha = sha_file(ground_path) if built and ground_path.is_file() else None
     if built and record.get('outputs', {}).get(rel(ground_path)) != ground_sha:
@@ -292,6 +376,13 @@ def score_site(args):
     for name, value in (('baseline', args.baseline), ('metricFResults', args.metric_f_results), ('metricK', args.metric_k)):
         if value:
             inputs[name] = {'file': rel(value), 'sha256': sha_file(value)}
+    de = None
+    if args.labels_de:
+        if ground_sha is None:
+            raise SystemExit('a D/E file for a site without a built scene')
+        de = labels_de(args.labels_de, addendum, ground_sha, record['site'])
+        inputs['labelsDE'] = {'file': rel(args.labels_de), 'sha256': sha_file(args.labels_de)}
+    e_rows = de['E']['rows'] if de and de['E'].get('labelledVehicle') else None
     metrics = {}
     reason = (f"no built scene: {record['outcome']}" + (f" ({record['stopped']['step']}: {record['stopped']['reason']})" if record.get('stopped') else ''))
     metrics['A'] = metric_a(Path(args.paint).absolute() if args.paint else None, inputs['siteRecord']['sha256'])
@@ -326,7 +417,7 @@ def score_site(args):
         if not test_site:
             metrics['H'] = not_scored('not a Blocked-test site')
         elif results and 'error' not in results['heights']['child']:
-            metrics['H'] = metric_h(results, role)
+            metrics['H'] = metric_h(results, role, e_rows)
         elif shape:
             why = f"metric F could not evaluate the child height: {results['heights']['child']['error']}" if results else f_missing
             metrics['H'] = outcome('fail', f'{why}; a miss (handled like a site with no feasible frame)')
@@ -344,8 +435,11 @@ def score_site(args):
                 metrics['H'] = not_scored('no reference-blocked child row: no recorded-vehicle LiDAR shape (built-box); '
                                           'listed by name, leaves the miss count', childBlockedRows=sweep['child']['blockedRows'])
         metrics['K'] = metric_k(k) if k else not_scored('the metric K step failed' if 'metric-k' in failed else 'no metric K run')
-    metrics['D'] = not_scored(NOT_SCORED_DE)
-    metrics['E'] = not_scored(NOT_SCORED_DE)
+    if de:
+        metrics['D'], metrics['E'] = metric_d(de), metric_e(de)
+    else:
+        why = NOT_SCORED_DE if addendum is None else (reason if not built else 'no D/E file for this site (the D/E step failed or no held-out labels)')
+        metrics['D'], metrics['E'] = not_scored(why), not_scored(why)
     doc = {'kind': 'pao-m7-site-score', 'label': LABEL, 'mode': record['mode'],
            'site': record['site'], 'build': {'outcome': record['outcome'], 'stopped': record.get('stopped'), 'fixedBand': record.get('fixedBand')},
            'protocolLockSha256': record.get('protocolLockSha256'), 'inputs': inputs,
@@ -400,6 +494,22 @@ def summarize(args):
             'leftOut': {n: d['metrics']['H'].get('reason') for n, d in tests if d['metrics']['H']['outcome'] not in ('pass', 'fail')},
             'upperBound95': upper_bound(len(misses), len(counted)), 'method': 'one-sided 95% exact binomial (Clopper-Pearson)'}
     f_likely_false = sum(d['metrics']['F'].get('likelyFalseRows', 0) for _, d in scores)
+    # False Blocked from metric E (statistics.falseBlocked): over the sites with at least one E-resolved result.
+    e_counted = [(n, d) for n, (_, d) in zip(names, scores) if d['metrics']['E']['outcome'] in ('pass', 'fail')]
+    if e_counted:
+        false_sites = [n for n, d in e_counted if d['metrics']['E']['outcome'] == 'fail']
+        false_blocked = {'outcome': 'measured by metric E', 'sites': len(e_counted), 'falseBlockedSites': false_sites,
+                         'leftOut': {n: d['metrics']['E'].get('reason') for n, (_, d) in zip(names, scores)
+                                     if d['metrics']['E']['outcome'] not in ('pass', 'fail')},
+                         'upperBound95': upper_bound(len(false_sites), len(e_counted)),
+                         'method': 'one-sided 95% exact binomial (Clopper-Pearson)', 'metricFLikelyFalseRows': f_likely_false}
+    else:
+        false_blocked = {'outcome': 'not measured independently', 'bound': None, 'reason': 'metric E not scored',
+                         'metricFLikelyFalseRows': f_likely_false,
+                         'note': 'metric F likely-false rows are a same-LiDAR consistency check only'}
+    d_errors = [abs(e['errorPx']) for _, d in scores for e in d['metrics']['D'].get('errors', [])]
+    d_pooled = {'errors': len(d_errors), 'medianPx': statistics.median(d_errors), 'maxPx': max(d_errors),
+                'note': 'reported; each site must pass on its own'} if d_errors else None
     a_unresolved = [n for n, (_, d) in zip(names, scores) if d['metrics']['A'].get('unresolved')]
     return {'kind': 'pao-m7-summary', 'label': LABEL, 'mode': next(iter(modes)), 'protocolLockSha256': next(iter(locks)),
             'sites': {n: {'role': d['site']['role'], 'build': d['build']['outcome'], 'score': {'file': rel(p), 'sha256': sha_file(p)}}
@@ -407,12 +517,10 @@ def summarize(args):
             'siteSet': site_set or 'rehearsal: the development sites given (no completeness rule)',
             'outcomes': by_metric, 'reasons': reasons,
             'B': {'eachSitePasses': all(v == 'pass' for v in by_metric['B'].values()), 'pooled': b_pooled},
+            'D': {'pooled': d_pooled},
             'A': {'unresolvedSites': a_unresolved, 'failedSites': [n for n, v in by_metric['A'].items() if v == 'fail']},
             'statistics': {'unit': 'one intersection', 'miss': miss,
-                           'falseBlocked': {'outcome': 'not measured independently', 'bound': None,
-                                            'reason': 'metric E not scored',
-                                            'metricFLikelyFalseRows': f_likely_false,
-                                            'note': 'metric F likely-false rows are a same-LiDAR consistency check only'}},
+                           'falseBlocked': false_blocked},
             'gate': 'incomplete (the visibility gate is never recorded as passed)',
             'scorer': {'file': 'scripts/evaluation/m7/score.py', 'sha256': sha_file(__file__)}, 'finishedUtc': now()}
 
@@ -427,6 +535,7 @@ def main():
     s.add_argument('--metric-k')
     s.add_argument('--paint')
     s.add_argument('--failed-step', action='append', help='an evaluate_site.py step that failed (repeatable)')
+    s.add_argument('--labels-de', help='the D/E file of the scorer the labels addendum pins')
     s.add_argument('--out', required=True)
     m = sub.add_parser('summary')
     m.add_argument('--scores', nargs='+', required=True)
