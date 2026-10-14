@@ -135,9 +135,9 @@ def uv_of(world):
     return uv
 
 
-def write_fixture(root, split=False, moving=False, protocol=None, returns=None, eligible=None, annotations=None, edit_map=None):
+def write_fixture(root, split=False, moving=False, protocol=None, returns=None, eligible=None, annotations=None, edit_map=None, poses=None):
     """Analytic stand-ins for an assembled scene, its preparation and AV2 sources. Returns build() keyword arguments.
-    protocol/returns/eligible/annotations replace PROTOCOL, RETURNS, ELIGIBLE and the annotation table (v3 tests);
+    protocol/returns/eligible/annotations/poses replace PROTOCOL, RETURNS, ELIGIBLE, the annotation table and the pose table (v3 tests);
     edit_map(vector_map) changes the native map in place before it is written (NaN heights are written as the NaN token)."""
     protocol = PROTOCOL if protocol is None else protocol
     returns = RETURNS if returns is None else np.asarray(returns, float)
@@ -150,7 +150,8 @@ def write_fixture(root, split=False, moving=False, protocol=None, returns=None, 
         edit_map(native_map)
     files = {'map.json': json.dumps(native_map).encode(), 'sim2.json': json.dumps(SIM2).encode()}
     stream = BytesIO(); np.save(stream, raster()); files['ground.npy'] = stream.getvalue()
-    for name, table in (('poses.feather', pose_table()), ('annotations.feather', annotation_table(moving) if annotations is None else annotations)):
+    for name, table in (('poses.feather', pose_table() if poses is None else poses),
+                        ('annotations.feather', annotation_table(moving) if annotations is None else annotations)):
         feather.write_feather(table, sources / name); files[name] = (sources / name).read_bytes()
     for name in ('map.json', 'sim2.json', 'ground.npy'):
         (sources / name).write_bytes(files[name])
@@ -182,6 +183,72 @@ def write_fixture(root, split=False, moving=False, protocol=None, returns=None, 
                 prepared_sha256=sha(manifest_raw), protocol_path=root / 'protocol.json', protocol_sha256=sha(protocol_raw),
                 annotations_path=sources / 'annotations.feather', annotations_sha256=sha(files['annotations.feather']),
                 output=root / 'grounded')
+
+
+# Protocol v3.3 fixture: protocol v3 plus protocolRevision '3.3' and the carShape section pinning the frozen shape-v1
+# protocol (the same keys build() checks in .local/evaluation/av2-map-first-2026-10-11/protocol-v3.3.json).
+SHAPE = tool.car_shape
+PROTOCOL_V33 = {**PROTOCOL_V3, 'protocolRevision': '3.3',
+                'carShape': {'shapeProtocol': {'path': '../pao-accuracy/shape-v1/protocol.json', 'sha256': SHAPE.SHAPE_PROTOCOL_SHA256},
+                             'groundSchemaVersion': 3}}
+STEP_NS = 100_000_000
+CAR_CELLS = [(i, j) for i in range(0, 40, 4) for j in range(0, 18, 4)]  # 10 x 5 cells of the 40 x 18 grid with car-top returns
+spec = importlib.util.spec_from_file_location('car_shape_fixture', ROOT / 'tests/california/test_car_shape.py')
+shape_fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(shape_fixture)
+
+
+def approach_back(ts):
+    """How far (m, city +y) the ego is behind its SWEEP position: 1.5 m per 100 ms before SWEEP, 0 from SWEEP on."""
+    return 1.5 * max(0, (SWEEP - ts) // STEP_NS)
+
+
+def approach_tables():
+    """The fixture with an ego that drives 1.5 m per sweep along city -y and reaches ORIGIN at SWEEP. Every annotation's
+    ego-frame ty follows the ego, so every object keeps its city position (and every v3 field its value)."""
+    poses = pose_table().to_pylist(); rows = annotation_table().to_pylist()
+    for p in poses:
+        p['ty_m'] += approach_back(p['timestamp_ns'])
+    for r in rows:
+        r['ty_m'] -= approach_back(r['timestamp_ns'])
+    return pa.Table.from_pylist(rows), pa.Table.from_pylist(poses)
+
+
+def car_top_sweeps(ground, poses, height=1.25):
+    """One AV2-like sweep per pose with a non-negative timestamp (AV2 timestamps are positive; this fixture's earliest
+    annotation times are not), ego frame, float16: returns at `height` above the averaged box bottom, one at the centre of
+    each CAR_CELLS cell of that box."""
+    box = next(c for c in ground['cuboids']['items'] if 'poseAverage' in c); o = ground['frame']['cityOrigin']
+    frame = SHAPE.upright_frame(box); n, m = SHAPE.grid_size(box['length'], box['width'])
+    x = np.array([[frame['L'] / 2 - (i + .5) * frame['L'] / n] for i, _ in CAR_CELLS])
+    y = np.array([[frame['W'] / 2 - (j + .5) * frame['W'] / m] for _, j in CAR_CELLS])
+    scene = frame['center'] + x * frame['heading'] + y * frame['left'] + (height - frame['H'] / 2) * np.array([0., 1., 0.])
+    city_points = np.column_stack([scene[:, 0] + o[0], o[1] - scene[:, 2], scene[:, 1] + o[2]])
+    return {p['timestamp_ns']: shape_fixture.sweep_bytes(city_points - [p['tx_m'], p['ty_m'], p['tz_m']])  # identity ego rotation
+            for p in poses.to_pylist() if p['timestamp_ns'] >= 0}
+
+
+def car_shape_layer(root, protocol=PROTOCOL_V33, approach=True):
+    """The protocol v3.3 operator flow on the fixture: ground.json with --no-car-shape (pre/), the sweep plan from it
+    (metadata only, saved listing), the downloads from a fake public bucket, then ground.json with --car-shape-dir
+    (grounded/). Returns (build kwargs, pre ground.json, plan_dir, plan sha256, build result)."""
+    root = Path(root)
+    annotations, poses = approach_tables() if approach else (annotation_table(), pose_table())
+    args = write_fixture(root, protocol=protocol, returns=V3_RETURNS, eligible=V3_ELIGIBLE, annotations=annotations, poses=poses)
+    tool.build(**{**args, 'output': root / 'pre'}, no_car_shape=True)
+    ground_raw = (root / 'pre/ground.json').read_bytes(); ground = json.loads(ground_raw)
+    log_dir = root / 'train' / LOG; log_dir.mkdir(parents=True)  # AV2 layout: the plan reads the log's own files
+    ann_raw = (root / 'sources/annotations.feather').read_bytes(); poses_raw = (root / 'sources/poses.feather').read_bytes()
+    (log_dir / 'annotations.feather').write_bytes(ann_raw); (log_dir / 'city_SE3_egovehicle.feather').write_bytes(poses_raw)
+    files = car_top_sweeps(ground, poses)
+    listing = shape_fixture.listing_xml([(ts, len(d), shape_fixture.md5(d)) for ts, d in sorted(files.items())])
+    (root / 'listing.xml').write_bytes(listing)
+    plan_dir, plan_sha = SHAPE.make_plan(LOG, root / 'pre/ground.json', sha(ground_raw), log_dir / 'annotations.feather', sha(ann_raw),
+                                         log_dir / 'city_SE3_egovehicle.feather', sha(poses_raw), root / 'listing.xml', sha(listing),
+                                         out_root=root / 'data', fetch=shape_fixture.no_network, sleep=shape_fixture.no_network)
+    bucket = shape_fixture.Bucket({SHAPE.BUCKET_URL + SHAPE.LIDAR_PREFIX.format(log=LOG) + f'{ts}.feather': d for ts, d in files.items()})
+    SHAPE.download_sweeps(plan_dir, plan_sha, fetch=bucket, sleep=lambda _s: None)
+    result = tool.build(**args, car_shape_dir=plan_dir, car_shape_plan_sha256=plan_sha)
+    return args, ground, plan_dir, plan_sha, result
 
 
 def flat_terrain(height_city=GROUND_Y + ORIGIN[2], window=None):
@@ -506,13 +573,115 @@ class ProtocolV3GroundTests(unittest.TestCase):
         self.assertEqual(result['averagedTracks'], []); self.assertFalse(any('poseAverage' in c for c in ground['cuboids']['items']))
 
 
+class ProtocolV33GroundTests(unittest.TestCase):
+    """Protocol v3.3: ground.json schemaVersion 3 with carShape (shape-v1), every other field exactly as under v3.2."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_v3_3_without_a_car_shape_differs_from_v3_2_only_in_schema_car_shape_protocol_and_code(self):
+        v32 = write_fixture(self.root / 'v32', protocol={**PROTOCOL_V3, 'protocolRevision': '3.2'}, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        v33 = write_fixture(self.root / 'v33', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        old_result = tool.build(**v32); new_result = tool.build(**v33, no_car_shape=True)
+        old = json.loads((v32['output'] / 'ground.json').read_bytes()); new = json.loads((v33['output'] / 'ground.json').read_bytes())
+        self.assertEqual({k for k in old.keys() | new.keys() if k not in old or k not in new or old[k] != new[k]},
+                         {'schemaVersion', 'carShape', 'protocol', 'processingCodeHashes'})
+        self.assertEqual((old['schemaVersion'], new['schemaVersion'], new['carShape']), (2, 3, None)); self.assertNotIn('carShape', old)
+        self.assertEqual(set(new['processingCodeHashes']) - set(old['processingCodeHashes']), {'california/car_shape.py'})
+        self.assertEqual({k: new['processingCodeHashes'][k] for k in old['processingCodeHashes']}, old['processingCodeHashes'])
+        self.assertEqual(new['processingCodeHashes']['california/car_shape.py'], sha((ROOT / 'scripts/california/car_shape.py').read_bytes()))
+        self.assertEqual((v32['output'] / 'terrain.bin').read_bytes(), (v33['output'] / 'terrain.bin').read_bytes())
+        self.assertEqual(new_result['carShape'], None); self.assertNotIn('carShape', old_result)
+        self.assertEqual({k: v for k, v in new_result.items() if k != 'carShape'}.keys(), old_result.keys())
+
+    def test_v3_3_options_are_checked_before_anything_is_written(self):
+        args = write_fixture(self.root / 'a', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        plain = write_fixture(self.root / 'b', protocol=PROTOCOL_V3, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        cases = [(args, {}, 'exactly one of'), (args, dict(no_car_shape=True, car_shape_dir=self.root, car_shape_plan_sha256='a' * 64), 'exactly one of'),
+                 (args, dict(car_shape_dir=self.root), 'go together'), (plain, dict(no_car_shape=True), 'only under protocol v3.3'),
+                 (plain, dict(car_shape_dir=self.root, car_shape_plan_sha256='a' * 64), 'only under protocol v3.3')]
+        for kwargs, options, message in cases:
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                tool.build(**kwargs, **options)
+        for name, protocol, message in (
+                ('pin', {**PROTOCOL_V33, 'carShape': {**PROTOCOL_V33['carShape'], 'shapeProtocol': {'sha256': 'f' * 64}}}, 'frozen shape-v1'),
+                ('schema', {**PROTOCOL_V33, 'carShape': {**PROTOCOL_V33['carShape'], 'groundSchemaVersion': 2}}, 'schemaVersion 3'),
+                ('section', {**PROTOCOL_V3, 'carShape': PROTOCOL_V33['carShape']}, 'Only protocol v3.3 carries')):
+            bad = write_fixture(self.root / name, protocol=protocol, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                tool.build(**bad, no_car_shape=True)
+        for kwargs in (args, plain):
+            self.assertFalse(kwargs['output'].exists())
+
+    def test_v3_3_measured_car_shape_end_to_end(self):
+        args, pre, plan_dir, plan_sha, result = car_shape_layer(self.root / 'a')
+        ground_raw = (args['output'] / 'ground.json').read_bytes(); ground = json.loads(ground_raw); shape = ground['carShape']
+        # Every field but carShape equals the --no-car-shape layer of the same inputs.
+        self.assertEqual({k for k in pre.keys() | ground.keys() if pre.get(k) != ground.get(k)}, {'carShape'})
+        self.assertEqual((self.root / 'a/pre/terrain.bin').read_bytes(), (args['output'] / 'terrain.bin').read_bytes())
+        self.assertEqual((ground['schemaVersion'], shape['status'], shape['refusal'], shape['track']), (3, 'measured', None, TRACK))
+        # Listed sweeps: SWEEP - n * 100 ms for n = 0..10 (and SWEEP + 40 ms, which has no car row). Candidates: n = 0..8, the
+        # ego 0..12 m behind SWEEP (box centre 29.77 m away at n = 8, 31.26 m at n = 9); 1.5 m steps keep all 9; split 5 / 4.
+        w = shape['sweeps']
+        self.assertEqual((w['candidates'], w['thinned'], w['kept'], len(w['shape']), len(w['scoring']), w['downloadDropped']), (9, 9, 9, 5, 4, []))
+        self.assertEqual([int(s['timestampNs']) for s in w['shape']], [SWEEP - n * STEP_NS for n in (8, 6, 4, 2, 0)])
+        self.assertEqual((w['planSha256'], shape['protocol']['sha256'], shape['protocol']['placementProtocolVersion']), (plan_sha, args['protocol_sha256'], '3.3'))
+        self.assertEqual((shape['grid']['along'], shape['grid']['lateral']), (40, 18))
+        tops = {(i // 18, i % 18): v for i, v in enumerate(shape['solidTopM']) if v is not None}
+        self.assertEqual(sorted(tops), CAR_CELLS)
+        for value in tops.values():  # 1.25 m returns (float16 in the sweep files); the floor may give 1.249
+            self.assertTrue(1.249 <= value <= 1.25, value)
+        self.assertEqual({shape['counts']['returnSweeps'][i * 18 + j] for i, j in CAR_CELLS}, {5})
+        self.assertEqual(result['carShape'], {'status': 'measured', 'track': TRACK, 'refusal': None, 'solidCells': 50, 'cells': 720,
+                                              'shapeSweeps': 5, 'planSha256': plan_sha})
+        self.assertEqual(ground['processingCodeHashes']['california/car_shape.py'], sha((ROOT / 'scripts/california/car_shape.py').read_bytes()))
+        self.assertNotIn(b'park', ground_raw.lower()); self.assertNotIn(b'park', (plan_dir / SHAPE.PLAN_NAME).read_bytes().lower())
+        self.assertNotIn(b'park', (plan_dir / SHAPE.RECEIPT_NAME).read_bytes().lower())
+        # The plan belongs to these annotations and poses: the static fixture (same averaged box) is refused, no output.
+        static = write_fixture(self.root / 'static', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        with self.assertRaisesRegex(ValueError, 'other annotations or poses'):
+            tool.build(**static, car_shape_dir=plan_dir, car_shape_plan_sha256=plan_sha)
+        self.assertFalse(static['output'].exists())
+        with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
+            tool.build(**{**args, 'output': self.root / 'a/again'}, car_shape_dir=plan_dir, car_shape_plan_sha256='0' * 64)
+
+    def test_v3_3_standing_ego_gives_too_few_sweeps(self):
+        args, _, _, _, result = car_shape_layer(self.root / 'a', approach=False)
+        shape = json.loads((args['output'] / 'ground.json').read_bytes())['carShape']
+        self.assertEqual((shape['status'], shape['refusal']['code'], shape['sweeps']['candidates'], shape['sweeps']['thinned']),
+                         ('refused', 'too-few-sweeps', 11, 1))
+        self.assertTrue(all(v is None for v in shape['solidTopM']))
+        self.assertEqual((result['carShape']['status'], result['carShape']['refusal'], result['carShape']['solidCells']), ('refused', 'too-few-sweeps', 0))
+
+    def test_v3_3_moving_track_has_no_car_shape(self):
+        args = write_fixture(self.root / 'a', moving=True, protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        with self.assertRaisesRegex(ValueError, 'does not apply'):
+            tool.build(**args, car_shape_dir=self.root, car_shape_plan_sha256='a' * 64)
+        self.assertFalse(args['output'].exists())
+        result = tool.build(**args, no_car_shape=True)
+        self.assertEqual((result['averagedTracks'], result['carShape']), ([], None))
+        ground_raw = (args['output'] / 'ground.json').read_bytes(); log_dir = self.root / 'train' / LOG; log_dir.mkdir(parents=True)
+        for source, name in (('annotations.feather', 'annotations.feather'), ('poses.feather', 'city_SE3_egovehicle.feather')):
+            (log_dir / name).write_bytes((self.root / 'a/sources' / source).read_bytes())
+        with self.assertRaisesRegex(ValueError, 'does not apply'):
+            SHAPE.make_plan(LOG, args['output'] / 'ground.json', sha(ground_raw), log_dir / 'annotations.feather',
+                            sha((log_dir / 'annotations.feather').read_bytes()), log_dir / 'city_SE3_egovehicle.feather',
+                            sha((log_dir / 'city_SE3_egovehicle.feather').read_bytes()), out_root=self.root / 'data',
+                            fetch=shape_fixture.no_network, sleep=shape_fixture.no_network)
+        self.assertFalse((self.root / 'data').exists())
+
+
 REAL = ROOT / '.local/evaluation/av2-map-first-2026-10-11'
 
 
 @unittest.skipUnless((REAL / 'grounded-v2/ground.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c files absent')
 class RealGroundTests(unittest.TestCase):
-    """grounded-v3.2 (protocol v3.2) is the app's current 8c folder (since October 13, 2026); grounded-v3.1 (rebuilds byte for byte
-    apart from this script's own hash), grounded-v3, grounded-v2 and grounded/ are pinned history."""
+    """grounded-v3.3 (protocol v3.3, shape-v1 carShape) is the app's current 8c folder (since October 13, 2026; checked by
+    ProtocolV33GroundTests). grounded-v3.2 (the app's folder until then; the app now refuses its schema 2 ground), grounded-v3.1
+    (rebuilds byte for byte apart from this script's own hash), grounded-v3, grounded-v2 and grounded/ are pinned history."""
 
     def test_real_layers_are_pinned_and_reproducible(self):
         for folder, freeze in (('grounded-v3.2', 'protocol-v3.2-freeze.json'), ('grounded-v3.1', 'protocol-v3.1-freeze.json'),

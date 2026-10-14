@@ -48,6 +48,15 @@ time order, exact ego pose at each annotation timestamp, city XY = (R [tx, ty, t
 from its first annotated position is more than 1.0 m (the placement protocol's stationary displacement test,
 prepare_av2_ground.cuboids_from_annotations). A track whose motion cannot be computed (an ego pose is missing) is not ignored.
 Every ignored cluster and track is recorded with its numbers. The split rule's reference-pose tracks are unchanged.
+
+Builder version 4.2 (shape-v1; development-only candidate): every choice rule and parameter is the v4.1 one, so a v4.2
+protocol makes the same frame, crop, lane, vehicle and crossing choices. It pins placement protocol v3.3 (which pins the
+frozen shape-v1 protocol) and names scripts/california/car_shape.py among its runtime code. The frozen builder protocol
+must pin the shape-v1 protocol and the approach-half split addendum by sha256, and a held-out lock must name both
+(pipeline.shapeProtocol.sha256, pipeline.shapeSplitAddendum.sha256). The selection records whether the car shape applies
+(the chosen current vehicle is annotated) and where its sweep plan belongs; the sweep plan itself needs the averaged box
+of the scene's ground.json, so car_shape.py plan/download and prepare_av2_ground.py --car-shape-dir make the shape after
+this step (metadata only here: nothing is downloaded).
 """
 import argparse
 import copy
@@ -72,6 +81,7 @@ REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS)); sys.path.insert(0, str(SCRIPTS / 'sponsors')); sys.path.insert(0, str(HERE))
 from common import canonical, digest, parse, publish, require, snapshot  # noqa: E402
 import prepare_av2  # noqa: E402
+import car_shape  # noqa: E402  (v4.2: shape-v1 pins; the shape itself is built by prepare_av2_ground.py)
 from remap_support import supported_rectangle  # noqa: E402
 _spec = importlib.util.spec_from_file_location('suggest_av2_placements', HERE / 'suggest_av2_placements.py')
 suggest_tool = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(suggest_tool)
@@ -86,8 +96,11 @@ ground_tool = suggest_tool.ground_tool  # the prepare_av2_ground module instance
 # v4.1: rule 1 ignores near-crossing clusters whose centre is outside the drivable area, and tracks that move more than
 #     1.0 m from their first annotated position (c780d53a: track 564ba6ab, 13 m right of the lane, moves 1.5 m, made four
 #     frames infeasible under v4). A builderVersion 4 protocol runs the v4 rules unchanged.
-BUILDER_VERSION = 4.1  # the newest version this file runs
-SUPPORTED_VERSIONS = (3, 4, 4.1)
+# v4.2: shape-v1. The v4.1 rules and parameters unchanged; pins placement protocol v3.3, the shape-v1 protocol and the
+#     approach-half split addendum; car_shape.py is runtime code. Builder v4.1 now runs only from its committed files
+#     (37bf84d), as v4 runs from 772fdce and v3 from cb2f497.
+BUILDER_VERSION = 4.2  # the newest version this file runs
+SUPPORTED_VERSIONS = (3, 4, 4.1, 4.2)
 MAX_FILE = 16_000_000
 S3 = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 SIDES = ('left', 'right')
@@ -101,10 +114,13 @@ RUNTIME_CODE_V3 = ('scripts/california/build_av2_scene.py', 'scripts/california/
                    'scripts/prepare-stereo-crop.py')
 # v4 adds rectified_calibration.py (imported by prepare-stereo-crop.py when the output is published; audit finding).
 RUNTIME_CODE = RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',)
-RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE}
+# v4.2 adds car_shape.py (imported by prepare_av2_ground.py and by this file).
+RUNTIME_CODE_V42 = RUNTIME_CODE + ('scripts/california/car_shape.py',)
+RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE, 4.2: RUNTIME_CODE_V42}
 # v4: modules imported by name must be the hashed files (a same-named file earlier on sys.path would run unhashed code).
 MODULE_FILES = {'common': 'scripts/sponsors/common.py', 'prepare_av2': 'scripts/california/prepare_av2.py',
-                'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py'}
+                'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py',
+                'car_shape': 'scripts/california/car_shape.py'}
 OCCUPIED = 'unknown-real-vehicle-occupies-default-spot'
 OCCUPIED_REASON = 'a real vehicle occupies the default spot'
 # Every number the rules use. The frozen builder protocol must carry exactly this object (checked at run time),
@@ -171,6 +187,10 @@ def v41_parameters(target):
     return params
 
 
+# v4.2 changes no parameter: its parameter object is the v4.1 one.
+v42_parameters = v41_parameters
+
+
 def _sha(path):
     return digest(Path(path).read_bytes())
 
@@ -184,7 +204,7 @@ def runtime_code_hashes(version=BUILDER_VERSION):
 # ------------------------------------------------------------------ freeze guards
 def protocol_rules(protocol, variant):
     """(version, parameters) of the frozen builder protocol: version 3 carries exactly PARAMETERS_V3 (no variant);
-    version 4 and 4.1 carry named variants (parametersByVariant) and --protocol-variant picks one."""
+    version 4, 4.1 and 4.2 carry named variants (parametersByVariant) and --protocol-variant picks one."""
     version = protocol.get('builderVersion')
     require(version in SUPPORTED_VERSIONS, f'Builder protocol version must be one of {SUPPORTED_VERSIONS}')
     if version == 3:
@@ -195,7 +215,7 @@ def protocol_rules(protocol, variant):
     require(isinstance(variants, dict) and variants and 'parameters' not in protocol, f'A builder version {version} protocol needs parametersByVariant')
     require(isinstance(variant, str) and variant in variants,
             'Choose one of the protocol variants with --protocol-variant: ' + ', '.join(sorted(variants)))
-    params = variants[variant]; expected = v41_parameters if version == 4.1 else v4_parameters
+    params = variants[variant]; expected = v42_parameters if version == 4.2 else v41_parameters if version == 4.1 else v4_parameters
     require(isinstance(params, dict) and params == expected((params.get('frame') or {}).get('target')),
             'Builder protocol parameters differ from this builder')
     return version, params
@@ -214,6 +234,11 @@ def check_frozen_protocol(protocol, split_sha, placement_sha, variant=None):
     require((protocol.get('split') or {}).get('sha256') == split_sha, 'Builder protocol was frozen against another split.json')
     require((protocol.get('placementProtocol') or {}).get('sha256') == placement_sha,
             'Placement protocol sha256 differs from the one pinned in the builder protocol')
+    if version >= 4.2:  # shape-v1: the frozen shape protocol and the approach-half split addendum
+        require((protocol.get('shapeProtocol') or {}).get('sha256') == car_shape.SHAPE_PROTOCOL_SHA256,
+                'Builder protocol v4.2 must pin the frozen shape-v1 protocol (shapeProtocol.sha256)')
+        require((protocol.get('shapeSplitAddendum') or {}).get('sha256') == car_shape.SPLIT_ADDENDUM_SHA256,
+                'Builder protocol v4.2 must pin the approach-half split addendum (shapeSplitAddendum.sha256)')
     if version >= 4:
         check_module_origins()
     return version, params
@@ -239,7 +264,8 @@ def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code, 
     """M7 only. protocol-lock.json, read by its pinned sha256, must name this split, this builder protocol and the
     same runtime code hashes. Called before any held-out, control or reserve log file is opened.
     v3: the lock beside split.json. v4: the lock at LOCK_PATH_V4 only, which must also name the variant
-    (sceneBuilder.variant) and an approval block (approval.by and approval.utc, non-empty strings)."""
+    (sceneBuilder.variant) and an approval block (approval.by and approval.utc, non-empty strings). v4.2: it must also
+    name the frozen shape-v1 protocol and the split addendum (pipeline.shapeProtocol.sha256, pipeline.shapeSplitAddendum.sha256)."""
     path = Path(split_path).resolve().parent / LOCK_NAME if version == 3 else LOCK_PATH_V4
     require(isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256),
             f'Held-out runs need --protocol-lock-sha256 (the sha256 of {LOCK_NAME} recorded at the M6 lock)')
@@ -257,6 +283,13 @@ def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code, 
         approval = lock.get('approval') if isinstance(lock.get('approval'), dict) else {}
         require(all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('by', 'utc')),
                 f'{LOCK_NAME} needs an approval block (approval.by and approval.utc)')
+    if version >= 4.2:
+        pipeline = lock.get('pipeline') if isinstance(lock.get('pipeline'), dict) else {}
+        pin = lambda name: (pipeline.get(name) if isinstance(pipeline.get(name), dict) else {}).get('sha256')  # noqa: E731
+        require(pin('shapeProtocol') == car_shape.SHAPE_PROTOCOL_SHA256,
+                f'{LOCK_NAME} does not name the frozen shape-v1 protocol (pipeline.shapeProtocol.sha256)')
+        require(pin('shapeSplitAddendum') == car_shape.SPLIT_ADDENDUM_SHA256,
+                f'{LOCK_NAME} does not name the approach-half split addendum (pipeline.shapeSplitAddendum.sha256)')
     return {'path': str(path), 'sha256': lock_sha256}
 
 
@@ -715,7 +748,7 @@ def evaluate_frame(frame, ctx, site_tracks):
     if v4:
         rows_at_frame = frame_vehicle_rows(poses, t, ctx['viewCentroid'], ctx['siteRows'], PARAMETERS['vehicle'])
         ignored = set()
-        if ctx['version'] == 4.1:  # rule 1 ignores clusters outside the drivable area and moving tracks
+        if ctx['version'] >= 4.1:  # rule 1 ignores clusters outside the drivable area and moving tracks
             for r, rule in zip(rows_at_frame, ctx['frameRuleRows'], strict=True):
                 require(r['cityXY'] == rule['cityXY'] and r['tracks'] == rule['tracks'], 'Frame rule rows out of order')
                 r['frameRuleV41'] = {k: rule[k] for k in ('centreInsideDrivable', 'ignoredTracks', 'reasons')}
@@ -725,7 +758,7 @@ def evaluate_frame(frame, ctx, site_tracks):
         qualifying = sorted(set(site_tracks) | set(frame_tracks))
         out['vehicleRuleAtFrame'] = {'referencePoseTracks': sorted(site_tracks), 'frameTracks': frame_tracks, 'qualifyingTracks': qualifying,
                                      'rows': rows_at_frame}
-        if ctx['version'] == 4.1:
+        if ctx['version'] >= 4.1:
             out['vehicleRuleAtFrame']['ignoredFrameTracks'] = sorted(ignored)
     defaults = ctx['placementProtocol']['declaredDefaults']; vehicle = None; checks = {}
     present = sorted(track for track in qualifying if any(c['track'] == track for c in cuboids))
@@ -960,6 +993,10 @@ def build(args):
             and placement['pixelSelection']['rule'] == 'exactProjection', 'Placement protocol v3 (averaged pose, exact projection) required')
     require('average_prefix' in inspect.signature(ground_tool.cuboids_from_annotations).parameters,
             'Shared ground code lacks the protocol v3 averaged pose')
+    if version >= 4.2:  # placement protocol v3.3 pins the same frozen shape-v1 protocol
+        require(placement.get('protocolRevision') == '3.3' and
+                (placement.get('carShape') or {}).get('shapeProtocol', {}).get('sha256') == car_shape.SHAPE_PROTOCOL_SHA256,
+                'Builder v4.2 needs placement protocol v3.3 pinning the frozen shape-v1 protocol')
     epsilon = placement['tolerances']['boundaryEpsilonMeters']; range_limit = placement['placementRange']['limitMeters']
     max_range = placement['tolerances']['maxRangeMeters']
     log_dir = Path(args.log_dir).resolve(); require(log_dir.name == log, 'Log directory name must be the log id')
@@ -1018,7 +1055,7 @@ def build(args):
         ctx.update({'version': version, 'target': params['frame']['target'], 'siteRows': site_rows,
                     'viewCentroid': np.nanmean(np.vstack([edges['edge1'], edges['edge2']])[:, :2], 0),  # analyze.py centroid
                     'clusterTracks': {track for cl in clusters for track in cl['tracks']}})
-    if version == 4.1:
+    if version >= 4.1:
         ctx['frameRuleRows'] = frame_rule_rows(site_rows, drivable, ann, poses, params['vehicle']['frameRuleIgnore'])
     evaluated = []
     for frame in order:
@@ -1067,7 +1104,7 @@ def build(args):
                         'Stationary means only that the annotation stayed in place; no reason for stopping is stated or implied.']}
     if version >= 4:
         v4_selection_fields(selection, params, variant, window, evaluated)
-    if version == 4.1:
+    if version >= 4.1:
         selection['frameRuleV41'] = {'parameters': params['vehicle']['frameRuleIgnore'], 'clusters': ctx['frameRuleRows'],
                                      'rule': ('At each frame, rule 1 ignores a near-crossing stationary cluster whose centre is outside the '
                                               'mapped drivable area and any of its tracks whose largest horizontal distance from its first '
@@ -1078,6 +1115,12 @@ def build(args):
                                            'drivable area is ignored, and so is any of its tracks that moves more than 1.0 m from its first '
                                            'annotated position; the split rule tracks at the reference pose are unchanged and still go '
                                            'through the placement protocol checks.')
+    if version >= 4.2:
+        selection['carShape'] = None  # set below when a frame is chosen
+        selection['limitations'].insert(5, 'Builder v4.2: the choices are the v4.1 ones. When the chosen current vehicle is the annotated '
+                                           'stationary vehicle, its LiDAR shape (shape-v1) is built after this step from a hashed sweep plan '
+                                           'and receipted public sweeps (car_shape.py, prepare_av2_ground.py --car-shape-dir); this step '
+                                           'reads metadata only and downloads nothing.')
     if cross_check['status'] == 'mismatch':
         selection['status'] = 'split-rule-mismatch'
     elif chosen is None:
@@ -1114,6 +1157,17 @@ def build(args):
                                                                                   'rankInTargetOrder': e['rankInTargetOrder'],
                                                                                   'captureDistanceM': e.get('captureDistanceM')}
                                                                                  for e in before if e['outcome'] == OCCUPIED), None)}
+        if version >= 4.2:
+            applies = vehicle['status'] == 'annotated'
+            selection['carShape'] = {
+                'applies': applies, 'track': vehicle['track'] if applies else None,
+                'sweepPlanDir': f'.local/data/av2/shape-v1-{log}/' if applies else None,
+                'shapeProtocol': {'path': car_shape.SHAPE_PROTOCOL_PATH, 'sha256': car_shape.SHAPE_PROTOCOL_SHA256},
+                'shapeSplitAddendum': {'path': car_shape.SPLIT_ADDENDUM_PATH, 'sha256': car_shape.SPLIT_ADDENDUM_SHA256},
+                'rule': ('The car shape applies exactly when the chosen current vehicle is the annotated stationary vehicle: '
+                         'car_shape.py plan (from the scene ground.json, metadata only), car_shape.py download (public sweeps, '
+                         'receipted), then prepare_av2_ground.py --car-shape-dir with the plan sha256. Otherwise ground.json '
+                         'carShape is null (--no-car-shape) and nothing is planned or downloaded.')}
         selection['protocolSceneValues'] = {
             'scene': {'logId': log, 'cameraTimestampNs': str(chosen['cameraTimestampNs']), 'lidarTimestampNs': str(chosen['lidarTimestampNs']),
                       'annotationTimestampNs': str(chosen['lidarTimestampNs']), 'crossingId': crossing,

@@ -255,5 +255,109 @@ class FreeSpaceTests(unittest.TestCase):
             mf.check_same_classes(heights, {'heights': {'child': {'rows': [{**row, 'minClearanceM': .11}]}}})
 
 
+# ------------------------------------------------------------------ metric F shape-v1 (protocol v3)
+def shape_row(setback, state, reason, box_state, box_reason=None, gap=-.3, hit=None, z=.95):
+    """A synthetic shape-v1 row across hood bin 1 (top 0.9 m): line height z, the app's shape result (state, reason) and
+    the box result."""
+    row = across_hood(z); row.update({'setbackM': setback, 'state': state, 'gapM': gap,
+                                      'box': {'state': box_state, 'reason': box_reason, 'gapM': gap},
+                                      'shape': None if hit is None else {'status': 'measured', 'solidCutM': .2, 'hitXM': hit}})
+    if reason:
+        row['reason'] = reason
+    return row
+
+
+class ShapeV1Tests(unittest.TestCase):
+    def test_allowed_change_table(self):
+        self.assertIsNone(mf.allowed_change(shape_row(1, 'blocked', None, 'blocked')))
+        self.assertIsNone(mf.allowed_change(shape_row(1, 'unknown', 'height-not-proven', 'blocked')))
+        self.assertIsNone(mf.allowed_change(shape_row(1, 'unknown', 'too-close-to-call', 'unknown', 'too-close-to-call')))
+        self.assertRegex(mf.allowed_change(shape_row(1, 'blocked', None, 'unknown', 'too-close-to-call')), 'became blocked')
+        self.assertRegex(mf.allowed_change(shape_row(1, 'unknown', 'too-close-to-call', 'blocked')), 'box Blocked became unknown too-close-to-call')
+        row = shape_row(1, 'blocked', None, 'blocked'); row['box']['gapM'] = -.31
+        self.assertEqual(mf.allowed_change(row), 'gapM changed')
+
+    def test_report_counts_new_blocked_lost_front_and_unresolved(self):
+        p = profile(car_points(sparse_bin=1))
+        rows = [shape_row(1.0, 'blocked', None, 'blocked', hit=.4, z=.95),                    # still Blocked, front half
+                shape_row(1.25, 'unknown', 'height-not-proven', 'blocked', hit=None, z=.8),     # lost, F-supported (below the hood)
+                shape_row(1.5, 'blocked', None, 'unknown', None, gap=.2, hit=-.3, z=.8),         # new Blocked (not allowed)
+                shape_row(1.75, 'unknown', None, 'unknown', None, gap=.5)]
+        rows[3]['eyeCar'] = [1.6, -5., 3.]; rows[3]['targetCar'] = [1.6, 5., 3.]
+        # Row 0 crosses the sparse (unmeasured) hood bin 1: unresolved. Use the measured bin 2 for the other rows.
+        for r in rows[1:]:
+            r['eyeCar'][0] = r['targetCar'][0] = 1.4
+        scored = [mf.score_row(r, p, (L, W, H), TH) for r in rows]
+        self.assertEqual([r['class'] for r in scored[:3]], ['unresolved', 'supported', 'supported'])
+        rep = mf.shape_v1_report(scored)
+        self.assertEqual(rep['counts']['boxBlocked'], 2); self.assertEqual(rep['counts']['shapeBlocked'], 2)
+        self.assertEqual(rep['counts']['heightNotProven'], 1); self.assertEqual(rep['counts']['boxBlockedToHeightNotProven'], 1)
+        self.assertEqual(rep['noNewBlocked'], {'count': 1, 'setbacksM': [1.5], 'pass': False})
+        self.assertFalse(rep['allowedChanges']['pass']); self.assertEqual(rep['allowedChanges']['violations'][0]['setbackM'], 1.5)
+        self.assertEqual(rep['lostSupported']['count'], 1); self.assertEqual(rep['lostSupported']['setbacksM'], [1.25])
+        self.assertEqual(rep['lostSupported']['boxBlockedSupported'], 1)
+        self.assertEqual(rep['frontHalfFlag']['count'], 1); self.assertEqual(rep['frontHalfFlag']['rows'][0]['hitXM'], .4)
+        self.assertEqual(rep['unresolvedBlocked'], {'count': 1, 'setbacksM': [1.0], 'note': 'never counted as passes'})
+        self.assertEqual([f['box'] for f in rep['flipTable']], ['blocked', 'blocked', 'unknown', 'unknown'])
+        self.assertEqual(rep['flipTable'][1]['shape'], 'unknown height-not-proven')
+        with self.assertRaises(AssertionError):
+            mf.shape_v1_report([mf.score_row(across_hood(.95), p, (L, W, H), TH)])
+
+    def test_forced_unresolved_and_too_few_sweeps(self):
+        p = profile(car_points())
+        r = mf.score_row(shape_row(1, 'blocked', None, 'blocked', z=.95), p, (L, W, H), TH, forced='fewer than 2')
+        self.assertEqual((r['class'], r['class2D'], r['forcedUnresolved']), ('unresolved', 'unresolved', 'fewer than 2'))
+        self.assertTrue(mf.too_few_scoring_sweeps(1)); self.assertTrue(mf.too_few_scoring_sweeps(0)); self.assertFalse(mf.too_few_scoring_sweeps(2))
+
+    def test_laser_check_drops_a_scoring_sweep_and_stops_v2(self):
+        self.assertTrue(mf.laser_check(1, .1, .15, scoring=True))
+        self.assertFalse(mf.laser_check(1, .2, .15, scoring=True))
+        with self.assertRaises(AssertionError):
+            mf.laser_check(1, .2, .15, scoring=False)
+        with self.assertRaises(AssertionError):
+            mf.laser_check(1, .15, .15, scoring=False)
+
+    def test_listed_sweeps_must_be_present_with_their_sha(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / 'sweeps'; d.mkdir()
+            (d / '100.feather').write_bytes(b'one'); (d / '200.feather').write_bytes(b'two'); (d / '300.feather').write_bytes(b'not listed')
+            one, two = mf.sha(d / '100.feather'), mf.sha(d / '200.feather')
+            sweeps, skipped = mf.gather_listed_sweeps([d], [], [(200, two), (100, one)], {100, 200, 300}, 'log')
+            self.assertEqual([s['timestampNs'] for s in sweeps], [100, 200]); self.assertEqual(skipped, [])
+            with self.assertRaisesRegex(AssertionError, 'missing'):
+                mf.gather_listed_sweeps([d], [], [(400, one)], {400}, 'log')
+            with self.assertRaisesRegex(AssertionError, 'listed SHA-256'):
+                mf.gather_listed_sweeps([d], [], [(100, two)], {100}, 'log')
+            with self.assertRaisesRegex(AssertionError, 'annotation row'):
+                mf.gather_listed_sweeps([d], [], [(100, one)], {200}, 'log')
+            receipt = Path(tmp) / 'receipt.json'
+            receipt.write_text(json.dumps({'sweeps': [{'key': 'datasets/av2/sensor/train/log/sensors/lidar/100.feather', 'sha256': two, 'log': 'log'}]}))
+            with self.assertRaisesRegex(AssertionError, 'receipt'):
+                mf.gather_listed_sweeps([d], [receipt], [(100, one)], {100}, 'log')
+            ground = Path(tmp) / 'ground.json'
+            ground.write_text(json.dumps({'carShape': {'track': 't', 'sweeps': {'scoring': [{'timestampNs': '100', 'sha256': one}]}}}))
+            listed, shape, _ = mf.scoring_list(ground)
+            self.assertEqual((listed, shape['track']), ([(100, one)], 't'))
+            ground.write_text(json.dumps({'carShape': None}))
+            with self.assertRaisesRegex(AssertionError, 'no carShape'):
+                mf.scoring_list(ground)
+
+    def test_box_reproduction_and_app_join(self):
+        rows = [{'setbackM': 1.0, 'box': {'state': 'blocked', 'reason': None, 'gapM': -.3}}, {'setbackM': 1.25, 'box': {'state': 'unknown', 'reason': 'too-close-to-call', 'gapM': -.05}}]
+        v2 = {'kind': 'metric-f app rows', 'heights': {'child': {'rows': [{'setbackM': 1.0, 'state': 'blocked', 'gapM': -.3},
+                                                                          {'setbackM': 1.25, 'state': 'unknown', 'reason': 'too-close-to-call', 'gapM': -.05}]}}}
+        rep = mf.box_reproduction({'child': {'rows': rows}}, v2)
+        self.assertTrue(rep['pass']); self.assertEqual(rep['heights']['child']['rowsWithAnotherBoxStateOrReason'], [])
+        v2['heights']['child']['rows'][1]['gapM'] = -.05 + 1e-8
+        self.assertFalse(mf.box_reproduction({'child': {'rows': rows}}, v2)['pass'])
+        heights = {'child': {'rows': [dict(r, state='unknown', reason='height-not-proven', **{'class': 'supported'}) for r in rows]}}
+        app = {'heights': {'child': {'rows': [dict(r, state='blocked', **{'class': 'supported'}) for r in rows]}}}
+        mf.join_app_results(heights, app)
+        self.assertEqual(heights['child']['rows'][0]['appShape'], {'state': 'blocked', 'reason': None, 'class': 'supported'})
+        app['heights']['child']['rows'][0]['box'] = {'state': 'unknown', 'reason': None, 'gapM': -.3}
+        with self.assertRaises(AssertionError):
+            mf.join_app_results(heights, app)
+
+
 if __name__ == '__main__':
     unittest.main()

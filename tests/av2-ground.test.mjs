@@ -3,89 +3,26 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
-import {deflateSync,crc32} from 'node:zlib';
 import {loadScene} from '../src/scene.mjs';
 import {roadPoint,mappedGroundHit,mappedGroundHeight,placementFromPixels,placementPreview,createScenario,classifySightline,isMappedGround,roadTolerance,annotatedVehicle,comparisonStart,whatIfBox,ANNOTATED_FRONT_NUDGE_PX,
-  evaluatedPosition,anchorPoint,assessSightline} from '../src/geometry.mjs';
+  evaluatedPosition,anchorPoint,assessSightline,prepareCarShape} from '../src/geometry.mjs';
 import {planCamera} from '../src/plan-camera.mjs';
 import * as THREE from 'three';
 import {suggestedSetup,suggestionStatus,isStillSuggested,supportSummary,validateSuggestions,crossingText} from '../src/suggestions.mjs';
 import {scenarioFacts,supportFacts,runTool,setbackSweep,applyDeclaration,allowedNumbersFrom,checkAnswer,sweepPhrase,withheldNote} from '../src/scenario-assistant.mjs';
 import {SYSTEM_PROMPTS,TOOLS} from '../worker/nemotron.js';
 import {scene as legacyScene,input as legacyInput,fetchAsset} from './scene-input.mjs';
+import {carShapeRecord} from './car-shape-fixture.mjs';
+import {historyApp} from './history-app.mjs';
+import {analytic,loadAnalytic,FLAT} from './mapped-fixture.mjs';
 
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const near=(a,b,tolerance,what)=>assert.ok(Math.abs(a-b)<=tolerance,`${what??''} ${a} differs from ${b}`);
 const close3=(a,b,tolerance,what)=>a.forEach((n,i)=>near(n,b[i],tolerance,what));
 const r2=n=>Number(n.toFixed(2));
 
-// ------------------------------------------------------------------ analytic fixture (never a runtime asset)
-// Camera at the origin looking along -Z (fx = fy = 20, 8x10 pixels); flat mapped ground at world Y -1.4375 except a
-// raised cell (step) and a no-value cell; one drivable rectangle |x| <= 3, -30 <= z <= 0; one annotated box at z -12.
-// Ground schema 2 (protocol v3): placement refused beyond 15 m (horizontal), along-ray height band 0.075 m.
-function png(width,height) {
-  const chunk=(type,data)=>{
-    const body=Buffer.concat([Buffer.from(type),data]),size=Buffer.alloc(4),crc=Buffer.alloc(4);
-    size.writeUInt32BE(data.length);crc.writeUInt32BE(crc32(body));return Buffer.concat([size,body,crc]);
-  };
-  const header=Buffer.alloc(13);header.writeUInt32BE(width,0);header.writeUInt32BE(height,4);header[8]=8;header[9]=2;
-  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',header),chunk('IDAT',deflateSync(Buffer.alloc((width*3+1)*height))),chunk('IEND',Buffer.alloc(0))]);
-}
-const FLAT=8.5625,COLUMNS=25,ROWS=50;// cityZ; world Y = cityZ - 10
-function analytic({scene:mutateScene=()=>{},ground:mutateGround=()=>{},terrain:mutateTerrain=()=>{}}={}) {
-  const image=png(8,10),c={eye:[0,0,0],forward:[0,0,-1],up:[0,1,0],fx:20,fy:20,cx:2,cy:2,width:8,height:10,near:.01,far:100};
-  const xyz=[[0,1.4375,10],[1,1.4375,20],[0,0,-10],[NaN,NaN,NaN]],
-    uv=xyz.map(([x,y,z])=>z>0?[c.fx*x/z+c.cx,c.fy*y/z+c.cy]:[NaN,NaN]),
-    eligible=uv.map(([u,v])=>Number(u>=0&&u<=7&&v>=0&&v<=9)),world=xyz.map(([x,y,z])=>[x,-y,-z]),draw=world.filter((_,i)=>eligible[i]),
-    arrays={positions:new Float32Array(draw.flat()),colors:new Float32Array(draw.flat().map(()=>.5)),triangles:new Uint32Array(),
-      sourceIndices:new Uint32Array(xyz.map((_,i)=>i)),referencePositions:new Float64Array(world.flat()),referenceCameraPositions:new Float64Array(xyz.flat()),
-      referenceUV:new Float64Array(uv.flat()),referenceEligible:new Uint8Array(eligible)};
-  const scene={id:'mapped-fixture',units:'meters',pointCount:draw.length,triangleCount:0,camera:c,
-    transform:{worldFromCamera:[[1,0,0],[0,-1,0],[0,0,-1]],worldFromCity:[[1,0,0],[0,0,1],[0,-1,0]],cityOrigin:[101,201,10],cameraOrigin:[0,0,0],originRole:'leftCamera'},
-    bounds:{min:draw[0].map((_,k)=>Math.min(...draw.map(p=>Math.fround(p[k])))),max:draw[0].map((_,k)=>Math.max(...draw.map(p=>Math.fround(p[k]))))},
-    processing:{},buffers:{},artifactHashes:{},recordedImage:{file:'recorded.png',mimeType:'image/png',bytes:image.length,sha256:sha(image)},
-    measurements:{kind:'indexedSparse',evidence:'geometricallyProjected',groundPolicy:'mappedGround',binaryEncoding:'littleEndian',pixelCellPolicy:'nearestIntegerCenterRejectCollisions',
-      count:xyz.length,provenance:{preparedManifestSha256:'a'.repeat(64),referencesSha256:'b'.repeat(64),logId:'81d2b40a-c579-3e9c-b520-bee26cda947d',
-        cameraTimestampNs:'123',lidarTimestampNs:'124',crossingId:'5'},buffers:{},artifactHashes:{}}};
-  const heights=new Float32Array(COLUMNS*ROWS).fill(FLAT);
-  heights[10*COLUMNS+10]=9;// raised cell: x in [0,1), z in (-6,-5], world Y -1
-  heights[19*COLUMNS+8]=NaN;// no value: x in [-2,-1), z in (-15,-14]
-  mutateTerrain(heights);
-  const terrain=Buffer.from(heights.buffer),finiteCells=heights.reduce((n,h)=>n+Number.isFinite(h),0);
-  const ground={schemaVersion:2,kind:'av2MappedGround',sceneId:scene.id,baseSceneSha256:'a'.repeat(64),
-    protocol:{path:'../protocol-v3.1.json',sha256:'b'.repeat(64),bytes:1,readOnlyExternal:true},
-    sources:Object.fromEntries(['preparedManifest','references','assembledScene','map','groundRaster','groundTransform','poses','annotations']
-      .map((key,i)=>[key,{path:`../${key}.bin`,sha256:key==='assembledScene'?'a'.repeat(64):String(i).repeat(64),bytes:1,readOnlyExternal:true}])),
-    frame:{cityOrigin:[101,201,10],worldFromCity:[[1,0,0],[0,0,1],[0,-1,0]],convention:'analytic'},
-    roadToleranceMeters:.08,supportHeightAgreementMeters:.08,supportRadiusMeters:.5,maxRangeMeters:20,boundaryEpsilonMeters:.01,placementRangeLimitMeters:15,
-    alongRayUncertainty:{rule:'heightBandMeters / sin(depression)',heightBandMeters:.075,method:'fitThisDevelopmentScene',fit:{count:0},coverage:{}},
-    terrain:{file:'terrain.bin',bytes:terrain.length,sha256:sha(terrain),dtype:'float32',byteOrder:'little',layout:'row-major',columns:COLUMNS,rows:ROWS,column0:0,row0:0,
-      rasterShape:[ROWS,COLUMNS],sim2:{R:[1,0,0,1],t:[-91,-196],s:1},cellMeters:1,finiteCells,nanCells:heights.length-finiteCells,values:'analytic',samplingRule:'analytic'},
-    drivableAreas:[{id:'1',outline:[[-3,0],[3,0],[3,-30],[-3,-30]]}],
-    crossing:{id:'5',edge1:[[-3,-1.4375,-14.375],[3,-1.4375,-14.375]],edge2:[[-3,-1.4375,-17],[3,-1.4375,-17]]},
-    egoLane:{id:'7',laneType:'VEHICLE',leftMarkType:'SOLID_WHITE',rightMarkType:'SOLID_WHITE',leftBoundary:[[-1.5,-1.4375,0],[-1.5,-1.4375,-30]],rightBoundary:[[1.5,-1.4375,0],[1.5,-1.4375,-30]]},
-    cuboids:{available:true,frame:'analytic',timestampNs:'124',items:[{category:'REGULAR_VEHICLE',center:[0,-.75,-12],height:1.5,length:1.5,motion:null,numInteriorPoints:1,
-      track:'analytic',width:1.5,worldFromBox:[[1,0,0],[0,1,0],[0,0,1]]}]},
-    support:{rows:[0],count:1,rule:'analytic',cameraEligibleRows:2,eligibleBehindCuboid:1,eligibleAgreeing:1,eligibleWithoutTerrainValue:0,cuboidOcclusionApplied:true,preparedLookupMismatches:0},
-    processingCodeHashes:{'analytic.py':'d'.repeat(64)},dependencies:{numpy:'analytic'},
-    license:{id:'CC-BY-NC-SA-4.0',attribution:'(c) analytic',source:'analytic',changes:'analytic'},limitations:['Analytic fixture only.']};
-  mutateGround(ground);
-  const bytes=new Map([['recorded.png',image],['terrain.bin',terrain]]);
-  for(const [key,array] of Object.entries(arrays)) {
-    const target=key.startsWith('reference')||key==='sourceIndices'?scene.measurements:scene,name=key.toLowerCase()+'.bin',buffer=Buffer.from(array.buffer,array.byteOffset,array.byteLength);
-    target.buffers[key]=name;target.artifactHashes[key]=sha(buffer);bytes.set(name,buffer);
-  }
-  const groundBytes=Buffer.from(JSON.stringify(ground));bytes.set('ground.json',groundBytes);
-  scene.measurements.ground={file:'ground.json',bytes:groundBytes.length,sha256:sha(groundBytes)};
-  mutateScene(scene);
-  const pin={file:'ground.json',sha256:sha(groundBytes)};
-  return {scene,ground,bytes,pin,fetch:async path=>{
-    const name=path.split('/').at(-1);
-    return name==='scene.json'?new Response(JSON.stringify(scene)):bytes.has(name)?new Response(bytes.get(name)):new Response('',{status:404});
-  }};
-}
-// The catalog pin defaults to the fixture's own; passing undefined explicitly means the catalog entry has none.
-const loadAnalytic=(f,...pin)=>loadScene(f.fetch,f.scene.id,sha(JSON.stringify(f.scene)),undefined,undefined,pin.length?pin[0]:f.pin);
+// The analytic mapped-ground fixture (analytic, loadAnalytic, FLAT) lives in tests/mapped-fixture.mjs (shared with
+// tests/car-shape.test.mjs).
 
 test('mapped ground: runtime rule returns the first drivable hit, support class, hidden flag and each Unknown reason',async()=>{
   const s=await loadAnalytic(analytic());
@@ -201,6 +138,9 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
   const s=await loadAnalytic(analytic({ground:g=>{Object.assign(g.cuboids.items[0],{center:[2.2,-.6,-12],length:4,width:1.8,height:1.6,
     worldFromBox:[[sin,-cos,0],[0,0,1],[-cos,-sin,0]]});}}));
   s.suggestions={vehicle:{status:'annotated',track:'analytic',pixel:[2,5],dimensions:{width:1.8,height:1.6,length:4}}};
+  // shape-v1: the annotated vehicle carries its LiDAR shape (scene.mjs prepares it while loading). Every solid top equals
+  // the box height here, so every result is the box result (tests/car-shape.test.mjs covers other shapes).
+  s.carShape=prepareCarShape(carShapeRecord({track:'analytic',length:4,width:1.8,height:1.6}));
   const pixels={crossing:[2,4],parking:[2,5],target:[3,4]},fields={width:'1.8',height:'1.6',length:'4'};
   const pose=annotatedVehicle(s,pixels,fields);
   assert.deepEqual(pose.center,[2.2,-.6,-12]);assert.deepEqual(pose.dimensions,{width:1.8,height:1.6,length:4});
@@ -213,7 +153,7 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
   assert.deepEqual(comparisonStart(s,pixels,fields,true),{proposedSetback:p.baselineSetback,driverDistance:p.captureDistance});
   const input={pixels,vehicle:fields,targetHeight:1.1,...start};
   const scenario=createScenario(s,input);
-  assert.deepEqual({...scenario.baseline,axis:undefined},{center:[2.2,-.6,-12],axis:undefined,vehicle:{width:1.8,height:1.6,length:4},pose:'annotated'});
+  assert.deepEqual({...scenario.baseline,axis:undefined},{center:[2.2,-.6,-12],axis:undefined,vehicle:{width:1.8,height:1.6,length:4},pose:'annotated',shape:s.carShape});
   // The what-if starts as the annotated box exactly, so both results are the same (this box lies beside the line: Unknown).
   assert.deepEqual(scenario.proposed,scenario.baseline);assert.equal(scenario.baselineSetback,start.proposedSetback);
   assert.equal(scenario.currentVisibility.state,'unknown');assert.deepEqual(scenario.proposedVisibility,scenario.currentVisibility);
@@ -246,7 +186,7 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
   // A turned current vehicle whose nearer corner is within the road tolerance of the crossing is refused, like a front.
   const close=await loadAnalytic(analytic({ground:g=>{Object.assign(g.cuboids.items[0],{center:[2.2,-.6,.15-14.375+2*cos],length:4,width:1.8,height:1.6,
     worldFromBox:[[sin,-cos,0],[0,0,1],[-cos,-sin,0]]});}}));
-  close.suggestions=s.suggestions;
+  close.suggestions=s.suggestions;close.carShape=s.carShape;
   assert.throws(()=>createScenario(close,{...input,proposedSetback:1}),
     {message:'Current vehicle front must be separated from the crossing (its nearest front corner is 0 m from it along the lane; more than 0.08 m is needed).'});
   close3(placementPreview(s,pixels,fields,'1.1').vehicle.center,pose.center,0);
@@ -305,6 +245,12 @@ test('mapped ground: the annotated stationary vehicle keeps its exact annotated 
     assert.throws(()=>annotatedVehicle(turned,pixels,fields),facing,`${turn} deg`);
     assert.throws(()=>createScenario(turned,input),facing,`${turn} deg`);
   }
+  // An annotated vehicle without its LiDAR shape (or with another track's) is an error, never the box.
+  for(const shape of [null,undefined,prepareCarShape(carShapeRecord({track:'other',length:4,width:1.8,height:1.6}))]) {
+    const bare={...s,carShape:shape};
+    assert.throws(()=>createScenario(bare,input),{message:'The measured car shape is missing for the annotated vehicle.'},String(shape?.track));
+    assert.throws(()=>annotatedVehicle(bare,pixels,fields),{message:'The measured car shape is missing for the annotated vehicle.'},String(shape?.track));
+  }
   // A suggestion naming a track the annotations do not hold is an error, never a declared stand-in.
   s.suggestions.vehicle.track='missing';
   assert.throws(()=>createScenario(s,input),/annotated vehicle is missing/);
@@ -347,9 +293,10 @@ test('mapped ground: descriptors, hashes and ground schema are pinned; tampering
     'terrain file':x=>{x.terrain.file='../terrain.bin';},'terrain shape':x=>{x.terrain.rows=49;},'terrain window':x=>{x.terrain.row0=1;},
     'terrain sim2 scale in R':x=>{x.terrain.sim2.R=[2,0,0,2];},'terrain big endian':x=>{x.terrain.byteOrder='big';},
     'degenerate lane':x=>{x.egoLane.rightBoundary[1]=[1.5,-1.4375,0];x.egoLane.leftBoundary[1]=[-1.5,-1.4375,0];},
-    // Ground schema 2 (protocol v3): the placement limit and the along-ray band are required and bounded; a schema 1 layer
-    // (protocol v1/v2) is history and refused.
-    'schema 1 (protocol v2) layer':x=>{x.schemaVersion=1;delete x.placementRangeLimitMeters;delete x.alongRayUncertainty;},
+    // Ground schema 3 (placement protocol v3.3): the placement limit and the along-ray band are required and bounded; schema
+    // 1 (protocol v1/v2) and schema 2 (protocol v3-v3.2, no car shape) layers are history and refused.
+    'schema 1 (protocol v2) layer':x=>{x.schemaVersion=1;delete x.placementRangeLimitMeters;delete x.alongRayUncertainty;delete x.carShape;},
+    'schema 2 (protocol v3.2) layer':x=>{x.schemaVersion=2;delete x.carShape;},'no car shape key':x=>{delete x.carShape;},
     'no placement limit':x=>{delete x.placementRangeLimitMeters;},'placement limit beyond the ray range':x=>{x.placementRangeLimitMeters=21;},
     'no band':x=>{delete x.alongRayUncertainty;},'zero band':x=>{x.alongRayUncertainty.heightBandMeters=0;},'band over 1 m':x=>{x.alongRayUncertainty.heightBandMeters=1.5;},
     'unknown band method':x=>{x.alongRayUncertainty.method='guess';},'fixed band without its development source':x=>{x.alongRayUncertainty.method='fixed';},
@@ -358,7 +305,8 @@ test('mapped ground: descriptors, hashes and ground schema are pinned; tampering
     'averaged pose with another rule':x=>{x.cuboids.items[0].poseAverage={rule:'latest',rows:3,centreSpreadM:{alongStd:0,lateralStd:0},yawSpreadDeg:{std:0}};},
   };
   for(const [name,mutate] of Object.entries(invalid))await assert.rejects(loadAnalytic(analytic({ground:mutate})),/Invalid mapped ground: /,name);
-  await assert.rejects(loadAnalytic(analytic({ground:x=>{x.schemaVersion=1;}})),{message:'Invalid mapped ground: schemaVersion must be 2 (protocol v3; earlier ground layers are history).'});
+  for(const version of [1,2])await assert.rejects(loadAnalytic(analytic({ground:x=>{x.schemaVersion=version;}})),
+    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history).'},`schema ${version}`);
   // A fixed (held-out) band with its test record, and an averaged pose with its spread, load.
   await loadAnalytic(analytic({ground:x=>{Object.assign(x.alongRayUncertainty,{method:'fixed',fittedOn:'dev'});delete x.alongRayUncertainty.fit;x.alongRayUncertainty.heldOutResiduals={count:0};
     x.cuboids.items[0].poseAverage={rule:'averageAllAnnotations',rows:3,centreSpreadM:{alongStd:.1,lateralStd:.05},yawSpreadDeg:{std:.01}};}}));
@@ -467,17 +415,20 @@ test('mapped ground: model-written answers and labels never call a vehicle parke
   assert.equal(runTool(legacyScene,'ask',ds,'declare_scenario',{...declaration,parked_vehicle:true}).error,'Unexpected field parked_vehicle.');
 });
 
-// ------------------------------------------------------------------ AV2 8c (protocol v3.2) local data
+// ------------------------------------------------------------------ AV2 8c local data (current v3.3, history v3.2)
 // The prepared AV2 scene is CC BY-NC-SA data kept out of public/ and dist/; it lives in ignored local evaluation folders.
-// The current folder is grounded-v3.2/ (app contract sections A0-A12): the same geometry and results as grounded-v3.1/,
-// with the crosswalk paint-offset bound filled in ("±0.18 m"). grounded-v3.1/ is history (still loadable: protocol v3.1
-// is not defective); grounded-v3/ is refused, and grounded-v2/ and grounded/ use earlier schemas. Files from two grounded
-// folders are never mixed.
-const AV2=new URL('../.local/evaluation/av2-map-first-2026-10-11/',import.meta.url),ID='av2-pao-8c52d911-2658849',GROUNDED_DIR='grounded-v3.2/';
-const local=existsSync(new URL(GROUNDED_DIR+'scene.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
+// The current folder is grounded-v3.3/ (protocol v3.3, shape-v1, app contract A13): grounded-v3.2 plus the recorded
+// vehicle's LiDAR shape (ground schema 3). The current app and scripts/evaluation/pao-baseline.mjs read it.
+// grounded-v3.2/ (app contract sections A0-A12) is history: the same geometry and results as grounded-v3.1/, with the
+// crosswalk paint-offset bound filled in ("±0.18 m"). The current app refuses it (ground schema 2, no car shape; tested
+// first below), so the v3.2 contract tests that follow run against the app source of commit c7a39eb
+// (tests/history-app.mjs), the code that produced the v3.2 numbers. grounded-v3.1/ is older history; grounded-v3/ is
+// refused, and grounded-v2/ and grounded/ use earlier schemas. Files from two grounded folders are never mixed.
+const AV2=new URL('../.local/evaluation/av2-map-first-2026-10-11/',import.meta.url),ID='av2-pao-8c52d911-2658849',V32_DIR='grounded-v3.2/'; // history (see above)
+const local=existsSync(new URL(V32_DIR+'scene.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
 const skip=local?false:'AV2 8c data is local-only and not present';
 const GROUNDED=new Set(['scene.json','ground.json','terrain.bin','suggestions.json']);
-const av2Bytes=name=>readFile(new URL((GROUNDED.has(name)?GROUNDED_DIR:'assembled/')+name,AV2));
+const av2Bytes=name=>readFile(new URL((GROUNDED.has(name)?V32_DIR:'assembled/')+name,AV2));
 // Serves the contract's directory: assembled buffers plus every grounded-v3.2 file, with optional replacements.
 const av2Fetch=(replace={})=>async path=>{
   const name=path.split('/').at(-1);
@@ -485,7 +436,66 @@ const av2Fetch=(replace={})=>async path=>{
   if(!path.startsWith(`/scenes/${ID}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
   try{return new Response(await av2Bytes(name));}catch{return new Response(null,{status:404});}
 };
-const entry=local?JSON.parse(await readFile(new URL(GROUNDED_DIR+'catalog-entry.json',AV2),'utf8')):null;
+const entry=local?JSON.parse(await readFile(new URL(V32_DIR+'catalog-entry.json',AV2),'utf8')):null;
+
+test('AV2 8c: the current app refuses the grounded-v3.2 ground layer (schema 2, no car shape)',{skip},async()=>{
+  assert.equal(JSON.parse(await av2Bytes('ground.json')).schemaVersion,2);
+  await assert.rejects(loadScene(av2Fetch(),ID,entry.metadataSha256,undefined,entry.suggestions,entry.ground),
+    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history).'});
+});
+
+// App contract A13: grounded-v3.3 is grounded-v3.2 plus the recorded stationary vehicle's shape-v1 LiDAR shape (ground
+// schemaVersion 3, placement protocol v3.3). The current app loads it; the 21 runtime vectors (runtime-test-vectors-v3.3.json,
+// equal to the v3.2 vectors value for value) reproduce; the first load is unchanged (the line misses the box, so step 6
+// never runs); the setback-sweep counts are those of the 8.2 check (scene-builder-v4.2/allowed-changes-8.2.json).
+const V33_DIR='grounded-v3.3/',local33=existsSync(new URL(V33_DIR+'ground.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
+const skip33=local33?false:'AV2 8c grounded-v3.3 data is local-only and not present';
+const v33Fetch=async path=>{
+  const name=path.split('/').at(-1);
+  if(!path.startsWith(`/scenes/${ID}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
+  try{return new Response(await readFile(new URL((GROUNDED.has(name)?V33_DIR:'assembled/')+name,AV2)));}catch{return new Response(null,{status:404});}
+};
+test('AV2 8c grounded-v3.3 (shape-v1): the current app loads the pinned layer with its measured car shape and reproduces the 21 runtime vectors',{skip:skip33},async()=>{
+  const e=JSON.parse(await readFile(new URL(V33_DIR+'catalog-entry.json',AV2),'utf8'));
+  assert.equal(e.metadataSha256,'cb048d0f3453638158feca8bad497a47e6271679e6b546b3b5e4b4a8297f1908');
+  assert.deepEqual(e.ground,{file:'ground.json',sha256:'bb3226a74216ca0848f386ff60d69f1997e14b2576bffef38dfd23612898f316'});
+  assert.deepEqual(e.suggestions,{file:'suggestions.json',sha256:'50049872e11ac33d9bc1cb9efa761c71e03c2b45e26aa10bb05f75cf33783c8c'});
+  const s=await loadScene(v33Fetch,ID,e.metadataSha256,undefined,e.suggestions,e.ground);
+  assert.equal(s.ground.schemaVersion,3);assert.equal(s.ground.protocol.sha256,'67117e04f0596866aa0f8feb8cb01e054865557576ea67237db24a9a9cad5af9');
+  assert.equal(s.ground.terrain.sha256,'2f7a2914ddfb89593a086514ad9ceab6c8f7eb25087e467cae4c4fc371b8f082');
+  const raw=s.ground.carShape,shape=s.carShape;
+  assert.equal(raw.protocol.shapeProtocolSha256,'07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825');
+  assert.deepEqual([shape.status,shape.refusal,shape.track,shape.along,shape.lateral,shape.allTopsAtLeastH],['measured',null,'396f15b5-9cf3-462b-9164-4b6f71c4e7d6',41,19,false]);
+  assert.deepEqual([raw.solidTopM.length,raw.solidTopM.filter(v=>v!==null).length,raw.sweeps.shape.length,raw.sweeps.scoring.length],[779,384,8,8]);
+  const vectors=JSON.parse(await readFile(new URL('runtime-test-vectors-v3.3.json',AV2),'utf8'));
+  assert.deepEqual([vectors.groundSha256,vectors.suggestionsSha256,vectors.protocolSha256],[e.ground.sha256,e.suggestions.sha256,s.ground.protocol.sha256]);
+  assert.deepEqual(vectors.vectors,JSON.parse(await readFile(new URL('runtime-test-vectors-v3.2.json',AV2),'utf8')).vectors);
+  assert.equal(vectors.vectors.length,21);
+  for(const v of vectors.vectors) {
+    if(v.supportClass==='unknown'){assert.throws(()=>mappedGroundHit(s,v.position),{message:v.reason},`${v.kind} ${v.position}`);continue;}
+    const hit=mappedGroundHit(s,v.position);
+    close3(hit.point,v.groundPoint,1e-6,String(v.position));
+    assert.deepEqual([hit.supportClass,hit.hidden,hit.hitKind,hit.terrainCityZ,hit.terrainCell],[v.supportClass,v.hidden,v.hitKind,v.terrainCityZ,v.terrainCell],String(v.position));
+    near(hit.rangeM,v.rangeM,1e-6);near(hit.alongRayUncertaintyM,v.alongRayUncertaintyM,1e-6);near(Math.hypot(hit.point[0],hit.point[2]),v.horizontalRangeM,1e-6);
+  }
+  const setup=suggestedSetup(s,s.suggestions),scenario=createScenario(s,setup.input);
+  assert.equal(setup.error,'');assert.equal(scenario.whatIf.shape,shape);assert.equal(scenario.baseline.shape,shape);
+  for(const v of [scenario.currentVisibility,scenario.proposedVisibility]){assert.equal(v.state,'unknown');assert.equal(v.reasonCode,undefined);near(v.gapM,.06241,5e-5,'first-load gap');}
+  const vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(setup.vehicle[k])]));
+  for(const [height,want] of [[1.1,{rows:57,blocked:12,heightNotProven:26}],[1.5,{rows:57,blocked:0,heightNotProven:17}]]) {
+    const rows=setbackSweep(s,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',...vehicle},height).rows;
+    assert.deepEqual({rows:rows.length,blocked:rows.filter(r=>r.state==='blocked').length,heightNotProven:rows.filter(r=>r.reason==='height-not-proven').length},want,`target ${height} m`);
+  }
+});
+
+// The rest of this file: the app source of commit c7a39eb (placement protocol v3.2), whose names shadow the imports.
+{
+const history=local?await historyApp():null;
+const {loadScene}=history?.scene??{};
+const {roadPoint,mappedGroundHit,mappedGroundHeight,placementFromPixels,placementPreview,createScenario,classifySightline,isMappedGround,roadTolerance,annotatedVehicle,
+  comparisonStart,whatIfBox,ANNOTATED_FRONT_NUDGE_PX,evaluatedPosition,anchorPoint,assessSightline}=history?.geometry??{};
+const {suggestedSetup,suggestionStatus,isStillSuggested,supportSummary,validateSuggestions,crossingText}=history?.suggestions??{};
+const {scenarioFacts,supportFacts,runTool,setbackSweep,applyDeclaration,allowedNumbersFrom,checkAnswer,sweepPhrase,withheldNote}=history?.assistant??{};
 const loadAV2=(replace,overrides={})=>{const e={...entry,...overrides};return loadScene(av2Fetch(replace),ID,e.metadataSha256,undefined,e.suggestions,e.ground);};
 // Contract section A5 (grounded-v3.2; the same geometry as grounded-v3.1 and grounded-v3), asserted to 1e-6 m. pixel: the integer anchor
 // (marker and nudge anchor); pixelUV: the exact projection the app evaluates while the suggestion is untouched;
@@ -993,3 +1003,4 @@ test('AV2 8c: stale, tampered, reworded or earlier-schema suggestions and ground
   await assert.rejects(loadScene(async path=>path.endsWith('/suggestions.json')?new Response(bytes):fetchAsset(path),legacyScene.id,undefined,undefined,{file:'suggestions.json',sha256:sha(bytes)}),
     /Invalid placement suggestions: /);
 });
+}

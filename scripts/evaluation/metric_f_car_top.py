@@ -4,8 +4,9 @@ is no Clear.
 
   python3 -I -B metric_f_car_top.py profile --protocol P --protocol-lock K --ground G --suggestions S --scene NAME
       --annotations A --poses C --calibration E --sweep-dir D [--sweep-dir D ...] [--receipt R ...] --out OUT
+      [--scoring-sweeps-from GROUND_JSON]
   python3 -I -B metric_f_car_top.py score --protocol P --protocol-lock K --profile F --rows R --scene NAME --out OUT
-      [--same-classes-as EARLIER_RESULTS]
+      [--same-classes-as EARLIER_RESULTS] [--box-rows-from V2_ROWS] [--app-results SHAPE_V1_RESULTS]
   python3 -I -B metric_f_car_top.py summarize --protocol P --protocol-lock K --results F [F ...] --out OUT
   python3 -I -B metric_f_car_top.py receipt --protocol P --protocol-lock K --commands FILE --hash FILE [FILE ...] --out OUT
 
@@ -19,6 +20,18 @@ Protocol v2 (protocol-v2.json) adds report-only evidence and changes no class: p
 the LiDAR rays that passed through the cell and hit something beyond it ("free rays"); per row, the crossed 2D cells with
 that evidence and where the line enters and leaves the footprint; per sweep, where the ego was; and the app's last plain
 Blocked row against the measured stop. A protocol without freeRayBandM (v1) gets none of these.
+
+Metric F shape-v1 (protocol v3, metric-f-shape-v1/protocol-v3.json; shape-v1 protocol evaluation.metricFShapeV1) keeps
+every v2 threshold and class rule and adds:
+  --scoring-sweeps-from FILE (profile): only the sweeps listed in FILE's carShape.sweeps.scoring are used (a ground.json,
+      or an approach-split file whose carShape has the same fields). Every listed sweep must be present in a --sweep-dir
+      with its listed SHA-256 and have an annotation row for the tested track, else the run stops. Other files are not
+      read. The laser check drops a failing sweep and lists it (v2 stopped the run); with fewer than 2 sweeps left every
+      row of the scene is F-unresolved.
+  Rows that carry the box result next to the shape result (metric-f.mjs on a scene with the recorded vehicle's LiDAR
+  shape) get the shape-v1 reports (score): flip table, no new Blocked (F0), allowed changes, lost supported rows,
+  front-half flags and unresolved Blocked rows; --box-rows-from checks the box gaps and setbacks against the metric F v2
+  rows (1e-9 m); --app-results (approach split) puts the app shape result next to each row.
 """
 import argparse
 import hashlib
@@ -306,7 +319,10 @@ def line_against(e, t, profile, dims, th, cells=False):
     return out
 
 
-def score_row(row, profile, dims, th, sensitivity=None):
+def score_row(row, profile, dims, th, sensitivity=None, forced=None):
+    """forced (metric F shape-v1): a reason why every row of this scene is F-unresolved (fewer than 2 scoring sweeps
+    passed the laser check, or the approach-split shape was refused); the classes become unresolved and the reason is
+    kept. Rows from metric-f.mjs with the recorded vehicle's shape keep their box result and shape diagnostics."""
     e, t = row['eyeCar'], row['targetCar']; margin = th['marginM']
     bins = line_against(e, t, profile, dims, th); cells = line_against(e, t, profile, dims, th, cells=True)
     measured = [b for b in bins if b['measured']]
@@ -324,6 +340,14 @@ def score_row(row, profile, dims, th, sensitivity=None):
         out['reason'] = row['reason']
     if sensitivity is not None:
         out['classSensitivity'] = classify(line_against(e, t, sensitivity, dims, th), margin)
+    if 'box' in row:
+        # shape-v1: the box result (the same box without its LiDAR shape) and the shape diagnostics (null when step 6
+        # did not run for this row).
+        out['box'] = row['box']; out['shape'] = row.get('shape')
+    if forced:
+        out.update({'class': 'unresolved', 'class2D': 'unresolved', 'forcedUnresolved': forced})
+        if sensitivity is not None:
+            out['classSensitivity'] = 'unresolved'
     evidence = profile.get('cellEvidence')
     if evidence is not None:
         # Protocol v2, report only: the crossed 2D cells with their returns and free rays, and the footprint entry and exit.
@@ -375,7 +399,7 @@ def tally(scored, key='class'):
     return out
 
 
-def score_scene(rows_doc, profile_doc, th):
+def score_scene(rows_doc, profile_doc, th, forced=None):
     dims = (profile_doc['box']['L'], profile_doc['box']['W'], profile_doc['box']['H'])
     primary, sens = profile_doc['primary'], profile_doc['sensitivity']
     out = {}
@@ -383,7 +407,7 @@ def score_scene(rows_doc, profile_doc, th):
         if 'error' in h:
             out[name] = {'targetHeightM': h['targetHeightM'], 'error': h['error']}
             continue
-        scored = [score_row(r, primary, dims, th, sens) for r in h['rows']]
+        scored = [score_row(r, primary, dims, th, sens, forced) for r in h['rows']]
         out[name] = {'targetHeightM': h['targetHeightM'], 'counts': tally(scored), 'counts2D': tally(scored, 'class2D'),
                      'countsSensitivity': tally(scored, 'classSensitivity'), 'stopBlocking': stop_blocking(scored, h),
                      'at15ft': h.get('at15ft'), 'at20ft': h.get('at20ft'), 'rows': scored}
@@ -421,6 +445,143 @@ def check_frames(rows_doc, profile_doc):
     v = tb['vehicle']
     assert max(abs(v['length'] - box['L']), abs(v['width'] - box['W']), abs(v['height'] - box['H'])) <= 1e-9, 'Tested box sizes differ'
     assert rows_doc['track'] == box['track'], 'Tested track differs'
+
+
+# ------------------------------------------------------------------ metric F shape-v1 (protocol v3): reports
+def allowed_change(row):
+    """Protocol resultRule.allowedChanges on a scored row's summary fields (metric-f.mjs also checks the full result
+    objects): a box Blocked row becomes shape Blocked or Unknown height-not-proven with the same gap; every other row
+    keeps the box state, reason and gap. Returns None when the change is allowed, else what changed."""
+    b = row['box']
+    if row['gapM'] != b['gapM']:
+        return 'gapM changed'
+    if b['state'] == 'blocked':
+        if (row['state'] == 'blocked' and not row.get('reason')) or (row['state'] == 'unknown' and row.get('reason') == 'height-not-proven'):
+            return None
+        return f"box Blocked became {row['state']} {row.get('reason') or ''}".strip()
+    if row['state'] != b['state'] or row.get('reason') != b.get('reason'):
+        return f"box {b['state']} {b.get('reason') or ''} became {row['state']} {row.get('reason') or ''}".strip()
+    return None
+
+
+def shape_v1_report(scored):
+    """One target height's metric F shape-v1 reports. Rows: state and reason = the result with the shape (the app's own
+    row), box = the result of the same box without the shape, shape = the step-6 diagnostics (status, solidCutM, hitXM;
+    null when step 6 did not run). F classes are on the scoring sweeps."""
+    assert all('box' in r for r in scored), 'Some rows have no box result (not a shape-v1 rows file)'
+    box_blocked = [r for r in scored if r['box']['state'] == 'blocked']; shape_blocked = [r for r in scored if plain_blocked(r)]
+    hnp = [r for r in scored if r.get('reason') == 'height-not-proven']
+    hit = lambda r: (r.get('shape') or {}).get('hitXM')  # noqa: E731
+    cut = lambda r: (r.get('shape') or {}).get('solidCutM')  # noqa: E731
+    setbacks = lambda rows: [rnd(r['setbackM']) for r in rows]  # noqa: E731
+    new = [r for r in shape_blocked if r['box']['state'] != 'blocked']
+    violations = [{'setbackM': rnd(r['setbackM']), 'what': w} for r in scored for w in [allowed_change(r)] if w]
+    lost = [r for r in box_blocked if r['class'] == 'supported' and r.get('reason') == 'height-not-proven']
+    front = [r for r in shape_blocked if hit(r) is not None and hit(r) > 0]
+    unresolved = [r for r in shape_blocked if r['class'] == 'unresolved']
+    result = lambda state, reason: state if not reason else f'{state} {reason}'  # noqa: E731
+    flip = []
+    for r in scored:
+        entry = {'setbackM': rnd(r['setbackM']), 'gapM': rnd(r['gapM']), 'box': result(r['box']['state'], r['box'].get('reason')),
+                 'shape': result(r['state'], r.get('reason')), 'class': r['class'], 'minClearanceM': rnd(r['minClearanceM']),
+                 'solidCutM': rnd(cut(r)), 'hitXM': rnd(hit(r))}
+        if 'appShape' in r:
+            entry['appShape'] = result(r['appShape']['state'], r['appShape'].get('reason'))
+        flip.append(entry)
+    return {
+        'counts': {'rows': len(scored), 'boxBlocked': len(box_blocked), 'shapeBlocked': len(shape_blocked), 'heightNotProven': len(hnp),
+                   'boxBlockedStillBlocked': sum(1 for r in box_blocked if plain_blocked(r)),
+                   'boxBlockedToHeightNotProven': sum(1 for r in box_blocked if r.get('reason') == 'height-not-proven'),
+                   'tooCloseToCall': sum(1 for r in scored if r.get('reason') == 'too-close-to-call')},
+        'shapeBlockedClasses': {c: sum(1 for r in shape_blocked if r['class'] == c) for c in CLASSES},
+        'boxBlockedClasses': {c: sum(1 for r in box_blocked if r['class'] == c) for c in CLASSES},
+        'noNewBlocked': {'count': len(new), 'setbacksM': setbacks(new), 'pass': not new},
+        'allowedChanges': {'violations': violations, 'pass': not violations},
+        'lostSupported': {'count': len(lost), 'setbacksM': setbacks(lost),
+                          'boxBlockedSupported': sum(1 for r in box_blocked if r['class'] == 'supported'),
+                          'rule': 'Blocked with the box, F-supported on the scoring sweeps, Unknown height-not-proven with the shape'},
+        'frontHalfFlag': {'count': len(front), 'rows': [{'setbackM': rnd(r['setbackM']), 'hitXM': rnd(hit(r)), 'solidCutM': rnd(cut(r))} for r in front],
+                          'rule': 'report only: still Blocked with the shape and the first hit is in the front half of the car (hitXM > 0)'},
+        'unresolvedBlocked': {'count': len(unresolved), 'setbacksM': setbacks(unresolved), 'note': 'never counted as passes'},
+        'likelyFalseBlocked': setbacks([r for r in shape_blocked if r['class'] == 'likelyFalse']),
+        'flipTable': flip}
+
+
+def box_reproduction(heights, v2_rows_doc, tol=1e-9):
+    """The box gaps and setbacks reproduce the metric F v2 rows of the same scene (same row count, setbacks and gaps to
+    tol). Box states and reasons are compared and reported too. heights: the rows file's heights (rows with box)."""
+    out = {'v2Kind': v2_rows_doc.get('kind'), 'toleranceM': tol, 'heights': {}}; ok = True
+    for name, h in heights.items():
+        ref = v2_rows_doc['heights'].get(name, {}).get('rows'); rows = h.get('rows', [])
+        if ref is None or len(ref) != len(rows):
+            out['heights'][name] = {'rows': len(rows), 'v2Rows': None if ref is None else len(ref), 'pass': False}; ok = False
+            continue
+        ds = max((abs(r['setbackM'] - v['setbackM']) for r, v in zip(rows, ref)), default=0.)
+        dg = max((abs(r['box']['gapM'] - v['gapM']) for r, v in zip(rows, ref)), default=0.)
+        other = [rnd(r['setbackM']) for r, v in zip(rows, ref) if r['box']['state'] != v['state'] or r['box'].get('reason') != v.get('reason')]
+        passed = ds <= tol and dg <= tol
+        out['heights'][name] = {'rows': len(rows), 'maxSetbackDifferenceM': ds, 'maxGapDifferenceM': dg,
+                                'rowsWithAnotherBoxStateOrReason': other, 'pass': passed}
+        ok = ok and passed
+    out['pass'] = ok
+    return out
+
+
+def join_app_results(heights, app_doc):
+    """Approach split: puts the alternating-split (app) shape result of the same row next to each scored row. The rows
+    must be the same rows (same count, setbacks to 1e-12 m, same box result), else the run stops."""
+    for name, h in heights.items():
+        if 'error' in h:
+            continue
+        ref = app_doc['heights'][name]['rows']; rows = h['rows']
+        assert len(ref) == len(rows), f'{name}: {len(rows)} rows, the app results have {len(ref)}'
+        for r, a in zip(rows, ref):
+            assert abs(r['setbackM'] - a['setbackM']) <= 1e-12 and r['box'] == a['box'], f"{name}: row {r['setbackM']} differs from the app results"
+            r['appShape'] = {'state': a['state'], 'reason': a.get('reason'), 'class': a['class']}
+
+
+# ------------------------------------------------------------------ metric F shape-v1 (protocol v3): scoring sweeps
+def scoring_list(path):
+    """carShape.sweeps.scoring of FILE (a ground.json, or an approach-split file whose carShape has the same fields):
+    ([(timestampNs, sha256)], carShape, document)."""
+    doc = json.loads(Path(path).read_bytes()); shape = doc.get('carShape')
+    assert isinstance(shape, dict), f'{Path(path).name} has no carShape: metric F shape-v1 needs its scoring sweeps'
+    listed = [(int(x['timestampNs']), x['sha256']) for x in shape['sweeps']['scoring']]
+    assert len({t for t, _ in listed}) == len(listed), 'A scoring sweep is listed twice'
+    return listed, shape, doc
+
+
+def gather_listed_sweeps(sweep_dirs, receipts, listed, timestamps, log_id):
+    """Only the listed sweeps: each must be present in a sweep folder with its listed SHA-256 (every copy) and have an
+    annotation row for the tested track, else the run stops. A receipt naming the file must agree. Other files are not
+    read."""
+    index = receipt_index(receipts); sweeps = []
+    for ts, want in sorted(listed):
+        files = [Path(d) / f'{ts}.feather' for d in sweep_dirs if (Path(d) / f'{ts}.feather').is_file()]
+        assert files, f'Scoring sweep {ts} is missing'
+        assert {sha(f) for f in files} == {want}, f'Scoring sweep {ts} differs from its listed SHA-256'
+        named = set()
+        for (name, log), values in index.items():
+            if name == f'{ts}.feather' and log in (None, log_id):
+                named |= values
+        assert not named or want in named, f'Sweep {ts} does not match its receipt'
+        assert ts in timestamps, f'Scoring sweep {ts} has no annotation row for the tested track'
+        sweeps.append({'timestampNs': ts, 'path': files[0], 'copies': len(files), 'sha256': want, 'receiptVerified': bool(named)})
+    return sweeps, []
+
+
+def laser_check(ts, spread, limit, scoring):
+    """The frozen laser check (each laser's elevation spread below limit degrees). Protocol v2 stops the run on a
+    failure; metric F shape-v1 (scoring) drops the sweep instead. Returns True to keep the sweep."""
+    if spread < limit:
+        return True
+    assert scoring, f'Laser assignment check failed in sweep {ts}: {spread:.3f} deg'
+    return False
+
+
+def too_few_scoring_sweeps(used):
+    """Fewer than 2 scoring sweeps left after the laser check: every row of that scene is F-unresolved."""
+    return used < 2
 
 
 # --------------------------------------------------------------------------------------------- sweep loading
@@ -480,15 +641,23 @@ def inside_cuboids(ego_points, rows, grow):
     return inside
 
 
-def load_returns(args, frame, origin, track, th, rays=False):
+def load_returns(args, frame, origin, track, th, rays=False, listed=None):
     """rays (protocol v2): also return, for every return of a sweep whose ray crosses the footprint horizontally, its
-    sensor origin at capture time and the return, both car-local."""
+    sensor origin at capture time and the return, both car-local. listed (metric F shape-v1): [(timestampNs, sha256)]
+    of the scoring sweeps; only those are used, and a sweep failing the laser check is dropped and listed.
+    Returns a dict: local, sweep, inside, grown (per kept return), perSweep, skipped, dropped, largestSpread (kept
+    sweeps), logHashes and rays ((S, P) or None)."""
     import pyarrow.feather as feather
     ann = feather.read_table(args.annotations).to_pandas(); poses = feather.read_table(args.poses).to_pandas()
     calib = feather.read_table(args.calibration).to_pandas().set_index('sensor_name')
     mine = ann[ann.track_uuid == track]; timestamps = set(int(t) for t in mine.timestamp_ns)
-    sweeps, skipped = gather_sweeps(args.sweep_dir, args.receipt or [], timestamps, args.log_id)
+    scoring = listed is not None
+    if scoring:
+        sweeps, skipped = gather_listed_sweeps(args.sweep_dir, args.receipt or [], listed, timestamps, args.log_id)
+    else:
+        sweeps, skipped = gather_sweeps(args.sweep_dir, args.receipt or [], timestamps, args.log_id)
     assert sweeps, 'No sweep of the tested track is available'
+    dropped = []
     L, W, H = frame['L'], frame['W'], frame['H']; reach = th['overhangReachM']
     sensors = {}
     for name in ('up_lidar', 'down_lidar'):
@@ -507,8 +676,12 @@ def load_returns(args, frame, origin, track, th, rays=False):
             sel = sensor == name; q = (at_capture[sel] - t_s) @ rot
             elevation = np.degrees(np.arctan2(q[:, 2], np.hypot(q[:, 0], q[:, 1])))
             spreads += [float(elevation[laser[sel] == n].std()) for n in np.unique(laser[sel])]
-        spread = max(spreads); largest_spread = max(largest_spread, spread)
-        assert spread < th['laserElevationSpreadLimitDeg'], f'Laser assignment check failed in sweep {ts}: {spread:.3f} deg'
+        spread = max(spreads)
+        if not laser_check(ts, spread, th['laserElevationSpreadLimitDeg'], scoring):
+            dropped.append({'timestampNs': str(ts), 'sha256': s['sha256'], 'laserSpreadDeg': rnd(spread, 4),
+                            'reason': f"laser check failed (spread {spread:.4f} deg, limit {th['laserElevationSpreadLimitDeg']} deg): dropped"})
+            continue
+        largest_spread = max(largest_spread, spread)
         local = car_local(world(city, origin), frame)
         if rays:
             # Each return's own sensor origin at its capture time (up_lidar lasers 0-31, down_lidar 32-63).
@@ -536,9 +709,11 @@ def load_returns(args, frame, origin, track, th, rays=False):
         if rays:
             per_sweep[-1].update({'egoAlongM': rnd(ego_at[0]), 'egoLateralM': rnd(ego_at[1]), 'raysOverFootprint': int(len(ray_s[-1]))})
         local_all.append(loc); sweep_all.append(np.full(len(loc), k)); inside_all.append(inside); grown_all.append(grown)
-    out = (np.concatenate(local_all), np.concatenate(sweep_all), np.concatenate(inside_all), np.concatenate(grown_all),
-           per_sweep, skipped, largest_spread, {'annotations': sha(args.annotations), 'poses': sha(args.poses), 'calibration': sha(args.calibration)})
-    return out + ((np.concatenate(ray_s), np.concatenate(ray_p)),) if rays else out
+    join = lambda parts, shape, dtype=float: np.concatenate(parts) if parts else np.zeros(shape, dtype)  # noqa: E731
+    return {'local': join(local_all, (0, 3)), 'sweep': join(sweep_all, (0,), int), 'inside': join(inside_all, (0,), bool),
+            'grown': join(grown_all, (0,), bool), 'perSweep': per_sweep, 'skipped': skipped, 'dropped': dropped,
+            'largestSpread': largest_spread, 'logHashes': {'annotations': sha(args.annotations), 'poses': sha(args.poses), 'calibration': sha(args.calibration)},
+            'rays': (join(ray_s, (0, 3)), join(ray_p, (0, 3))) if rays else None}
 
 
 def cmd_profile(args):
@@ -549,13 +724,19 @@ def cmd_profile(args):
     assert len(boxes) == 1, 'The tested track must appear once in ground.json'
     box = boxes[0]; frame = upright_frame(box); origin = np.asarray(ground['frame']['cityOrigin'], float)
     v2 = 'freeRayBandM' in th
-    loaded = load_returns(args, frame, origin, track, th, rays=v2)
-    local, sweep, inside, grown, per_sweep, skipped, spread, log_hashes = loaded[:8]
+    scoring = None
+    if args.scoring_sweeps_from:
+        listed, shape, source = scoring_list(args.scoring_sweeps_from)
+        assert shape['track'] == track, 'The scoring sweeps belong to another vehicle'
+        scoring = {'listed': listed, 'shape': shape, 'source': source}
+    loaded = load_returns(args, frame, origin, track, th, rays=v2, listed=scoring and scoring['listed'])
+    local, sweep, inside, grown = loaded['local'], loaded['sweep'], loaded['inside'], loaded['grown']
+    per_sweep, skipped, spread, log_hashes = loaded['perSweep'], loaded['skipped'], loaded['largestSpread'], loaded['logHashes']
     dims = (frame['L'], frame['W'], frame['H'])
     primary = profile_from_points(local, sweep, dims, th, inside, grown)
     sensitivity = profile_from_points(local, sweep, dims, th, inside, grown, limit_top=False, remove_other=False)
     if v2:
-        primary['cellEvidence'] = cell_evidence(local, inside, loaded[8], dims, th)
+        primary['cellEvidence'] = cell_evidence(local, inside, loaded['rays'], dims, th)
     doc = {'kind': 'metric-f LiDAR car-top profile', 'scene': args.scene, 'protocolSha256': digest,
            'frame': 'car-local: x forward along the tested box heading (front face +L/2), y left, z above the box bottom (box centre Y - H/2), metres',
            'box': {'track': track, 'category': box['category'], 'center': frame['center'].tolist(), 'heading': frame['heading'].tolist(),
@@ -566,6 +747,23 @@ def cmd_profile(args):
            'sweeps': {'used': len(per_sweep), 'skipped': skipped, 'perSweep': per_sweep, 'largestLaserSpreadDeg': spread,
                       'receiptVerified': sum(1 for s in per_sweep if s['receiptVerified'])},
            'primary': primary, 'sensitivity': sensitivity}
+    if scoring:
+        # Metric F shape-v1: which sweeps were listed, used and dropped, and the car shape they belong to (its SHA-256 is
+        # computed like car_shape.py's appCarShapeSha256: sorted keys, no spaces).
+        shape, source = scoring['shape'], scoring['source']
+        used = len(per_sweep)
+        doc['scoringSweeps'] = {
+            'rule': 'only carShape.sweeps.scoring of the source file; every listed sweep present with its listed SHA-256; '
+                    'a sweep failing the laser check is dropped and listed; fewer than 2 left: every row F-unresolved',
+            'source': {'file': Path(args.scoring_sweeps_from).name, 'sha256': sha(args.scoring_sweeps_from), 'schema': source.get('schema') or 'ground.json'},
+            'carShape': {'sha256': hashlib.sha256(json.dumps(shape, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest(),
+                         'track': shape['track'], 'status': shape['status'], 'refusal': shape.get('refusal'),
+                         'shapeSweeps': len(shape['sweeps']['shape']), 'scoringSweeps': len(shape['sweeps']['scoring'])},
+            'listed': [{'timestampNs': str(t), 'sha256': d} for t, d in scoring['listed']],
+            'used': used, 'dropped': loaded['dropped'], 'tooFew': too_few_scoring_sweeps(used)}
+        if source.get('schema') == 'shape-v1-approach-split':
+            doc['scoringSweeps']['approachSplit'] = source['approachSplit']
+            doc['scoringSweeps']['approachRefusal'] = None if shape['status'] != 'refused' else shape['refusal']['code']
     print(write_new(args.out, doc))
 
 
@@ -574,7 +772,22 @@ def cmd_score(args):
     rows_doc = json.loads(Path(args.rows).read_bytes()); profile_doc = json.loads(Path(args.profile).read_bytes())
     assert rows_doc['protocolSha256'] == digest and profile_doc['protocolSha256'] == digest, 'Inputs were made under another protocol'
     check_frames(rows_doc, profile_doc)
-    heights = score_scene(rows_doc, profile_doc, th)
+    ss = profile_doc.get('scoringSweeps'); forced = None
+    if ss and ss['tooFew']:
+        forced = f"fewer than 2 scoring sweeps passed the laser check ({ss['used']} of {len(ss['listed'])})"
+    elif ss and ss.get('approachRefusal'):
+        forced = f"the approach-split shape was refused ({ss['approachRefusal']})"
+    heights = score_scene(rows_doc, profile_doc, th, forced)
+    shape_rows = 'shapeV1' in rows_doc
+    if shape_rows:
+        assert ss, 'Shape-v1 rows are scored on the scoring sweeps only (a profile made with --scoring-sweeps-from)'
+        assert rows_doc['shapeV1']['carShape']['sourceSha256'] == ss['source']['sha256'], \
+            "The rows' car shape and the scoring sweeps come from different files"
+        if args.app_results:
+            join_app_results(heights, json.loads(Path(args.app_results).read_bytes()))
+        for h in heights.values():
+            if 'error' not in h:
+                h['shapeV1'] = shape_v1_report(h['rows'])
     prim = profile_doc['primary']
     doc = {'kind': 'metric-f results', 'scene': args.scene, 'protocolSha256': digest,
            'label': protocol['label'], 'heightFrame': protocol['definition']['heightFrame'],
@@ -596,6 +809,18 @@ def cmd_score(args):
                                      'note': 'egoLateralM: car-local y of the ego origin at each sweep timestamp (left of the tested car is +)'}
     if rows_doc.get('baselineCheck'):
         doc['baselineCheck'] = rows_doc['baselineCheck']
+    if shape_rows:
+        doc['shapeV1'] = {'carShape': {**rows_doc['shapeV1']['carShape'], 'canonicalSha256': ss['carShape']['sha256']},
+                          'scoringSweeps': {k: ss[k] for k in ('rule', 'source', 'listed', 'used', 'dropped', 'tooFew')},
+                          'forcedUnresolved': forced, 'allowedChangesFullObjects': rows_doc['shapeV1']['allowedChanges']}
+        if args.box_rows_from:
+            doc['shapeV1']['boxReproduction'] = {**box_reproduction(rows_doc['heights'], json.loads(Path(args.box_rows_from).read_bytes())),
+                                                 'file': Path(args.box_rows_from).name, 'sha256': sha(args.box_rows_from)}
+        if 'approachSplit' in ss:
+            doc['approachSplit'] = {**ss['approachSplit'], 'droppedNearHalf': ss['dropped'], 'refusal': ss.get('approachRefusal'),
+                                    'evalShape': rows_doc['shapeV1'].get('evalShape')}
+        if args.app_results:
+            doc['appResults'] = {'file': Path(args.app_results).name, 'sha256': sha(args.app_results)}
     if args.same_classes_as:
         earlier = json.loads(Path(args.same_classes_as).read_bytes())
         doc['sameClassesAs'] = {**check_same_classes(heights, earlier), 'file': Path(args.same_classes_as).name,
@@ -603,8 +828,127 @@ def cmd_score(args):
     print(write_new(args.out, doc))
 
 
+SHAPE_CLASSES = ('likelyFalse', 'ambiguous', 'unresolved', 'supported')
+
+
+def shape_v1_entry(r, f):
+    """One scene of the metric F shape-v1 summary (alternating split or approach split): per height the shape-v1
+    reports without the per-row table, every likely-false row, totals and the hard checks."""
+    sv = r['shapeV1']; ss = sv['scoringSweeps']
+    entry = {'scene': r['scene'], 'file': Path(f).name, 'sha256': sha(f), 'app': r['app']['dir'], 'carShape': sv['carShape'],
+             'scoringSweeps': {'listed': len(ss['listed']), 'used': ss['used'], 'dropped': ss['dropped'], 'tooFew': ss['tooFew']},
+             'forcedUnresolved': sv['forcedUnresolved'], 'heights': {}, 'likelyFalseRows': []}
+    total = {k: 0 for k in ('rows', 'boxBlocked', 'shapeBlocked', 'heightNotProven', 'newBlocked', 'allowedChangeViolations',
+                            'lostSupported', 'boxBlockedSupported', 'frontHalfFlag', *SHAPE_CLASSES)}
+    for name, h in r['heights'].items():
+        if 'error' in h:
+            entry['heights'][name] = {'error': h['error']}; continue
+        rep = h['shapeV1']
+        entry['heights'][name] = {'targetHeightM': h['targetHeightM'], **{k: rep[k] for k in (
+            'counts', 'shapeBlockedClasses', 'boxBlockedClasses', 'noNewBlocked', 'allowedChanges', 'lostSupported', 'frontHalfFlag',
+            'unresolvedBlocked', 'likelyFalseBlocked')}}
+        c = rep['counts']
+        for k in ('rows', 'boxBlocked', 'shapeBlocked', 'heightNotProven'):
+            total[k] += c[k]
+        for k in SHAPE_CLASSES:
+            total[k] += rep['shapeBlockedClasses'][k]
+        total['newBlocked'] += rep['noNewBlocked']['count']; total['allowedChangeViolations'] += len(rep['allowedChanges']['violations'])
+        total['lostSupported'] += rep['lostSupported']['count']; total['boxBlockedSupported'] += rep['lostSupported']['boxBlockedSupported']
+        total['frontHalfFlag'] += rep['frontHalfFlag']['count']
+        for row in h['rows']:
+            if plain_blocked(row) and row['class'] == 'likelyFalse':
+                entry['likelyFalseRows'].append({'height': name, 'targetHeightM': h['targetHeightM'], 'setbackM': rnd(row['setbackM']),
+                                                 'minClearanceM': rnd(row['minClearanceM']), 'crossedBins': [b['bin'] for b in row['bins']],
+                                                 'bins': row['bins'], 'class2D': row['class2D'], 'footprint': row.get('footprint'),
+                                                 'solidCutM': rnd((row.get('shape') or {}).get('solidCutM')), 'hitXM': rnd((row.get('shape') or {}).get('hitXM'))})
+    entry['total'] = total
+    full = sv['allowedChangesFullObjects']
+    entry['checks'] = {'noNewBlocked': total['newBlocked'] == 0,
+                       'allowedChanges': total['allowedChangeViolations'] == 0 and full['pass'],
+                       'boxReproduction': (sv.get('boxReproduction') or {}).get('pass')}
+    return entry
+
+
+def shape_v1_predictions(entry, prediction, v2_results):
+    """Report only: the shape-v1 protocol predictions for one scene against the result (upper limits, expected
+    height-not-proven rows, and the metric F v2 likely-false and ambiguous Blocked rows)."""
+    near = lambda a, b: abs(a - b) < 5e-5  # noqa: E731
+    out = {}
+    for name, h in entry['heights'].items():
+        if 'error' in h:
+            continue
+        flips = {r['setbackM']: r['shape'] for r in v2_results['flip'][name]} if v2_results else {}
+        hnp = [sb for sb, shape in flips.items() if shape == 'unknown height-not-proven']
+        limit = prediction['shapeBlockedUpperLimit'].get(name)
+        expected = prediction['heightNotProvenExpectedSetbacksM'].get(name)
+        expected_list = [r['setbackM'] for r in v2_results['flip'][name] if r['box'] == 'blocked'] if expected == 'all' else (expected or [])
+        v2 = v2_results['v2'].get(name, {}) if v2_results else {}
+        out[name] = {'boxBlockedPredicted': prediction['boxBlocked'].get(name), 'boxBlocked': h['counts']['boxBlocked'],
+                     'shapeBlockedUpperLimit': limit, 'shapeBlocked': h['counts']['shapeBlocked'],
+                     'withinUpperLimit': None if limit is None else h['counts']['shapeBlocked'] <= limit,
+                     'expectedHeightNotProvenButStillBlocked': [x for x in expected_list if not any(near(x, y) for y in hnp)],
+                     'heightNotProvenNotInTheExpectedList': [y for y in hnp if not any(near(x, y) for x in expected_list)],
+                     'v2LikelyFalseBlockedNowHeightNotProven': [x for x in v2.get('likelyFalse', []) if any(near(x, y) for y in hnp)],
+                     'v2LikelyFalseBlockedNotHeightNotProven': [x for x in v2.get('likelyFalse', []) if not any(near(x, y) for y in hnp)],
+                     'v2AmbiguousBlockedNowHeightNotProven': [x for x in v2.get('ambiguous', []) if any(near(x, y) for y in hnp)],
+                     'v2AmbiguousBlockedNotHeightNotProven': [x for x in v2.get('ambiguous', []) if not any(near(x, y) for y in hnp)]}
+    return out
+
+
+def cmd_summarize_shape_v1(args, protocol, digest, docs):
+    """Metric F shape-v1 summary (protocol v3). An approach-split run (results with approachSplit) is report only: no
+    target, and the addendum's remaining dependence and limits are copied in."""
+    approach = [('approachSplit' in r) for r, _ in docs]
+    assert len(set(approach)) == 1, 'Alternating-split and approach-split results are summarized separately'
+    approach = approach[0]
+    scored = set(protocol['target']['scoredScenes']); scenes = []
+    by_name = {s['name']: s for s in protocol['inputs']['scenes']}
+    for r, f in docs:
+        entry = shape_v1_entry(r, f); name = r['scene']
+        entry['scored'] = name in scored
+        if approach:
+            a = r['approachSplit']
+            entry['approachSplit'] = {k: a.get(k) for k in ('K', 'h', 'far', 'near', 'unused', 'farRangeM', 'nearRangeM', 'droppedNearHalf', 'refusal', 'order')}
+            entry['approachSplit']['file'] = (a.get('evalShape') or {}).get('file'); entry['approachSplit']['sha256'] = (a.get('evalShape') or {}).get('sha256')
+            entry['rowsTable'] = {n: [{k: row[k] for k in ('setbackM', 'box', 'appShape', 'shape', 'class') if k in row} for row in h['shapeV1']['flipTable']]
+                                  for n, h in r['heights'].items() if 'error' not in h}
+            entry['noNewBlockedReportOnly'] = entry['checks'].pop('noNewBlocked')
+            entry['targetMet'] = None
+        else:
+            spec = by_name.get(name, {})
+            v2 = None
+            if spec.get('v2Results'):
+                v2doc = json.loads(Path(spec['v2Results']).read_bytes())
+                assert sha(spec['v2Results']) == spec['v2ResultsSha256'], f'{name}: the metric F v2 results differ from the protocol'
+                v2 = {'v2': {n: h['counts']['plainBlockedSetbacksM'] for n, h in v2doc['heights'].items() if 'error' not in h},
+                      'flip': {n: h['shapeV1']['flipTable'] for n, h in r['heights'].items() if 'error' not in h}}
+            prediction = protocol.get('predictions', {}).get('scenes', {}).get(name)
+            entry['predictions'] = shape_v1_predictions(entry, prediction, v2) if prediction and v2 else None
+            entry['targetMet'] = (entry['total']['likelyFalse'] == 0) if entry['scored'] else None
+        scenes.append(entry)
+    doc = {'kind': 'metric-f shape-v1 approach-split summary' if approach else 'metric-f shape-v1 summary', 'protocolSha256': digest,
+           'label': protocol['label'], 'heightFrame': protocol['definition']['heightFrame'], 'scenes': scenes}
+    if approach:
+        add = protocol['approachSplit']['addendum']; raw = Path(add['path']).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == add['sha256'], 'The split addendum differs from its pinned SHA-256'
+        addendum = json.loads(raw)
+        doc.update({'addendum': add, 'notAGate': addendum['notAGate'], 'dependenceThatRemains': addendum['dependenceThatRemains'],
+                    'whatDiffers': addendum['whatDiffers'], 'limits': addendum['limits'],
+                    'noNewBlockedAllScenes': all(s['noNewBlockedReportOnly'] for s in scenes)})
+    else:
+        doc.update({'target': protocol['target']['rule'],
+                    'targetMetAllScoredScenes': all(s['targetMet'] for s in scenes if s['scored']),
+                    'hardChecks': {k: all(s['checks'][k] for s in scenes) for k in ('noNewBlocked', 'allowedChanges', 'boxReproduction')}})
+    print(write_new(args.out, doc))
+
+
 def cmd_summarize(args):
     protocol, digest = load_protocol(args.protocol, args.protocol_lock)
+    docs = [(json.loads(Path(f).read_bytes()), f) for f in args.results]
+    if any('shapeV1' in r for r, _ in docs):
+        assert all('shapeV1' in r for r, _ in docs), 'Shape-v1 results are summarized on their own'
+        assert all(r['protocolSha256'] == digest for r, _ in docs)
+        return cmd_summarize_shape_v1(args, protocol, digest, docs)
     scored = set(protocol['target']['scoredScenes']); scenes = []
     for f in args.results:
         r = json.loads(Path(f).read_bytes()); assert r['protocolSha256'] == digest
@@ -686,10 +1030,13 @@ def main(argv=None):
             for k in ('ground', 'suggestions', 'scene', 'annotations', 'poses', 'calibration', 'log-id'):
                 s.add_argument('--' + k, required=True)
             s.add_argument('--sweep-dir', action='append', required=True); s.add_argument('--receipt', action='append')
+            s.add_argument('--scoring-sweeps-from', help='metric F shape-v1: use only carShape.sweeps.scoring of this file')
         elif name == 'score':
             for k in ('profile', 'rows', 'scene'):
                 s.add_argument('--' + k, required=True)
             s.add_argument('--same-classes-as', help='earlier results file whose row classes must be reproduced exactly')
+            s.add_argument('--box-rows-from', help='metric F v2 rows file the box gaps and setbacks must reproduce (shape-v1)')
+            s.add_argument('--app-results', help='approach split: the metric F shape-v1 results of the same scene (app shape result per row)')
         elif name == 'summarize':
             s.add_argument('--results', nargs='+', required=True)
         else:
