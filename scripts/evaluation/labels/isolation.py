@@ -23,7 +23,9 @@ transcripts.json (coordinator-owned): {"sessions": {"L1/V01": ["<agent transcrip
 
 Limits: the scan reads tool-call inputs only (Claude Code `tool_use`, Codex `function_call`, `custom_tool_call`,
 `local_shell_call`). The agent's final report (Claude Code `SubagentHandback`, REPORT_TOOLS) is the reply the
-labeler instructions ask for, opens no file and is not scanned; reports are counted (`reportCalls`). A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
+labeler instructions ask for, opens no file and is not scanned; reports are counted (`reportCalls`). A Claude Code Bash
+call's `description` (a display label, never run) is not scanned either: "Locate the magenta square" matched the
+`locate` rule in the L2/V01 transcript. A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
 rules (sealed, answer-key, selftest, ...), the parent-folder (`..`) rule and the directory-walk rule narrow this but
 do not close it. The scan is recorded evidence, not proof.
 """
@@ -47,6 +49,7 @@ SCAN_SCHEMA = 'pao-labels-transcript-scan-v1'
 TOOL_CALL_FIELDS = {'tool_use': ('input',), 'server_tool_use': ('input',), 'function_call': ('arguments',),
                     'custom_tool_call': ('input',), 'local_shell_call': ('action',)}
 REPORT_TOOLS = ('SubagentHandback',)  # the final reply to the coordinator (section 7), not a file access
+DISPLAY_ONLY = {'Bash': ('description',)}  # Claude Code input fields shown to people, never executed
 ID = r'[A-Za-z0-9_-]+'
 SESSION_WORD = re.compile(r'(?<![\w-])(?:sessions|scratch)(?![\w-])', re.IGNORECASE)
 FLAG = re.compile(r'--(labeler|task)(?:=|\s+)[\'"]?(' + ID + ')')
@@ -180,6 +183,9 @@ def tool_inputs(node):
             kind = item.get('type')
             if isinstance(kind, str) and kind in TOOL_CALL_FIELDS:  # some records carry a non-text 'type'
                 parts = [item[f] for f in TOOL_CALL_FIELDS[kind] if item.get(f) is not None]
+                skip = DISPLAY_ONLY.get(item.get('name')) if kind == 'tool_use' else None
+                if skip:
+                    parts = [{k: v for k, v in p.items() if k not in skip} if isinstance(p, dict) else p for p in parts]
                 yield str(item.get('name', kind)), ' '.join(p if isinstance(p, str) else json.dumps(p, sort_keys=True) for p in parts)
                 continue
             stack.extend(item.values())

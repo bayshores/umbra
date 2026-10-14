@@ -221,6 +221,20 @@ class TranscriptScanTests(unittest.TestCase):
         tool = isolation.scan_transcript(self.write('tool.jsonl', CLEAN + [claude_line('Bash', command='echo ' + text)]), 'L1', 'V01', self.rules)
         self.assertTrue(tool['hits'])
 
+    def test_a_bash_description_is_not_scanned_but_its_command_is(self):
+        # L2/V01 described a pixel probe as "Locate the magenta square ..."; the description is never executed.
+        probe = 'python ' + REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/probe.py ' + OWN
+        clean = isolation.scan_transcript(self.write('described.jsonl', CLEAN + [claude_line(
+            'Bash', command=probe, description='Locate the magenta square in question 5')]), 'L1', 'V01', self.rules)
+        self.assertEqual(clean['hits'], [])
+        dirty = isolation.scan_transcript(self.write('located.jsonl', CLEAN + [claude_line(
+            'Bash', command='locate answer', description='Show question 5')]), 'L1', 'V01', self.rules)
+        self.assertTrue(dirty['hits'])
+        other = isolation.scan_transcript(self.write('other-tool.jsonl', CLEAN + [claude_line(
+            'Write', file_path=REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/n.py', content='x', description='locate x')]),
+            'L1', 'V01', self.rules)
+        self.assertTrue(other['hits'])
+
     def test_each_forbidden_access_is_a_hit(self):
         for label, line in FORBIDDEN.items():
             with self.subTest(label):
