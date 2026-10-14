@@ -235,6 +235,30 @@ class TranscriptScanTests(unittest.TestCase):
             'L1', 'V01', self.rules)
         self.assertTrue(other['hits'])
 
+    def test_a_comment_in_written_python_is_not_scanned_but_its_code_is(self):
+        # L1/V02 wrote a helper whose comment said "to locate a horizontal edge"; a comment never runs.
+        path = REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/edgey.py'
+        comment = 'import sys\n# For each x, print the column values, to locate a horizontal edge.\nx = 1  # locate it\n'
+        for tool, fields in (('Write', {'content': comment}), ('Edit', {'old_string': 'x = 0\n', 'new_string': comment})):
+            with self.subTest(tool):
+                clean = isolation.scan_transcript(self.write(f'{tool}-c.jsonl', CLEAN + [claude_line(tool, file_path=path, **fields)]),
+                                                  'L1', 'V01', self.rules)
+                self.assertEqual(clean['hits'], [])
+        code = [('code', 'import glob\nglob.glob("*")  # list them\n'),
+                ('string', 'import os\nos.system("locate answer")\n'),
+                ('docstring', '"""To locate the edge."""\n'),
+                ('walk', '# just a probe\nimport os\nos.walk(".")\n'),
+                ('does not tokenize', 'x = "unterminated\n# locate it\n')]
+        for label, text in code:
+            with self.subTest(label):
+                dirty = isolation.scan_transcript(self.write(f'{label}.jsonl', CLEAN + [claude_line('Write', file_path=path, content=text)]),
+                                                  'L1', 'V01', self.rules)
+                self.assertTrue(dirty['hits'], label)
+        shell = isolation.scan_transcript(self.write('sh.jsonl', CLEAN + [claude_line(
+            'Write', file_path=path[:-3] + '.sh', content='# locate it\n')]), 'L1', 'V01', self.rules)
+        self.assertTrue(shell['hits'])
+        self.assertEqual(isolation.without_python_comments('a = "#x"  # c\nb = 2\n'), 'a = "#x"  \nb = 2\n')
+
     def test_each_forbidden_access_is_a_hit(self):
         for label, line in FORBIDDEN.items():
             with self.subTest(label):
