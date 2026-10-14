@@ -2,6 +2,8 @@
 
   python -I build_validation.py --protocol P.json --base DIR [--selection cases/selection.json]   # locked protocol
   python -I build_validation.py --draft --protocol P.json --base OUTDIR --selection S.json        # unlocked trial build
+  python -I build_validation.py --draft --synthetic-only --protocol P.json --base OUTDIR          # synthetic cases only,
+        into a folder outside the repository (tool smoke tests; no selection file, no real cases, no coordinator folder)
 
 Writes:
   validation/images/<task>.jpg, validation/overviews/<task>.png   what labelers see (raw or synthetic photo)
@@ -14,6 +16,9 @@ Writes:
   validation-lock.json                                           hashes of all of the above (v2: and of the labeler
                                                                  instructions), written before labeling
 Real cases use LiDAR inner-bound references (coarse, see protocol); synthetic cases are exact.
+Protocol v2 synthetic vehicles (`synthetic.vehicleModels` "v2"): sedan, hatchback, SUV and van from synth.vehicle_v2
+with per-part materials, decals and a contact shadow (`synthetic.materials`, `sunDirection`, `contactShadow`); the
+v1 `box` model is refused. Without `vehicleModels` (protocol v1) the v1 renderer and materials are used unchanged.
 
 Protocol v1 put every task field, including vehicle station columns at 25/50/75 % of the projected AV2 box,
 into the one file labelers read (audit finding, protocol-v1.errata.md). Protocol v2 (`taskFiles`) keeps only
@@ -92,6 +97,8 @@ def synthetic_case(spec, S):
     pose = synth.plane_frame(coef, point, yaw)
     image = rgb.astype(float)
     entry = {'source': 'synthetic', 'kind': spec['kind'], 'spec': spec, 'groundPlane': [float(c) for c in coef]}
+    if spec['kind'] == 'car' and S.get('vehicleModels') == 'v2':
+        return synthetic_car_v2(spec, S, rgb, camera, pose, image, entry)
     if spec['kind'] == 'car':
         L, W, H = spec['sizeM']
         parts = [(n, apply(pose, v), fc, m) for n, v, fc, m in synth.vehicle(spec['model'], L, W, H)]
@@ -123,6 +130,44 @@ def synthetic_case(spec, S):
                       'roadLuminance': road, 'barCentersPx': bar_centres(polys, spec, S['paintStationSpacingPx'])})
     jpeg = synth.camera_finish(np.clip(image, 0, 255), mask, S['blurPx'], S['noise'], S['jpegQuality'], seed=spec['seed'])
     return jpeg, entry
+
+
+def synthetic_car_v2(spec, S, rgb, camera, pose, image, entry):
+    """Protocol v2 synthetic vehicle (coverage-design.md section 4). Truth = the convex parts only: the contact shadow
+    is drawn on the background before the vehicle, and materials/decals only recolour pixels the parts cover."""
+    L, W, H = spec['sizeM']
+    local_parts, local_decals, wheels = synth.vehicle_v2(spec['model'], L, W, H)  # refuses `box`
+    parts = [(n, apply(pose, v), fc, m) for n, v, fc, m in local_parts]
+    decals = {n: [(fi, apply(pose, v), m) for fi, v, m in items] for n, items in local_decals.items()}
+    road = road_luminance(rgb, camera, apply(pose, np.array([[x, y, 0] for x in (-L / 2 - 1.5, L / 2 + 1.5) for y in (-W, W)])))
+    exposure = (road / 255.0) / S['roadAlbedo']
+    materials = {name: dict(values) for name, values in S['materials'].items()}
+    materials['body']['albedo'] = spec['albedo']
+    cs = S['contactShadow']
+    margin = int(np.ceil(3 * max(cs['bodyBlurPx'], cs['tireBlurPx']))) + 2
+    body_foot, tire_feet = synth.contact_footprints(L, W, wheels, cs['offsetM'])
+    image = synth.shadow(image, camera, apply(pose, body_foot), cs['bodyStrength'], cs['bodyBlurPx'], margin=margin)
+    for foot in tire_feet:
+        image = synth.shadow(image, camera, apply(pose, foot), cs['tireStrength'], cs['tireBlurPx'], margin=margin)
+    image, coverage, region, polygons = synth.render_solids(image, camera, parts, materials, S['supersample'], seed=spec['seed'],
+                                                            exposure=exposure, light=tuple(S['sunDirection']), decals=decals)
+    mask = np.zeros(rgb.shape[:2], bool)
+    x0, y0, w, h = region
+    mask[y0:y0 + h, x0:x0 + w] = coverage > 0
+    entry.update({'carPolygons': [p.round(4).tolist() for p in polygons], 'coverageOrigin': [x0, y0], '_coverage': coverage,
+                  'exposure': exposure, 'roadLuminance': road, 'vehicleModels': 'v2'})
+    jpeg = synth.camera_finish(np.clip(image, 0, 255), mask, S['blurPx'], S['noise'], S['jpegQuality'], seed=spec['seed'])
+    return jpeg, entry
+
+
+def check_synthetic_models(S):
+    """Protocol v2 refuses the v1 `box` model (and any unknown model) before anything is built."""
+    if S.get('vehicleModels') != 'v2':
+        return
+    for spec in S['cases']:
+        if spec['kind'] == 'car':
+            require(spec['model'] in synth.VEHICLE_V2, f"synthetic case {spec['id']}: model {spec['model']!r} is not a v2 model "
+                                                       f"({', '.join(sorted(synth.VEHICLE_V2))}); box is v1 only")
 
 
 def crosswalk_quads(spec, pose):
@@ -352,10 +397,18 @@ def main(argv):
     parser.add_argument('--protocol', required=True)
     parser.add_argument('--base', required=True)
     parser.add_argument('--selection')
+    parser.add_argument('--synthetic-only', action='store_true',
+                        help='draft smoke test: synthetic cases only, written to --base outside the repository')
     args = parser.parse_args(argv)
     draft, protocol_path, base = args.draft, Path(args.protocol), Path(args.base)
-    selection_path = Path(args.selection) if args.selection else base / 'cases/selection.json'
-    selection = read_json(selection_path)
+    synthetic_only = args.synthetic_only
+    if synthetic_only:
+        require(draft, '--synthetic-only is a draft smoke test: add --draft')
+        require(not isolation.inside_repo(base), '--synthetic-only writes its answer key under --base: use a folder outside the repository')
+        selection = {'logs': {}}
+    else:
+        selection_path = Path(args.selection) if args.selection else base / 'cases/selection.json'
+        selection = read_json(selection_path)
     if draft:
         P = read_json(protocol_path)
         phash = 'DRAFT-' + sha256_file(protocol_path)
@@ -368,6 +421,7 @@ def main(argv):
         path = protocol_path.parent / P['labelerInstructions']
         require(path.exists(), f'missing labeler instructions {path.name}')
         instructions = {'path': relative(path), 'sha256': sha256_file(path)}
+    check_synthetic_models(P['synthetic'])
     rng = random.Random(P['taskOrderSeed'])
     built = []
     for short, info in selection['logs'].items():
@@ -436,6 +490,8 @@ def main(argv):
     # v2 requires each repeat to run in a different fresh agent from its original (protocol labelers.isolation).
     for label in P['repeatCases']:
         originals = [t for t in tasks if key[t['taskId']]['caseLabel'].startswith(label)]
+        if synthetic_only and not originals:
+            continue  # smoke test: real repeat cases are not built
         require(len(originals) == 1, f'repeat case {label} matched {len(originals)} tasks')
         orig = originals[0]
         entry = key[orig['taskId']]
@@ -462,7 +518,7 @@ def main(argv):
                      'cli': 'python -I scripts/evaluation/labels/labelkit.py --labeler <ID> --task <TASK> next|answer <A>|status',
                      'interpreter': '.local/venv-labels/bin/python'}
     tasks_hash, internal_hash = write_task_files(base, tasks, P, common_fields, instructions)
-    sealed_spec = isolation.sealed_spec(P)
+    sealed_spec = None if synthetic_only else isolation.sealed_spec(P)
     if sealed_spec:
         sealed = isolation.coordinator_root(sealed_spec['env']) / sealed_spec['subdir']
         require(draft or not (sealed / 'answer-key.json').exists(), 'a sealed answer key already exists for this protocol version')

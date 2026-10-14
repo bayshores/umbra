@@ -11,6 +11,14 @@ Predicates are monotone over an integer position axis. Two feature families:
   i - 0.5). Estimate = coordinate of the final 'outside' line.
 - pixel features (profile stations, wheel contacts, paint stations): position i is pixel i on the
   scanline. Estimate = boundary between the final outside and inside pixels; then snapped.
+
+Protocol v2 coverage design (`search.ambiguity`, coverage-design.md section 1): a `cannot_tell` during bisection marks
+that position ambiguous instead of ending the feature. The search stops at an ordinary result (b - a = 1) or a range
+result (every position between the two definite ends was answered `cannot_tell`). A range is accepted when it has at
+most `maxInteriorPx` positions and the feature used at most `maxCannotTell` `cannot_tell` answers; its estimate is the
+middle of the range and `rangeHalfWidthPx` states the +/- (0 for an ordinary result, whose estimate equals v1's).
+A `cannot_tell` at a bracket end expands the bracket; a pick question accepts `cannot_tell` (it acts like 0).
+Without `search.ambiguity` (protocol v1) every behaviour, answer and result is exactly as before.
 """
 from __future__ import annotations
 
@@ -30,15 +38,21 @@ class Question(dict):
 VALID = {'yesno': ('yes', 'no', 'cannot_tell')}
 
 
+def _cannot_tell_form(text):
+    return text.lower().replace(' ', '_').replace("can't_tell", 'cannot_tell')
+
+
 def normalize_answer(question, answer):
     """Validate an answer string for a question. Returns the canonical value or raises ValueError."""
     text = str(answer).strip()
     kind = question['kind']
     if kind == 'yesno':
-        value = text.lower().replace(' ', '_').replace("can't_tell", 'cannot_tell')
+        value = _cannot_tell_form(text)
         if value not in VALID['yesno']:
             raise ValueError('Answer yes, no or cannot_tell')
         return value
+    if kind == 'pick' and (question.get('render') or {}).get('allowCannotTell') and _cannot_tell_form(text) == 'cannot_tell':
+        return 'cannot_tell'  # protocol v2 (search.ambiguity): an honest cannot_tell is allowed in pick questions
     if kind in ('box', 'cell'):
         if text.lower() == 'none':
             return 'none'
@@ -106,13 +120,18 @@ def search(ctx, feature, spec):
     Returns dict with status, bracket, estimate and the question trail.
     """
     p = ctx.p['search']
+    ambiguity = p.get('ambiguity')  # protocol v2 coverage design; None keeps the v1 search exactly
     a, b, qa = spec['a'], spec['b'], spec['qa']
     trail = {'expansions': 0, 'candidate': None, 'repeat': [], 'restarts': 0}
+    if ambiguity:
+        trail['cannotTell'] = 0
 
     def ask(pos, purpose, jitter=(0, 0)):
         render = {'type': 'question', 'context': spec['context'], 'window': spec['window'](pos, jitter),
                   'zoom': spec['zoom'], 'marker': spec['marker'](pos), 'guides': spec.get('guides', [])}
         answer = yield ctx.question('yesno', feature, spec['text'](pos), render=dict(render, purpose=purpose, position=int(pos)))
+        if answer == 'cannot_tell' and ambiguity:
+            trail['cannotTell'] += 1
         return None if answer == 'cannot_tell' else answer == 'yes'
 
     def pick_candidate(lo, hi):
@@ -132,9 +151,17 @@ def search(ctx, feature, spec):
         render = {'type': 'question', 'context': spec['context'], 'window': window,
                   'zoom': zoom, 'marker': {'type': 'column' if spec['axis'] == 'y' else 'row', 'at': spec['fixed']},
                   'candidates': numbered, 'guides': spec.get('guides', []), 'purpose': 'pick'}
+        if ambiguity:
+            render['allowCannotTell'] = True
+        if r.get('tickOnPixelBoundary'):
+            render['tickOnPixelBoundary'] = True  # ticks drawn on the pixel boundary nearest each candidate (design section 3)
         answer = yield ctx.question('pick', feature, spec['pick_text'](len(found)), options=len(found), render=render)
-        pick = int(answer)
+        unsure = answer == 'cannot_tell'
+        pick = 0 if unsure else int(answer)
         trail['candidate'] = {'offered': [round(c, 3) for c, _ in found], 'picked': pick, 'accepted': False}
+        if unsure:
+            trail['candidate']['cannotTell'] = True  # recorded; behaves like 0 (no candidate)
+            trail['cannotTell'] += 1
         if not pick:
             return None
         mixed = int(round(found[pick - 1][0]))  # pixel whose span contains the candidate boundary
@@ -155,6 +182,8 @@ def search(ctx, feature, spec):
         if narrow is None:
             reason = 'no candidate edge' if not trail['candidate']['offered'] else (
                 'labeler rejected all candidates' if not trail['candidate']['picked'] else 'candidate bracket check failed')
+            if trail['candidate'].get('cannotTell'):
+                reason = 'cannot_tell at candidate pick'
             return {'status': 'unresolved', 'reason': reason, **trail}
         a, b = narrow
         checked = (a, b)
@@ -164,8 +193,9 @@ def search(ctx, feature, spec):
             while True:
                 pos = a if end == 'a' else b
                 got = yield from ask(pos, 'bracket-' + end)
-                if got is None:
+                if got is None and not ambiguity:
                     return {'status': 'unresolved', 'reason': f'cannot_tell at bracket {end}', **trail}
+                # protocol v2: a cannot_tell at a bracket end is treated like a wrong answer there (the bracket expands)
                 want = qa if end == 'a' else (not qa)
                 if got == want:
                     break
@@ -187,15 +217,33 @@ def search(ctx, feature, spec):
     # 3. bisection, 4. repeat check (one restart allowed)
     while True:
         a, b = start
+        unsure = set()  # protocol v2: positions answered cannot_tell (the set U of coverage-design.md section 1)
         while b - a > 1:
-            m = (a + b) // 2
+            if ambiguity:
+                interior = [pos for pos in range(a + 1, b) if pos not in unsure]
+                if not interior:
+                    break  # range result: every position between the definite ends was answered cannot_tell
+                m = min(interior, key=lambda pos: (abs(2 * pos - (a + b)), pos))  # nearest the midpoint; ties: lower
+            else:
+                m = (a + b) // 2
             got = yield from ask(m, 'bisect')
             if got is None:
-                return {'status': 'unresolved', 'reason': 'cannot_tell during bisection', **trail}
+                if not ambiguity:
+                    return {'status': 'unresolved', 'reason': 'cannot_tell during bisection', **trail}
+                unsure.add(m)
+                continue
             if got == qa:
                 a = m
             else:
                 b = m
+            unsure = {pos for pos in unsure if a < pos < b}
+        if ambiguity:
+            n = b - a - 1
+            span = {'bracket': [int(a), int(b)], 'ambiguous': sorted(int(pos) for pos in unsure), 'rangeHalfWidthPx': n / 2}
+            if n > ambiguity['maxInteriorPx']:
+                return {'status': 'unresolved', 'reason': 'ambiguous range too wide', **span, **trail}
+            if n > 0 and trail['cannotTell'] > ambiguity['maxCannotTell']:
+                return {'status': 'unresolved', 'reason': 'too many cannot_tell', **span, **trail}
         ends = ['a', 'b']
         ctx.rng.shuffle(ends)
         consistent = True
@@ -213,6 +261,15 @@ def search(ctx, feature, spec):
         if trail['restarts'] >= p['maxRestarts']:
             return {'status': 'unresolved', 'reason': 'repeat answer contradicted bisection twice', **trail}
         trail['restarts'] += 1
+    if ambiguity:
+        # coverage-design.md section 1; n = 0 gives exactly the v1 formulas below
+        n = b - a - 1
+        if spec['family'] == 'line':
+            estimate = (a + 0.5 if qa else a - 0.5) + n / 2
+        else:
+            estimate = (a + b) / 2
+        return {'status': 'resolved', 'bracket': [int(a), int(b)], 'checkedBracket': [int(checked[0]), int(checked[1])],
+                'estimate': float(estimate), 'ambiguous': sorted(int(pos) for pos in unsure), 'rangeHalfWidthPx': n / 2, **trail}
     outside = a if not qa else b  # the position whose answer is 'no' (outside the target)
     if spec['family'] == 'line':
         estimate = outside - 0.5
@@ -302,11 +359,14 @@ def pixel_feature(ctx, feature, axis, fixed, a, b, qa, box, mode, sign, expand_s
             'candidateInside': p['search']['candidateInsidePixels'][mode], 'candidateFirst': mode == 'paint',
             'pick_text': lambda n: (f'Coloured numbered ticks (1 to {n}) mark candidate edges on the scan line through the magenta '
                                     f'column/row. Which number sits exactly on the boundary between {inside} and {outside}? '
-                                    'Answer the number, or 0 if none of them is on that boundary.')}
+                                    'Answer the number, or 0 if none of them is on that boundary.' +
+                                    (' Answer cannot_tell if you cannot tell.' if p['search'].get('ambiguity') else ''))}
     result = yield from search(ctx, feature, spec)
     result.update({'axis': axis, 'fixed': int(fixed)})
     if result['status'] == 'resolved':
-        snapped = snap.snap(ctx.rgb, axis, fixed, result['estimate'], window=p['snap']['window'],
+        # protocol v2: a range result widens the snapping window to its stated +/- (v1 results carry no range: unchanged)
+        window = max(p['snap']['window'], result.get('rangeHalfWidthPx', 0))
+        snapped = snap.snap(ctx.rgb, axis, fixed, result['estimate'], window=window,
                             sigma=p['snap']['sigma'], min_strength=p['snap']['minStrength'])
         result['snapped'] = None if snapped is None else round(snapped[0], 4)
         result['value'] = result['snapped'] if snapped is not None else result['estimate']
@@ -318,21 +378,34 @@ def station_columns(ctx, extremes, box):
 
     Protocol v1 ('carColumns' absent): fixed columns from the task file. For real vehicles these were 25/50/75 % of the
     projected AV2 box, so a labeler reading the task list could recover the box edges (audit finding; disclosed in
-    protocol-v1.errata.md). Protocol v2 ('labelerExtremes'): fractions of the span between THIS labeler's own left
+    protocol-v1.errata.md). Earlier v2 draft ('labelerExtremes'): fractions of the span between THIS labeler's own left
     and right answers (bisection estimates; the labeler's own grid-box edge for a side left unresolved). No box,
     LiDAR or map number is involved, and the task file carries no vehicle columns.
+    Protocol v2 coverage design ('labelerExtremesOnGrid', coverage-design.md section 2): the same fractions, each moved
+    to the nearest grid-cell centre column of the overview the labeler sees (x0 + k * cell + cell // 2), so labelers
+    whose answers differ by a pixel or two measure the same column. Duplicates are handled in car_generator.
     """
     st = ctx.p['stations']
     rule = st.get('carColumns', 'task')
     if rule == 'task':
         return [int(c) for c in ctx.task.get('stationColumns', [])]
-    if rule != 'labelerExtremes':
+    if rule not in ('labelerExtremes', 'labelerExtremesOnGrid'):
         raise ValueError(f'unknown stations.carColumns rule {rule}')
     left = extremes['L'].get('value', box[0] - 0.5)
     right = extremes['R'].get('value', box[1] + 0.5)
     if right - left < st.get('carMinSpanPx', 4):
         return []
-    return [int(np.floor(left + f * (right - left) + 0.5)) for f in st['carFractions']]
+    if rule == 'labelerExtremes':
+        return [int(np.floor(left + f * (right - left) + 0.5)) for f in st['carFractions']]
+    meta = ctx.overview_meta
+    x0, cell, count = meta['region'][0], meta['cell'], meta['columns']
+    columns = []
+    for f in st['carFractions']:
+        target = left + f * (right - left)
+        k = int(np.floor((target - x0 - cell // 2) / cell + 0.5))
+        k = min(max(k, 0), count - 1)
+        columns.append(int(x0 + k * cell + cell // 2))
+    return columns
 
 
 def car_generator(ctx):
@@ -366,7 +439,11 @@ def car_generator(ctx):
     columns = station_columns(ctx, extremes, box)
     if p['stations'].get('carColumns', 'task') != 'task':
         out['stationColumns'] = columns  # v2: the labeler's own columns (v1 results keep their original shape)
+    on_grid = p['stations'].get('carColumns') == 'labelerExtremesOnGrid'
     for k, column in enumerate(columns):
+        if on_grid and column in columns[:k]:
+            out['features'][f'S{k + 1}'] = {'status': 'unresolved', 'reason': 'same grid column', 'fixed': int(column)}
+            continue
         a = int(np.floor(top)) - p['search']['bracketMargin']
         b = int(round(top + p['stations']['insideFraction'] * (bottom - top)))
         if b - a < 3:

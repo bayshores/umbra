@@ -6,6 +6,12 @@ convex hulls of its projected vertices: the ground truth (extremes, top/bottom p
 paint near-edge row at any column) is exact. Images are rendered at `supersample` x resolution with a
 z-buffer, box-filtered down, blurred, noised and JPEG-encoded like a camera frame.
 Synthetic images are illustrative test material only, never evidence about a real scene.
+
+Protocol v2 (`synthetic.vehicleModels` "v2", coverage-design.md section 4): `vehicle_v2` builds sedan, hatchback,
+SUV and van shapes from more convex parts (body, hood, cabin with sloped glass, trunk, roof, bumpers, wheels,
+mirrors). Rims, wheel arches and lights are coplanar colour patches ("decals") on existing faces, never geometry,
+and the contact shadow darkens only the background: neither can change the coverage map or the polygons, so the
+exact-silhouette rule above still holds. The v1 `vehicle` (including `box`) is unchanged for protocol v1.
 """
 from __future__ import annotations
 
@@ -85,6 +91,111 @@ def vehicle(kind, length, width, height):
         v, f = prism(rect(mx - 0.10, mx + 0.06, y_lo, y_hi), belt + 0.06, belt + 0.20)
         parts.append((f'mirror{sy:+d}', v, f, 'body'))
     return parts
+
+
+# Protocol v2 shapes. Lengths along the vehicle are fractions of L; sill/belt/wheel radius in metres.
+#   frontBase/rearBase: hood / trunk length (cabin base starts there); frontTop/rearTop: where the cabin top ends;
+#   frontAxle/rearAxle: wheel centre distance from each end; hoodRise/trunkRise: height of the hood / trunk slab.
+VEHICLE_V2 = {
+    'sedan': {'sill': 0.22, 'belt': 0.78, 'wheelR': 0.33, 'frontBase': 0.33, 'rearBase': 0.22, 'frontTop': 0.445,
+              'rearTop': 0.31, 'frontAxle': 0.20, 'rearAxle': 0.22, 'hoodRise': 0.06, 'trunkRise': 0.08},
+    'hatchback': {'sill': 0.22, 'belt': 0.82, 'wheelR': 0.32, 'frontBase': 0.30, 'rearBase': 0.06, 'frontTop': 0.45,
+                  'rearTop': 0.14, 'frontAxle': 0.20, 'rearAxle': 0.19, 'hoodRise': 0.06, 'trunkRise': None},
+    'suv': {'sill': 0.32, 'belt': 1.00, 'wheelR': 0.38, 'frontBase': 0.25, 'rearBase': 0.04, 'frontTop': 0.36,
+            'rearTop': 0.07, 'frontAxle': 0.19, 'rearAxle': 0.21, 'hoodRise': 0.05, 'trunkRise': None},
+    'van': {'sill': 0.30, 'belt': 1.00, 'wheelR': 0.36, 'frontBase': 0.16, 'rearBase': 0.02, 'frontTop': 0.27,
+            'rearTop': 0.03, 'frontAxle': 0.17, 'rearAxle': 0.20, 'hoodRise': 0.04, 'trunkRise': None},
+}
+WHEEL_SEGMENTS = 20
+
+
+def _ngon(cx, cz, radius, y, count=16):
+    angles = np.linspace(0, 2 * np.pi, count, endpoint=False)
+    return np.column_stack([cx + radius * np.cos(angles), np.full(count, y), cz + radius * np.sin(angles)])
+
+
+def _arch(cx, radius, wheel_r, sill, y, count=17):
+    """D-shaped patch on a body side: the part of a circle around the wheel centre above the sill (convex)."""
+    low = np.arcsin(np.clip((sill - wheel_r) / radius, -1.0, 1.0))
+    angles = np.linspace(low, np.pi - low, count)
+    return np.column_stack([cx + radius * np.cos(angles), np.full(count, y), wheel_r + radius * np.sin(angles)])
+
+
+def _patch_x(x, y0, y1, z0, z1):
+    return np.array([[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]], float)
+
+
+def vehicle_v2(kind, length, width, height):
+    """Protocol v2 vehicle (coverage-design.md section 4). Returns (parts, decals, wheels), all vehicle-local.
+
+    parts: [(name, vertices, faces, material)], each part convex (the silhouette truth uses only these).
+    decals: {part name: [(face index, vertices, material)]}: flat colour patches lying on that face.
+    wheels: [(x, y, radius, width)] for the contact shadow. `box` is not a v2 model and is refused.
+    """
+    if kind not in VEHICLE_V2:
+        raise ValueError(f'vehicle model {kind!r} is not a protocol v2 model (box is v1 only)')
+    g = VEHICLE_V2[kind]
+    L, W, H = length, width, height
+    sill, belt, r = g['sill'], g['belt'], g['wheelR']
+    if not belt + 0.3 < H:
+        raise ValueError(f'height {H} too low for model {kind}')
+    parts, decals, wheels = [], {}, []
+    body_x0, body_x1, chamfer = -L / 2 + 0.05, L / 2 - 0.05, 0.22
+    v, f = prism(chamfered(body_x0, body_x1, -W / 2, W / 2, chamfer), sill, belt)
+    parts.append(('body', v, f, 'body'))
+    base0, base1 = -L / 2 + g['rearBase'] * L, L / 2 - g['frontBase'] * L
+    top0, top1 = -L / 2 + g['rearTop'] * L, L / 2 - g['frontTop'] * L
+    roof0 = H - 0.06
+    v, f = prism(rect(base0, base1, -W / 2 + 0.08, W / 2 - 0.08), belt, roof0, rect(top0, top1, -W / 2 + 0.22, W / 2 - 0.22))
+    parts.append(('cabin', v, f, 'glass'))
+    v, f = prism(rect(top0, top1, -W / 2 + 0.22, W / 2 - 0.22), roof0, H)
+    parts.append(('roof', v, f, 'body'))
+    v, f = prism(rect(base1 - 0.05, body_x1 - 0.02, -W / 2 + 0.06, W / 2 - 0.06), belt, belt + g['hoodRise'],
+                 rect(base1 - 0.05, body_x1 - 0.20, -W / 2 + 0.14, W / 2 - 0.14))
+    parts.append(('hood', v, f, 'body'))
+    if g['trunkRise']:
+        v, f = prism(rect(body_x0 + 0.02, base0 + 0.05, -W / 2 + 0.06, W / 2 - 0.06), belt, belt + g['trunkRise'],
+                     rect(body_x0 + 0.15, base0 + 0.05, -W / 2 + 0.14, W / 2 - 0.14))
+        parts.append(('trunk', v, f, 'body'))
+    bumper_z0, bumper_z1 = sill - 0.04, sill + 0.28
+    for name, x0, x1 in (('bumperFront', L / 2 - 0.30, L / 2), ('bumperRear', -L / 2, -L / 2 + 0.30)):
+        v, f = prism(chamfered(x0, x1, -W / 2 + 0.06, W / 2 - 0.06, 0.12), bumper_z0, bumper_z1)
+        parts.append((name, v, f, 'trim'))
+    wheel_w = 0.24
+    side_faces = {-1: 0, 1: 4}  # chamfered-prism side faces: 0 lies on y = -W/2, 4 on y = +W/2
+    for sx, axle in ((1, L / 2 - g['frontAxle'] * L), (-1, -L / 2 + g['rearAxle'] * L)):
+        for sy in (-1, 1):
+            wy = sy * (W / 2 - 0.11)  # outer face 1 cm proud of the body side
+            name = f'wheel{sx:+d}{sy:+d}'
+            v, f = cylinder_y(axle, wy, r, r, wheel_w, WHEEL_SEGMENTS)
+            parts.append((name, v, f, 'tire'))
+            outer_y = wy + sy * wheel_w / 2
+            cap = WHEEL_SEGMENTS + 1 if sy > 0 else WHEEL_SEGMENTS  # cylinder_y caps: index seg at y - w/2, seg + 1 at y + w/2
+            decals.setdefault(name, []).append((cap, _ngon(axle, r, 0.62 * r, outer_y), 'rim'))
+            decals.setdefault('body', []).append((side_faces[sy], _arch(axle, r + 0.07, r, sill, sy * W / 2), 'arch'))
+            wheels.append((axle, wy, r, wheel_w))
+    mirror_x = base1 - 0.12
+    for sy in (-1, 1):
+        y_lo, y_hi = (-W / 2 - 0.11, -W / 2 + 0.14) if sy < 0 else (W / 2 - 0.14, W / 2 + 0.11)
+        v, f = prism(rect(mirror_x - 0.10, mirror_x + 0.06, y_lo, y_hi), belt + 0.06, belt + 0.20)
+        parts.append((f'mirror{sy:+d}', v, f, 'body'))
+    light_z0, light_z1 = belt - 0.17, belt - 0.06
+    for sy in (-1, 1):
+        ya, yb = sorted((sy * (W / 2 - 0.46), sy * (W / 2 - 0.23)))
+        decals['body'].append((2, _patch_x(body_x1, ya, yb, light_z0, light_z1), 'headlight'))  # face 2: front, x = body_x1
+        decals['body'].append((6, _patch_x(body_x0, ya, yb, light_z0, light_z1), 'taillight'))  # face 6: rear, x = body_x0
+    return parts, decals, wheels
+
+
+def contact_footprints(length, width, wheels, offset=(0.0, 0.0)):
+    """Ground quads (vehicle-local, z just above the road) for the soft contact shadow: the body footprint, offset
+    by `offset`, and one small patch under each tire. Background only: never part of the vehicle or its truth."""
+    L, W = length, width
+    ox, oy = offset
+    body = np.array([[x + ox, y + oy, 0.005] for x in (-L / 2 + 0.05, L / 2 - 0.05) for y in (-W / 2, W / 2)])
+    tires = [np.array([[x + dx, y + dy, 0.004] for dx in (-0.45 * r, 0.45 * r) for dy in (-w / 2 - 0.03, w / 2 + 0.03)])
+             for x, y, r, w in wheels]
+    return body, tires
 
 
 # ----- placement -------------------------------------------------------------------------------------
@@ -168,9 +279,18 @@ class Camera:
         return np.column_stack([self.K[0, 0] * cam[:, 0] / cam[:, 2] + self.K[0, 2], self.K[1, 1] * cam[:, 1] / cam[:, 2] + self.K[1, 2]])
 
 
-def render_solids(background, camera, parts_city, materials, supersample=8, margin=6, light=(0.3, -0.5, 0.8), seed=0, exposure=1.0):
-    """Composite convex solids into `background` (HxWx3 uint8). Returns (image uint8, coverage float, region, polygons)."""
+def render_solids(background, camera, parts_city, materials, supersample=8, margin=6, light=(0.3, -0.5, 0.8), seed=0, exposure=1.0,
+                  decals=None):
+    """Composite convex solids into `background` (HxWx3 uint8). Returns (image uint8, coverage float, region, polygons).
+
+    Protocol v2 extras (absent in v1, which renders exactly as before):
+    - decals {part name: [(face index, vertices city, material)]}: a flat patch on that face takes the patch material
+      (same face normal and lighting). It only recolours samples that face already covers.
+    - a material with 'gradient' g brightens from the bottom of each face (+0) to its top (+g): glass reflecting sky.
+    Coverage depends on geometry only, never on materials or decals.
+    """
     rng = np.random.default_rng(seed)
+    decals = decals or {}
     polygons, cam_parts = [], []
     for name, vertices, faces, material in parts_city:
         cam = camera.to_camera(vertices)
@@ -199,7 +319,10 @@ def render_solids(background, camera, parts_city, materials, supersample=8, marg
     for name, cam, uv, faces, material in cam_parts:
         mat = materials[material]
         centroid = cam.mean(0)
-        for face in faces:
+        face_decals = {}
+        for face_index, verts, dmat in decals.get(name, []):
+            face_decals.setdefault(face_index, []).append((camera.project_camera(camera.to_camera(np.asarray(verts, float))), dmat))
+        for face_index, face in enumerate(faces):
             pts = cam[face]
             normal = np.cross(pts[1] - pts[0], pts[2] - pts[0])
             if np.linalg.norm(normal) < 1e-12:
@@ -229,7 +352,18 @@ def render_solids(background, camera, parts_city, materials, supersample=8, marg
             sky = 0.5 + 0.5 * float(normal @ up_cam)
             value = exposure * (mat['albedo'] * (mat['ambient'] + mat['diffuse'] * lambert) + mat.get('sky', 0.0) * sky)
             depth[sub][closer] = t[closer]
-            shade[sub][closer] = value
+            if not mat.get('gradient') and face_index not in face_decals:
+                shade[sub][closer] = value  # protocol v1 path (unchanged)
+                continue
+            values = np.full(closer.shape, value)
+            if mat.get('gradient'):
+                frac = np.clip((fy1 - gy[sub]) / max(fy1 - fy0, 1e-9), 0.0, 1.0)
+                values = values + exposure * mat['gradient'] * frac
+            for decal_uv, dmat_name in face_decals.get(face_index, []):
+                dm = materials[dmat_name]
+                dvalue = exposure * (dm['albedo'] * (dm['ambient'] + dm['diffuse'] * lambert) + dm.get('sky', 0.0) * sky)
+                values = np.where(inside_convex(decal_uv, gx[sub], gy[sub]), dvalue, values)
+            shade[sub][closer] = values[closer]
     covered = np.isfinite(depth)
     coverage = covered.reshape(h, s, w, s).mean((1, 3))
     hi_bg = np.repeat(np.repeat(background[y0:y1 + 1, x0:x1 + 1].astype(float), s, 0), s, 1)
@@ -241,12 +375,13 @@ def render_solids(background, camera, parts_city, materials, supersample=8, marg
     return out, coverage, (x0, y0, w, h), polygons
 
 
-def shadow(image, camera, footprint_city, strength=0.5, blur_px=1.5):
-    """Darken the ground inside a projected footprint polygon (soft edge)."""
+def shadow(image, camera, footprint_city, strength=0.5, blur_px=1.5, margin=6):
+    """Darken the ground inside a projected footprint polygon (soft edge). Call before the vehicle is rendered so
+    only the background darkens. `margin` (px) must cover the blur; 6 is the v1 value."""
     uv = camera.project_camera(camera.to_camera(footprint_city))
     polygon = hull_polygon(uv)
-    x0, y0 = int(np.floor(polygon[:, 0].min())) - 6, int(np.floor(polygon[:, 1].min())) - 6
-    x1, y1 = int(np.ceil(polygon[:, 0].max())) + 6, int(np.ceil(polygon[:, 1].max())) + 6
+    x0, y0 = int(np.floor(polygon[:, 0].min())) - margin, int(np.floor(polygon[:, 1].min())) - margin
+    x1, y1 = int(np.ceil(polygon[:, 0].max())) + margin, int(np.ceil(polygon[:, 1].max())) + margin
     xs, ys = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
     mask = ndimage.gaussian_filter(inside_convex(polygon, xs, ys).astype(float), blur_px)
     region = image[y0:y1 + 1, x0:x1 + 1]
