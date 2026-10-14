@@ -22,7 +22,8 @@ an `isolation` block therefore adds three recorded controls to the labeler instr
 transcripts.json (coordinator-owned): {"sessions": {"L1/V01": ["<agent transcript .jsonl>", ...], ...}}
 
 Limits: the scan reads tool-call inputs only (Claude Code `tool_use`, Codex `function_call`, `custom_tool_call`,
-`local_shell_call`). A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
+`local_shell_call`). The agent's final report (Claude Code `SubagentHandback`, REPORT_TOOLS) is the reply the
+labeler instructions ask for, opens no file and is not scanned; reports are counted (`reportCalls`). A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
 rules (sealed, answer-key, selftest, ...), the parent-folder (`..`) rule and the directory-walk rule narrow this but
 do not close it. The scan is recorded evidence, not proof.
 """
@@ -45,6 +46,7 @@ from common import (LABELS_DIR, ROOT, canonical_json, load_protocol, read_json, 
 SCAN_SCHEMA = 'pao-labels-transcript-scan-v1'
 TOOL_CALL_FIELDS = {'tool_use': ('input',), 'server_tool_use': ('input',), 'function_call': ('arguments',),
                     'custom_tool_call': ('input',), 'local_shell_call': ('action',)}
+REPORT_TOOLS = ('SubagentHandback',)  # the final reply to the coordinator (section 7), not a file access
 ID = r'[A-Za-z0-9_-]+'
 SESSION_WORD = re.compile(r'(?<![\w-])(?:sessions|scratch)(?![\w-])', re.IGNORECASE)
 FLAG = re.compile(r'--(labeler|task)(?:=|\s+)[\'"]?(' + ID + ')')
@@ -217,7 +219,8 @@ def scan_transcript(path, labeler, task, rules):
     own = own_regex(rules, labeler, task)
     binding = re.compile(rf'--labeler(?:=|\s+)[\'"]?{re.escape(labeler)}\b.*--task(?:=|\s+)[\'"]?{re.escape(task)}\b|'
                          rf'--task(?:=|\s+)[\'"]?{re.escape(task)}\b.*--labeler(?:=|\s+)[\'"]?{re.escape(labeler)}\b', re.DOTALL)
-    out = {'name': Path(path).name, 'sha256': sha256_file(path), 'lines': 0, 'toolCalls': 0, 'bindingCalls': 0, 'hits': []}
+    out = {'name': Path(path).name, 'sha256': sha256_file(path), 'lines': 0, 'toolCalls': 0, 'reportCalls': 0, 'bindingCalls': 0,
+           'hits': []}
     with open(path, encoding='utf-8') as handle:
         for number, line in enumerate(handle, 1):
             out['lines'] += 1
@@ -230,6 +233,9 @@ def scan_transcript(path, labeler, task, rules):
                 out['hits'].append({'line': number, 'tool': None, 'rule': 'unreadable transcript line', 'excerpt': line[:120]})
                 continue
             for tool, text in tool_inputs(record):
+                if tool in REPORT_TOOLS:
+                    out['reportCalls'] += 1
+                    continue
                 out['toolCalls'] += 1
                 if binding.search(text):
                     out['bindingCalls'] += 1

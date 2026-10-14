@@ -210,6 +210,17 @@ class TranscriptScanTests(unittest.TestCase):
         self.assertEqual(result['hits'], [])
         self.assertEqual(result['toolCalls'], len(CLEAN))
 
+    def test_the_final_report_is_not_scanned_but_the_same_text_in_a_tool_is(self):
+        # The final reply (Claude Code SubagentHandback) opens no file; the L1/V01 pilot report named its own
+        # scratch folder in plain words, which the bare-word session rule counted as a hit.
+        text = 'I wrote two small helper scripts inside my own scratch folder, ' + REPO + '.local/evaluation/pao-labels/v2/sessions/L2/V01'
+        report = self.write('report.jsonl', CLEAN + [claude_line('SubagentHandback', message=text)])
+        result = isolation.scan_transcript(report, 'L1', 'V01', self.rules)
+        self.assertEqual(result['hits'], [])
+        self.assertEqual((result['toolCalls'], result['reportCalls']), (len(CLEAN), 1))
+        tool = isolation.scan_transcript(self.write('tool.jsonl', CLEAN + [claude_line('Bash', command='echo ' + text)]), 'L1', 'V01', self.rules)
+        self.assertTrue(tool['hits'])
+
     def test_each_forbidden_access_is_a_hit(self):
         for label, line in FORBIDDEN.items():
             with self.subTest(label):
