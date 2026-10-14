@@ -1,9 +1,10 @@
-"""shape-v1: the recorded stationary vehicle's LiDAR shape (one solid top per grid cell) for placement protocol v3.3.
+"""shape-v2: the recorded stationary vehicle's LiDAR shape (one solid top per grid cell) for placement protocol v3.4.
 
-The rules are the frozen shape-v1 protocol (.local/evaluation/pao-accuracy/shape-v1/protocol.json, sha256 07b9535f...):
+The rules are the frozen shape-v2 protocol (.local/evaluation/pao-accuracy/shape-v2/protocol.json, sha256 70cbb24f...: the frozen
+shape-v1 protocol with the sweep thinning step 0.25 m instead of 1.0 m and the shape-v2 names):
   6.1  sweep plan (metadata only): a listed sweep is a candidate when the vehicle's track has an annotation row at its
        timestamp, the timestamp lies inside the ego pose record and the ego origin is at most 30 m (horizontal) from the
-       averaged box centre; candidates are thinned in time order (keep one when the ego moved at least 1.0 m since the
+       averaged box centre; candidates are thinned in time order (keep one when the ego moved at least 0.25 m since the
        last kept one), capped at 40 (evenly spaced positions) and split alternately into shape and scoring sweeps.
        The plan file is written and hashed before any sweep is downloaded.
   6.3  downloads: one file at a time, at most 4 attempts with waits of 5, 10 and 20 s; success = HTTP 200, the listing
@@ -16,7 +17,7 @@ The rules are the frozen shape-v1 protocol (.local/evaluation/pao-accuracy/shape
   5.4  solid top per cell: the second-highest of the per-sweep highest kept returns (two different sweeps needed),
        floored to the millimetre; otherwise null (not proven).
   10   the carShape block of ground.json (schemaVersion 3) and the two refusals (too-few-sweeps, not-stationary).
-It also builds the evaluation-only shape of the approach-half split addendum (split-addendum.json, sha256 cc0713d0...):
+It also builds the evaluation-only shape of the approach-half split addendum (split-addendum.json, sha256 953dae5f...):
 the same shape rules on the far half of the sweep list. That shape is a report file only, never written into ground.json.
 
 Nothing here invents geometry: a cell without returns from two sweeps stays null (not proven), a refused shape has no
@@ -24,7 +25,7 @@ tops at all, and integrity failures (a changed plan, a changed or missing receip
 AV2 vehicles are called stationary. This file imports nothing from scripts/evaluation/.
 
 Commands (one at a time; the download is the only network step and reads only public, $0 files):
-  plan            write .local/data/av2/shape-v1-<log>/sweep-plan.json from metadata and print its sha256
+  plan            write .local/data/av2/shape-v2-<log>/sweep-plan.json from metadata and print its sha256
   download        download the planned sweeps with receipts (receipt.json)
   approach-split  write the evaluation-only approach-half shape for one scene (report only)
 """
@@ -55,18 +56,18 @@ from common import canonical, digest, parse, require, snapshot  # noqa: E402
 import prepare_av2  # noqa: E402  (Feather reading, exact rigid poses)
 
 # ------------------------------------------------------------------ frozen pins and numbers
-SHAPE_PROTOCOL_PATH = '.local/evaluation/pao-accuracy/shape-v1/protocol.json'
-SHAPE_PROTOCOL_SHA256 = '07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825'
-SPLIT_ADDENDUM_PATH = '.local/evaluation/pao-accuracy/shape-v1/split-addendum.json'
-SPLIT_ADDENDUM_SHA256 = 'cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626'
+SHAPE_PROTOCOL_PATH = '.local/evaluation/pao-accuracy/shape-v2/protocol.json'
+SHAPE_PROTOCOL_SHA256 = '70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a'
+SPLIT_ADDENDUM_PATH = '.local/evaluation/pao-accuracy/shape-v2/split-addendum.json'
+SPLIT_ADDENDUM_SHA256 = '953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838'
 CODE_PATH = 'scripts/california/car_shape.py'
-SCHEMA = 'shape-v1'
-PLAN_SCHEMA = 'shape-v1-sweep-plan'
-RECEIPT_SCHEMA = 'shape-v1-download-receipt'
-APPROACH_SCHEMA = 'shape-v1-approach-split'
-PLACEMENT_PROTOCOL_VERSION = '3.3'
+SCHEMA = 'shape-v2'
+PLAN_SCHEMA = 'shape-v2-sweep-plan'
+RECEIPT_SCHEMA = 'shape-v2-download-receipt'
+APPROACH_SCHEMA = 'shape-v2-approach-split'
+PLACEMENT_PROTOCOL_VERSION = '3.4'
 # carShape.sweeps.rule (protocol dataSchema): the selection and download numbers, recorded with every shape.
-RULE = {'maxEgoDistanceM': 30, 'minEgoStepM': 1.0, 'maxKept': 40, 'split': 'alternate', 'minShapeSweeps': 2,
+RULE = {'maxEgoDistanceM': 30, 'minEgoStepM': 0.25, 'maxKept': 40, 'split': 'alternate', 'minShapeSweeps': 2,
         'downloadAttempts': 4, 'retryWaitsS': [5, 10, 20]}
 MIN_HEIGHT_M = 0.25      # returns.minHeightM: a 0.15 m curb plus 0.10 m
 OTHER_GROW_M = 0.10      # returns.otherObjectGrowM
@@ -85,7 +86,7 @@ REFUSALS = {'too-few-sweeps': 'fewer than 2 LiDAR sweeps of it were available',
 HELD_OUT_LOG_PREFIXES = ('88f47a10', '3153b5b3', 'd33f667d', 'fd5c6932', '25e5c600', 'e1d68dde', 'a91d4c7b', '4a60c567', 'b6c4361a')
 DATA_ROOT = REPO / '.local/data/av2'
 LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/protocol-lock.json'
-APPROACH_DIR = REPO / '.local/evaluation/pao-accuracy/metric-f-shape-v1/approach-split'
+APPROACH_DIR = REPO / '.local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split'
 PLAN_NAME, RECEIPT_NAME, LISTING_NAME, SWEEP_DIR = 'sweep-plan.json', 'receipt.json', 'listing.xml', 'sweeps'
 BUCKET_URL = 'https://argoverse.s3.amazonaws.com/'
 LIDAR_PREFIX = 'datasets/av2/sensor/train/{log}/sensors/lidar/'
@@ -121,13 +122,13 @@ def check_log(log):
 
 
 def plan_dir_for(log, out_root=None):
-    return Path(out_root if out_root is not None else DATA_ROOT) / f'shape-v1-{check_log(log)}'
+    return Path(out_root if out_root is not None else DATA_ROOT) / f'shape-v2-{check_log(log)}'
 
 
 # ------------------------------------------------------------------ held-out guard (before any file of the log is read)
 def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_path=None):
     """A held-out, control or reserve log runs only with held_out_run AND protocol-lock.json (read by its pinned sha256)
-    naming the frozen shape-v1 protocol (pipeline.shapeProtocol.sha256), for the approach split also the split addendum
+    naming the frozen shape-v2 protocol (pipeline.shapeProtocol.sha256), for the approach split also the split addendum
     (pipeline.shapeSplitAddendum.sha256), and an approval (approval.by, approval.utc). Development logs need nothing."""
     check_log(log)
     if not log.startswith(HELD_OUT_LOG_PREFIXES):
@@ -140,7 +141,7 @@ def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_pat
     lock = parse(snapshot(path, lock_sha256))
     pipeline = lock.get('pipeline') if isinstance(lock.get('pipeline'), dict) else {}
     pin = lambda name: (pipeline.get(name) if isinstance(pipeline.get(name), dict) else {}).get('sha256')  # noqa: E731
-    require(pin('shapeProtocol') == SHAPE_PROTOCOL_SHA256, 'protocol-lock.json does not name the frozen shape-v1 protocol (pipeline.shapeProtocol.sha256)')
+    require(pin('shapeProtocol') == SHAPE_PROTOCOL_SHA256, 'protocol-lock.json does not name the frozen shape-v2 protocol (pipeline.shapeProtocol.sha256)')
     if need_addendum:
         require(pin('shapeSplitAddendum') == SPLIT_ADDENDUM_SHA256,
                 'protocol-lock.json does not name the approach-half split addendum (pipeline.shapeSplitAddendum.sha256)')
@@ -361,7 +362,7 @@ def box_record(box):
 # ------------------------------------------------------------------ sweep selection (protocol 6.1)
 def select_sweeps(listing, ann, track, poses, centre_xy):
     """The frozen selection: candidates (track row at ts, ts inside the pose record, ego origin within 30 m of the box
-    centre), thinning (1.0 m ego step), cap (40 evenly spaced positions, Python round) and the alternating split.
+    centre), thinning (0.25 m ego step), cap (40 evenly spaced positions, Python round) and the alternating split.
     Returns {'candidates', 'thinned', 'kept': [{timestampNs:int, set, egoDistanceM}]}."""
     own = set(int(v) for v in ann['timestamp_ns'][ann['track_uuid'] == track])
     t0, tn = int(poses['t'][0]), int(poses['t'][-1])
@@ -395,7 +396,7 @@ def plan_document(log, box, origin, listing, listing_status, listing_input, ann,
             'shape': [s['timestampNs'] for s in sweeps if s['set'] == 'shape'],
             'scoring': [s['timestampNs'] for s in sweeps if s['set'] == 'scoring'],
             'sweeps': sweeps,
-            'note': ('Written and hashed before any sweep is downloaded (shape-v1 6.1). The split is never redone; a sweep '
+            'note': ('Written and hashed before any sweep is downloaded (shape-v2 6.1). The split is never redone; a sweep '
                      'whose download fails is dropped and listed, not replaced. Choosing read only the public listing, '
                      'the annotations, the ego poses and the averaged box of ground.json.')}
     data = (json.dumps(plan, indent=1, sort_keys=True, allow_nan=False) + '\n').encode()
@@ -404,9 +405,9 @@ def plan_document(log, box, origin, listing, listing_status, listing_input, ann,
 
 
 def check_plan(plan):
-    require(isinstance(plan, dict) and plan.get('schema') == PLAN_SCHEMA, 'Not a shape-v1 sweep plan')
+    require(isinstance(plan, dict) and plan.get('schema') == PLAN_SCHEMA, 'Not a shape-v2 sweep plan')
     require(plan.get('shapeProtocol', {}).get('sha256') == SHAPE_PROTOCOL_SHA256, 'Sweep plan made under another shape protocol')
-    require(plan.get('rule') == RULE, 'Sweep plan rule numbers differ from shape-v1')
+    require(plan.get('rule') == RULE, 'Sweep plan rule numbers differ from shape-v2')
     check_log(plan['log'])
     sweeps = plan['sweeps']
     require(isinstance(sweeps, list) and len(sweeps) == plan['kept'] <= RULE['maxKept'], 'Sweep plan kept count mismatch')
@@ -419,7 +420,7 @@ def check_plan(plan):
 
 def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha256, poses_path, poses_sha256,
               listing_path=None, listing_sha256=None, out_root=None, fetch=http_fetch, sleep=time.sleep):
-    """Write <out_root>/shape-v1-<log>/sweep-plan.json (exclusive) plus listing.xml; returns (plan_dir, plan sha256).
+    """Write <out_root>/shape-v2-<log>/sweep-plan.json (exclusive) plus listing.xml; returns (plan_dir, plan sha256).
     Reads metadata only. The vehicle is the single averaged stationary vehicle (poseAverage cuboid) of ground.json."""
     check_log(log)
     for path in (annotations_path, poses_path):
@@ -608,7 +609,7 @@ def validate_block(s, box):
     require(keys(d, ['frontFaceToFirstSolidCellM', 'returnsBeyondEnds']) and
             (d['frontFaceToFirstSolidCellM'] is None or (type(d['frontFaceToFirstSolidCellM']) is float and math.isfinite(d['frontFaceToFirstSolidCellM']))) and
             keys(d['returnsBeyondEnds'], ['front', 'rear']) and all(count(v) for v in d['returnsBeyondEnds'].values()), 'car shape diagnostics')
-    require(keys(s['protocol'], ['placementProtocolVersion', 'sha256', 'shapeProtocolSha256']) and s['protocol']['placementProtocolVersion'] == '3.3'
+    require(keys(s['protocol'], ['placementProtocolVersion', 'sha256', 'shapeProtocolSha256']) and s['protocol']['placementProtocolVersion'] == PLACEMENT_PROTOCOL_VERSION
             and hex64(s['protocol']['sha256']) and s['protocol']['shapeProtocolSha256'] == SHAPE_PROTOCOL_SHA256, 'car shape protocol record')
     require(keys(s['code'], ['path', 'sha256']) and s['code']['path'] == CODE_PATH and hex64(s['code']['sha256']), 'car shape code record')
 
@@ -659,7 +660,7 @@ def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, p
 
 
 def build_car_shape(plan_dir, plan_sha256, box, origin, annotations_data, poses_data, placement_protocol_sha256):
-    """The carShape block for ground.json (placement protocol v3.3) from a hashed plan and its receipted sweeps.
+    """The carShape block for ground.json (placement protocol v3.4) from a hashed plan and its receipted sweeps.
     Integrity failures stop with ValueError; not-stationary and too-few-sweeps are refusals (a block is returned)."""
     origin = np.asarray(origin, float)
     plan = check_plan(parse(snapshot(Path(plan_dir) / PLAN_NAME, plan_sha256, MAX_JSON)))
@@ -691,7 +692,7 @@ def approach_split_document(ground_raw, plan_dir, annotations_data, poses_data, 
     """The evaluation-only approach-half shape of one scene (split addendum). Returns (document, bytes). Never part of
     ground.json; the app never loads it."""
     ground = parse(ground_raw); shape = ground.get('carShape')
-    require(ground.get('schemaVersion') == 3 and 'carShape' in ground, 'A placement protocol v3.3 ground layer (schemaVersion 3) is required')
+    require(ground.get('schemaVersion') == 3 and 'carShape' in ground, 'A placement protocol v3.4 ground layer (schemaVersion 3) is required')
     require(shape is not None, 'This scene has no annotated stationary vehicle: the approach split does not apply')
     validate_block(shape, next(c for c in ground['cuboids']['items'] if 'poseAverage' in c and c['track'] == shape['track']))
     box = next(c for c in ground['cuboids']['items'] if 'poseAverage' in c and c['track'] == shape['track'])

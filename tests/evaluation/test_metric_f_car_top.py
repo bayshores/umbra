@@ -358,6 +358,36 @@ class ShapeV1Tests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             mf.join_app_results(heights, app)
 
+    def test_predictions_and_shape_version_comparison(self):
+        def height(box, shape, supported, lost, likely_false=0):
+            return {'counts': {'boxBlocked': box, 'shapeBlocked': shape}, 'lostSupported': {'boxBlockedSupported': supported, 'count': lost},
+                    'shapeBlockedClasses': {'likelyFalse': likely_false}}
+        entry = {'heights': {'child': height(4, 2, 3, 1), 'adult': height(1, 0, 0, 0)}}
+        flip = {'child': [{'setbackM': 1.0, 'box': 'blocked', 'shape': 'unknown height-not-proven'},
+                          {'setbackM': 1.25, 'box': 'blocked', 'shape': 'blocked'}],
+                'adult': [{'setbackM': 1.0, 'box': 'blocked', 'shape': 'unknown height-not-proven'}]}
+        v2 = {'v2': {'child': {'likelyFalse': [1.0], 'ambiguous': [1.25]}}, 'flip': flip}
+        # protocol v4: no expected list and no upper limit (reported as None); the supported-kept expectation is checked.
+        pred = {'boxBlocked': {'child': 4, 'adult': 1}, 'shapeBlockedUpperLimit': {}, 'heightNotProvenExpectedSetbacksM': {},
+                'supportedKeptExpected': {'child': {'atLeast': 2}}}
+        out = mf.shape_v1_predictions(entry, pred, v2)
+        self.assertIsNone(out['child']['withinUpperLimit']); self.assertIsNone(out['child']['heightNotProvenNotInTheExpectedList'])
+        self.assertIsNone(out['child']['expectedHeightNotProvenButStillBlocked'])
+        self.assertEqual((out['child']['supportedKept'], out['child']['supportedKeptAsExpected']), (2, True))
+        self.assertIsNone(out['adult']['supportedKeptAsExpected'])
+        self.assertEqual(out['child']['v2LikelyFalseBlockedNowHeightNotProven'], [1.0]); self.assertEqual(out['child']['v2AmbiguousBlockedNotHeightNotProven'], [1.25])
+        pred['supportedKeptExpected'] = {'child': {'exactly': 2, 'of': 4}}
+        self.assertFalse(mf.shape_v1_predictions(entry, pred, v2)['child']['supportedKeptAsExpected'])
+        # protocol v3 shape: an expected list and an upper limit.
+        pred = {'boxBlocked': {'child': 4}, 'shapeBlockedUpperLimit': {'child': 1}, 'heightNotProvenExpectedSetbacksM': {'child': [1.25]}}
+        out = mf.shape_v1_predictions(entry, pred, v2)['child']
+        self.assertFalse(out['withinUpperLimit']); self.assertEqual(out['expectedHeightNotProvenButStillBlocked'], [1.25])
+        self.assertEqual(out['heightNotProvenNotInTheExpectedList'], [1.0]); self.assertIsNone(out['supportedKeptExpected'])
+        earlier = {'heights': {'child': {'shapeV1': height(4, 3, 3, 0)}, 'adult': {'error': 'x'}}}  # a shape-v1 results file
+        self.assertEqual(mf.shape_version_comparison(entry, earlier),
+                         {'child': {'shapeV1': {'boxBlocked': 4, 'shapeBlocked': 3, 'boxBlockedSupported': 3, 'supportedKept': 3, 'likelyFalse': 0},
+                                    'shapeV2': {'boxBlocked': 4, 'shapeBlocked': 2, 'boxBlockedSupported': 3, 'supportedKept': 2, 'likelyFalse': 0}}})
+
 
 if __name__ == '__main__':
     unittest.main()

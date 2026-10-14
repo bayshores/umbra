@@ -188,7 +188,7 @@ function annotatedBox(scene,v) {
   // The front face is the end the heading points to, so the heading must follow the direction of travel (within the
   // preparation script's 15 degrees); a reversed annotation would make the camera-side end the front.
   if(-(axis[0]*travel[0]+axis[2]*travel[2])<Math.cos(15*Math.PI/180))throw new Error('The annotated vehicle does not face the direction of travel.');
-  // shape-v1: the box carries the recorded vehicle's prepared LiDAR shape (scene.mjs prepareCarShape); never a box fallback.
+  // car shape: the box carries the recorded vehicle's prepared LiDAR shape (scene.mjs prepareCarShape); never a box fallback.
   const shape=scene.carShape;
   if(!shape||shape.track!==v.track)throw new Error('The measured car shape is missing for the annotated vehicle.');
   return {track:box.track,center:[...box.center],axis,dimensions:{width:box.width,height:box.height,length:box.length},shape};
@@ -499,7 +499,7 @@ export const UNKNOWN_REASONS=Object.freeze({
   'driver-inside-vehicle':'driver inside a vehicle','person-inside-vehicle':'person inside a vehicle',
   'driver-inside-object':'driver inside a real object','person-inside-object':'person inside a real object',
   'overlaps-real-object':'overlaps a real object','too-close-to-call':'too close to call',
-  // shape-v1: the line cuts into the recorded stationary vehicle's box, but its LiDAR shape does not prove it blocks there.
+  // car shape: the line cuts into the recorded stationary vehicle's box, but its LiDAR shape does not prove it blocks there.
   'height-not-proven':'vehicle height not proven'});
 const fmt3=n=>String(Number(n.toFixed(3)));
 // Signed sightline-to-box gap in the box frame (a, b: segment ends; half: half sizes), from the same closed
@@ -519,9 +519,9 @@ export function sightlineGap(a,b,half) {
   while(hi-lo>1e-9){const m=(lo+hi)/2;if(touches(-m))hi=m;else lo=m;}
   return hi;
 }
-// ---------------------------------------------------------------- measured car shape (shape-v1)
-// The recorded stationary vehicle's LiDAR shape, by the frozen shape-v1 protocol
-// (.local/evaluation/pao-accuracy/shape-v1/protocol.json: representation, resultRule, deepTest). It is a 2.5D height
+// ---------------------------------------------------------------- measured car shape (shape-v2)
+// The recorded stationary vehicle's LiDAR shape, by the frozen shape-v2 protocol (it changes only the sweep step of
+// .local/evaluation/pao-accuracy/shape-v1/protocol.json: representation, resultRule, deepTest are unchanged). It is a 2.5D height
 // field on a grid that exactly covers the annotated box footprint: one solid top per cell, everything below it solid
 // (windows and the gap under the body count as solid, like the box), null = not proven (height 0 here). Only the real
 // recorded vehicle in its annotated pose carries it; declared, resized and replacement vehicles keep the box.
@@ -690,7 +690,7 @@ function overlapsObject(box,o) {
 // stationary vehicle where it really is, so that last test is skipped); or the sightline cuts into the box by less than
 // TOO_CLOSE_TO_CALL_M. Otherwise classifySightline decides (diagnostics false: its box test alone, for sweep rows; the
 // later diagnostics can only give Unknown). gapM is the signed gap (positive: the line passes the box by that much;
-// negative: it cuts in that deep). shapeCut false skips only the shape-v1 diagnostics record (solidCutM's bisection), never
+// negative: it cuts in that deep). shapeCut false skips only the car-shape diagnostics record (solidCutM's bisection), never
 // a result: setbackSweep's run-start confirmations compare state and reason alone.
 export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false,shapeCut:withShapeCut=true}={}) {
   if(![s?.eye,s?.target,s?.targetGround,box?.center,box?.axis].every(finite3))throw new Error('Invalid sightline coordinates.');
@@ -710,8 +710,8 @@ export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false,
   const touches=segmentIntersectsBox(e,t,low,half),deep=TOO_CLOSE_TO_CALL_M;
   if(touches&&!(half.every(n=>n-deep>=0)&&segmentIntersectsBox(e,t,half.map(n=>deep-n),half.map(n=>n-deep))))
     return unknown('too-close-to-call',`The sightline cuts only ${fmt3(-gapM)} m into the vehicle box, less than the ${fmt2(deep)} m margin: too close to call.`);
-  // shape-v1 step 6 (protocol resultRule): the recorded stationary vehicle's box carries its LiDAR shape. A line that
-  // reaches here touching the box is box-deep (exactly the rows today's code returns as Blocked). When every solid top is
+  // car-shape step 6 (resultRule, the same in shape-v1 and shape-v2): the recorded stationary vehicle's box carries its
+  // LiDAR shape. A line that reaches here touching the box is box-deep (exactly the rows today's code returns as Blocked). When every solid top is
   // at least the box height the shape is the box (6a: today's code below). Otherwise the line must be deep in the columns
   // (6b, Blocked), else this placement is not decided (6c). diagnostics false and true run the same step.
   const shape=box.shape;

@@ -293,7 +293,7 @@ test('mapped ground: descriptors, hashes and ground schema are pinned; tampering
     'terrain file':x=>{x.terrain.file='../terrain.bin';},'terrain shape':x=>{x.terrain.rows=49;},'terrain window':x=>{x.terrain.row0=1;},
     'terrain sim2 scale in R':x=>{x.terrain.sim2.R=[2,0,0,2];},'terrain big endian':x=>{x.terrain.byteOrder='big';},
     'degenerate lane':x=>{x.egoLane.rightBoundary[1]=[1.5,-1.4375,0];x.egoLane.leftBoundary[1]=[-1.5,-1.4375,0];},
-    // Ground schema 3 (placement protocol v3.3): the placement limit and the along-ray band are required and bounded; schema
+    // Ground schema 3 (placement protocol v3.3 and v3.4): the placement limit and the along-ray band are required and bounded; schema
     // 1 (protocol v1/v2) and schema 2 (protocol v3-v3.2, no car shape) layers are history and refused.
     'schema 1 (protocol v2) layer':x=>{x.schemaVersion=1;delete x.placementRangeLimitMeters;delete x.alongRayUncertainty;delete x.carShape;},
     'schema 2 (protocol v3.2) layer':x=>{x.schemaVersion=2;delete x.carShape;},'no car shape key':x=>{delete x.carShape;},
@@ -306,7 +306,7 @@ test('mapped ground: descriptors, hashes and ground schema are pinned; tampering
   };
   for(const [name,mutate] of Object.entries(invalid))await assert.rejects(loadAnalytic(analytic({ground:mutate})),/Invalid mapped ground: /,name);
   for(const version of [1,2])await assert.rejects(loadAnalytic(analytic({ground:x=>{x.schemaVersion=version;}})),
-    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history).'},`schema ${version}`);
+    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history).'},`schema ${version}`);
   // A fixed (held-out) band with its test record, and an averaged pose with its spread, load.
   await loadAnalytic(analytic({ground:x=>{Object.assign(x.alongRayUncertainty,{method:'fixed',fittedOn:'dev'});delete x.alongRayUncertainty.fit;x.alongRayUncertainty.heldOutResiduals={count:0};
     x.cuboids.items[0].poseAverage={rule:'averageAllAnnotations',rows:3,centreSpreadM:{alongStd:.1,lateralStd:.05},yawSpreadDeg:{std:.01}};}}));
@@ -415,10 +415,12 @@ test('mapped ground: model-written answers and labels never call a vehicle parke
   assert.equal(runTool(legacyScene,'ask',ds,'declare_scenario',{...declaration,parked_vehicle:true}).error,'Unexpected field parked_vehicle.');
 });
 
-// ------------------------------------------------------------------ AV2 8c local data (current v3.3, history v3.2)
+// ------------------------------------------------------------------ AV2 8c local data (current v3.4, history v3.3 and v3.2)
 // The prepared AV2 scene is CC BY-NC-SA data kept out of public/ and dist/; it lives in ignored local evaluation folders.
-// The current folder is grounded-v3.3/ (protocol v3.3, shape-v1, app contract A13): grounded-v3.2 plus the recorded
+// The current folder is grounded-v3.4/ (protocol v3.4, shape-v2, app contract A14): grounded-v3.2 plus the recorded
 // vehicle's LiDAR shape (ground schema 3). The current app and scripts/evaluation/pao-baseline.mjs read it.
+// grounded-v3.3/ (protocol v3.3, shape-v1, app contract A13) is history: the current app refuses its shape-v1 car shape
+// (tested below); its numbers stay with the shape-v1 commit 8ec75f8 and its evaluation files.
 // grounded-v3.2/ (app contract sections A0-A12) is history: the same geometry and results as grounded-v3.1/, with the
 // crosswalk paint-offset bound filled in ("±0.18 m"). The current app refuses it (ground schema 2, no car shape; tested
 // first below), so the v3.2 contract tests that follow run against the app source of commit c7a39eb
@@ -441,33 +443,45 @@ const entry=local?JSON.parse(await readFile(new URL(V32_DIR+'catalog-entry.json'
 test('AV2 8c: the current app refuses the grounded-v3.2 ground layer (schema 2, no car shape)',{skip},async()=>{
   assert.equal(JSON.parse(await av2Bytes('ground.json')).schemaVersion,2);
   await assert.rejects(loadScene(av2Fetch(),ID,entry.metadataSha256,undefined,entry.suggestions,entry.ground),
-    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history).'});
+    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history).'});
 });
 
-// App contract A13: grounded-v3.3 is grounded-v3.2 plus the recorded stationary vehicle's shape-v1 LiDAR shape (ground
-// schemaVersion 3, placement protocol v3.3). The current app loads it; the 21 runtime vectors (runtime-test-vectors-v3.3.json,
-// equal to the v3.2 vectors value for value) reproduce; the first load is unchanged (the line misses the box, so step 6
-// never runs); the setback-sweep counts are those of the 8.2 check (scene-builder-v4.2/allowed-changes-8.2.json).
+// grounded-v3.3 (shape-v1, app contract A13) is history: the current app reads only shape-v2 car shapes.
 const V33_DIR='grounded-v3.3/',local33=existsSync(new URL(V33_DIR+'ground.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
 const skip33=local33?false:'AV2 8c grounded-v3.3 data is local-only and not present';
-const v33Fetch=async path=>{
+const folderFetch=dir=>async path=>{
   const name=path.split('/').at(-1);
   if(!path.startsWith(`/scenes/${ID}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
-  try{return new Response(await readFile(new URL((GROUNDED.has(name)?V33_DIR:'assembled/')+name,AV2)));}catch{return new Response(null,{status:404});}
+  try{return new Response(await readFile(new URL((GROUNDED.has(name)?dir:'assembled/')+name,AV2)));}catch{return new Response(null,{status:404});}
 };
-test('AV2 8c grounded-v3.3 (shape-v1): the current app loads the pinned layer with its measured car shape and reproduces the 21 runtime vectors',{skip:skip33},async()=>{
+test('AV2 8c: the current app refuses the grounded-v3.3 ground layer (shape-v1 car shape)',{skip:skip33},async()=>{
   const e=JSON.parse(await readFile(new URL(V33_DIR+'catalog-entry.json',AV2),'utf8'));
-  assert.equal(e.metadataSha256,'cb048d0f3453638158feca8bad497a47e6271679e6b546b3b5e4b4a8297f1908');
-  assert.deepEqual(e.ground,{file:'ground.json',sha256:'bb3226a74216ca0848f386ff60d69f1997e14b2576bffef38dfd23612898f316'});
-  assert.deepEqual(e.suggestions,{file:'suggestions.json',sha256:'50049872e11ac33d9bc1cb9efa761c71e03c2b45e26aa10bb05f75cf33783c8c'});
-  const s=await loadScene(v33Fetch,ID,e.metadataSha256,undefined,e.suggestions,e.ground);
-  assert.equal(s.ground.schemaVersion,3);assert.equal(s.ground.protocol.sha256,'67117e04f0596866aa0f8feb8cb01e054865557576ea67237db24a9a9cad5af9');
+  assert.equal(e.ground.sha256,'bb3226a74216ca0848f386ff60d69f1997e14b2576bffef38dfd23612898f316');
+  assert.equal(JSON.parse(await readFile(new URL(V33_DIR+'ground.json',AV2),'utf8')).carShape.schema,'shape-v1');
+  await assert.rejects(loadScene(folderFetch(V33_DIR),ID,e.metadataSha256,undefined,e.suggestions,e.ground),
+    {message:'Invalid mapped ground: car shape is shape-v1 (placement protocol v3.3); earlier car shapes are history.'});
+});
+
+// App contract A14: grounded-v3.4 is grounded-v3.2 plus the recorded stationary vehicle's shape-v2 LiDAR shape (ground
+// schemaVersion 3, placement protocol v3.4; shape-v2 reads LiDAR sweeps 0.25 m of travel apart instead of 1 m). The
+// current app loads it; the 21 runtime vectors (runtime-test-vectors-v3.4.json, equal to the v3.2 vectors value for value)
+// reproduce; the first load is unchanged (the line misses the box, so step 6 never runs); the setback-sweep counts are
+// those of the shape-v2 allowed-change check (scene-builder-v4.3/allowed-changes-v4.3.json).
+const V34_DIR='grounded-v3.4/',local34=existsSync(new URL(V34_DIR+'ground.json',AV2))&&existsSync(new URL('assembled/positions.bin',AV2));
+const skip34=local34?false:'AV2 8c grounded-v3.4 data is local-only and not present';
+test('AV2 8c grounded-v3.4 (shape-v2): the current app loads the pinned layer with its measured car shape and reproduces the 21 runtime vectors',{skip:skip34},async()=>{
+  const e=JSON.parse(await readFile(new URL(V34_DIR+'catalog-entry.json',AV2),'utf8'));
+  assert.equal(e.metadataSha256,'982015246525441ebdc38df3ccde71e0235aade23906527ac6be49a0938a76f6');
+  assert.deepEqual(e.ground,{file:'ground.json',sha256:'2add396633d1878330989d5549ef0eb4bf7ff80d6cee98128294b2e092aa78c2'});
+  assert.deepEqual(e.suggestions,{file:'suggestions.json',sha256:'e9fb43063191ae0d47d273eae482cf2a2fa522bb458f5d87692c0f7e20ad6809'});
+  const s=await loadScene(folderFetch(V34_DIR),ID,e.metadataSha256,undefined,e.suggestions,e.ground);
+  assert.equal(s.ground.schemaVersion,3);assert.equal(s.ground.protocol.sha256,'330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22');
   assert.equal(s.ground.terrain.sha256,'2f7a2914ddfb89593a086514ad9ceab6c8f7eb25087e467cae4c4fc371b8f082');
   const raw=s.ground.carShape,shape=s.carShape;
-  assert.equal(raw.protocol.shapeProtocolSha256,'07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825');
+  assert.equal(raw.schema,'shape-v2');assert.equal(raw.protocol.shapeProtocolSha256,'70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a');
   assert.deepEqual([shape.status,shape.refusal,shape.track,shape.along,shape.lateral,shape.allTopsAtLeastH],['measured',null,'396f15b5-9cf3-462b-9164-4b6f71c4e7d6',41,19,false]);
-  assert.deepEqual([raw.solidTopM.length,raw.solidTopM.filter(v=>v!==null).length,raw.sweeps.shape.length,raw.sweeps.scoring.length],[779,384,8,8]);
-  const vectors=JSON.parse(await readFile(new URL('runtime-test-vectors-v3.3.json',AV2),'utf8'));
+  assert.deepEqual([raw.solidTopM.length,raw.solidTopM.filter(v=>v!==null).length,raw.sweeps.shape.length,raw.sweeps.scoring.length],[779,428,18,17]);
+  const vectors=JSON.parse(await readFile(new URL('runtime-test-vectors-v3.4.json',AV2),'utf8'));
   assert.deepEqual([vectors.groundSha256,vectors.suggestionsSha256,vectors.protocolSha256],[e.ground.sha256,e.suggestions.sha256,s.ground.protocol.sha256]);
   assert.deepEqual(vectors.vectors,JSON.parse(await readFile(new URL('runtime-test-vectors-v3.2.json',AV2),'utf8')).vectors);
   assert.equal(vectors.vectors.length,21);
@@ -482,7 +496,7 @@ test('AV2 8c grounded-v3.3 (shape-v1): the current app loads the pinned layer wi
   assert.equal(setup.error,'');assert.equal(scenario.whatIf.shape,shape);assert.equal(scenario.baseline.shape,shape);
   for(const v of [scenario.currentVisibility,scenario.proposedVisibility]){assert.equal(v.state,'unknown');assert.equal(v.reasonCode,undefined);near(v.gapM,.06241,5e-5,'first-load gap');}
   const vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(setup.vehicle[k])]));
-  for(const [height,want] of [[1.1,{rows:57,blocked:12,heightNotProven:26}],[1.5,{rows:57,blocked:0,heightNotProven:17}]]) {
+  for(const [height,want] of [[1.1,{rows:57,blocked:21,heightNotProven:17}],[1.5,{rows:57,blocked:0,heightNotProven:17}]]) {
     const rows=setbackSweep(s,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',...vehicle},height).rows;
     assert.deepEqual({rows:rows.length,blocked:rows.filter(r=>r.state==='blocked').length,heightNotProven:rows.filter(r=>r.reason==='height-not-proven').length},want,`target ${height} m`);
   }

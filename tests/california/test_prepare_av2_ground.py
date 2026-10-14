@@ -185,11 +185,11 @@ def write_fixture(root, split=False, moving=False, protocol=None, returns=None, 
                 output=root / 'grounded')
 
 
-# Protocol v3.3 fixture: protocol v3 plus protocolRevision '3.3' and the carShape section pinning the frozen shape-v1
-# protocol (the same keys build() checks in .local/evaluation/av2-map-first-2026-10-11/protocol-v3.3.json).
+# Protocol v3.4 fixture: protocol v3 plus protocolRevision '3.4' and the carShape section pinning the frozen shape-v2
+# protocol (the same keys build() checks in .local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json).
 SHAPE = tool.car_shape
-PROTOCOL_V33 = {**PROTOCOL_V3, 'protocolRevision': '3.3',
-                'carShape': {'shapeProtocol': {'path': '../pao-accuracy/shape-v1/protocol.json', 'sha256': SHAPE.SHAPE_PROTOCOL_SHA256},
+PROTOCOL_V34 = {**PROTOCOL_V3, 'protocolRevision': '3.4',
+                'carShape': {'shapeProtocol': {'path': '../pao-accuracy/shape-v2/protocol.json', 'sha256': SHAPE.SHAPE_PROTOCOL_SHA256},
                              'groundSchemaVersion': 3}}
 STEP_NS = 100_000_000
 CAR_CELLS = [(i, j) for i in range(0, 40, 4) for j in range(0, 18, 4)]  # 10 x 5 cells of the 40 x 18 grid with car-top returns
@@ -227,8 +227,8 @@ def car_top_sweeps(ground, poses, height=1.25):
             for p in poses.to_pylist() if p['timestamp_ns'] >= 0}
 
 
-def car_shape_layer(root, protocol=PROTOCOL_V33, approach=True):
-    """The protocol v3.3 operator flow on the fixture: ground.json with --no-car-shape (pre/), the sweep plan from it
+def car_shape_layer(root, protocol=PROTOCOL_V34, approach=True):
+    """The protocol v3.4 operator flow on the fixture: ground.json with --no-car-shape (pre/), the sweep plan from it
     (metadata only, saved listing), the downloads from a fake public bucket, then ground.json with --car-shape-dir
     (grounded/). Returns (build kwargs, pre ground.json, plan_dir, plan sha256, build result)."""
     root = Path(root)
@@ -573,8 +573,9 @@ class ProtocolV3GroundTests(unittest.TestCase):
         self.assertEqual(result['averagedTracks'], []); self.assertFalse(any('poseAverage' in c for c in ground['cuboids']['items']))
 
 
-class ProtocolV33GroundTests(unittest.TestCase):
-    """Protocol v3.3: ground.json schemaVersion 3 with carShape (shape-v1), every other field exactly as under v3.2."""
+class ProtocolV34GroundTests(unittest.TestCase):
+    """Protocol v3.4: ground.json schemaVersion 3 with carShape (shape-v2), every other field exactly as under v3.2.
+    Protocol v3.3 (shape-v1) is history: refused here, it runs only from its committed files (8ec75f8)."""
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
@@ -582,41 +583,47 @@ class ProtocolV33GroundTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_v3_3_without_a_car_shape_differs_from_v3_2_only_in_schema_car_shape_protocol_and_code(self):
+    def test_v3_4_without_a_car_shape_differs_from_v3_2_only_in_schema_car_shape_protocol_and_code(self):
         v32 = write_fixture(self.root / 'v32', protocol={**PROTOCOL_V3, 'protocolRevision': '3.2'}, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
-        v33 = write_fixture(self.root / 'v33', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
-        old_result = tool.build(**v32); new_result = tool.build(**v33, no_car_shape=True)
-        old = json.loads((v32['output'] / 'ground.json').read_bytes()); new = json.loads((v33['output'] / 'ground.json').read_bytes())
+        v34 = write_fixture(self.root / 'v34', protocol=PROTOCOL_V34, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        old_result = tool.build(**v32); new_result = tool.build(**v34, no_car_shape=True)
+        old = json.loads((v32['output'] / 'ground.json').read_bytes()); new = json.loads((v34['output'] / 'ground.json').read_bytes())
         self.assertEqual({k for k in old.keys() | new.keys() if k not in old or k not in new or old[k] != new[k]},
                          {'schemaVersion', 'carShape', 'protocol', 'processingCodeHashes'})
         self.assertEqual((old['schemaVersion'], new['schemaVersion'], new['carShape']), (2, 3, None)); self.assertNotIn('carShape', old)
         self.assertEqual(set(new['processingCodeHashes']) - set(old['processingCodeHashes']), {'california/car_shape.py'})
         self.assertEqual({k: new['processingCodeHashes'][k] for k in old['processingCodeHashes']}, old['processingCodeHashes'])
         self.assertEqual(new['processingCodeHashes']['california/car_shape.py'], sha((ROOT / 'scripts/california/car_shape.py').read_bytes()))
-        self.assertEqual((v32['output'] / 'terrain.bin').read_bytes(), (v33['output'] / 'terrain.bin').read_bytes())
+        self.assertEqual((v32['output'] / 'terrain.bin').read_bytes(), (v34['output'] / 'terrain.bin').read_bytes())
         self.assertEqual(new_result['carShape'], None); self.assertNotIn('carShape', old_result)
         self.assertEqual({k: v for k, v in new_result.items() if k != 'carShape'}.keys(), old_result.keys())
 
-    def test_v3_3_options_are_checked_before_anything_is_written(self):
-        args = write_fixture(self.root / 'a', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+    def test_v3_3_is_refused_as_history(self):
+        old = write_fixture(self.root / 'v33', protocol={**PROTOCOL_V34, 'protocolRevision': '3.3'}, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        with self.assertRaisesRegex(ValueError, 'Protocol v3.3 \\(shape-v1\\) is history'):
+            tool.build(**old, no_car_shape=True)
+        self.assertFalse(old['output'].exists())
+
+    def test_v3_4_options_are_checked_before_anything_is_written(self):
+        args = write_fixture(self.root / 'a', protocol=PROTOCOL_V34, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
         plain = write_fixture(self.root / 'b', protocol=PROTOCOL_V3, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
         cases = [(args, {}, 'exactly one of'), (args, dict(no_car_shape=True, car_shape_dir=self.root, car_shape_plan_sha256='a' * 64), 'exactly one of'),
-                 (args, dict(car_shape_dir=self.root), 'go together'), (plain, dict(no_car_shape=True), 'only under protocol v3.3'),
-                 (plain, dict(car_shape_dir=self.root, car_shape_plan_sha256='a' * 64), 'only under protocol v3.3')]
+                 (args, dict(car_shape_dir=self.root), 'go together'), (plain, dict(no_car_shape=True), 'only under protocol v3.4'),
+                 (plain, dict(car_shape_dir=self.root, car_shape_plan_sha256='a' * 64), 'only under protocol v3.4')]
         for kwargs, options, message in cases:
             with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
                 tool.build(**kwargs, **options)
         for name, protocol, message in (
-                ('pin', {**PROTOCOL_V33, 'carShape': {**PROTOCOL_V33['carShape'], 'shapeProtocol': {'sha256': 'f' * 64}}}, 'frozen shape-v1'),
-                ('schema', {**PROTOCOL_V33, 'carShape': {**PROTOCOL_V33['carShape'], 'groundSchemaVersion': 2}}, 'schemaVersion 3'),
-                ('section', {**PROTOCOL_V3, 'carShape': PROTOCOL_V33['carShape']}, 'Only protocol v3.3 carries')):
+                ('pin', {**PROTOCOL_V34, 'carShape': {**PROTOCOL_V34['carShape'], 'shapeProtocol': {'sha256': 'f' * 64}}}, 'frozen shape-v2'),
+                ('schema', {**PROTOCOL_V34, 'carShape': {**PROTOCOL_V34['carShape'], 'groundSchemaVersion': 2}}, 'schemaVersion 3'),
+                ('section', {**PROTOCOL_V3, 'carShape': PROTOCOL_V34['carShape']}, 'Only protocol v3.4 carries')):
             bad = write_fixture(self.root / name, protocol=protocol, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
                 tool.build(**bad, no_car_shape=True)
         for kwargs in (args, plain):
             self.assertFalse(kwargs['output'].exists())
 
-    def test_v3_3_measured_car_shape_end_to_end(self):
+    def test_v3_4_measured_car_shape_end_to_end(self):
         args, pre, plan_dir, plan_sha, result = car_shape_layer(self.root / 'a')
         ground_raw = (args['output'] / 'ground.json').read_bytes(); ground = json.loads(ground_raw); shape = ground['carShape']
         # Every field but carShape equals the --no-car-shape layer of the same inputs.
@@ -624,11 +631,11 @@ class ProtocolV33GroundTests(unittest.TestCase):
         self.assertEqual((self.root / 'a/pre/terrain.bin').read_bytes(), (args['output'] / 'terrain.bin').read_bytes())
         self.assertEqual((ground['schemaVersion'], shape['status'], shape['refusal'], shape['track']), (3, 'measured', None, TRACK))
         # Listed sweeps: SWEEP - n * 100 ms for n = 0..10 (and SWEEP + 40 ms, which has no car row). Candidates: n = 0..8, the
-        # ego 0..12 m behind SWEEP (box centre 29.77 m away at n = 8, 31.26 m at n = 9); 1.5 m steps keep all 9; split 5 / 4.
+        # ego 0..12 m behind SWEEP (box centre 29.77 m away at n = 8, 31.26 m at n = 9); 1.5 m steps (at least 0.25 m) keep all 9; split 5 / 4.
         w = shape['sweeps']
         self.assertEqual((w['candidates'], w['thinned'], w['kept'], len(w['shape']), len(w['scoring']), w['downloadDropped']), (9, 9, 9, 5, 4, []))
         self.assertEqual([int(s['timestampNs']) for s in w['shape']], [SWEEP - n * STEP_NS for n in (8, 6, 4, 2, 0)])
-        self.assertEqual((w['planSha256'], shape['protocol']['sha256'], shape['protocol']['placementProtocolVersion']), (plan_sha, args['protocol_sha256'], '3.3'))
+        self.assertEqual((w['planSha256'], shape['protocol']['sha256'], shape['protocol']['placementProtocolVersion']), (plan_sha, args['protocol_sha256'], '3.4'))
         self.assertEqual((shape['grid']['along'], shape['grid']['lateral']), (40, 18))
         tops = {(i // 18, i % 18): v for i, v in enumerate(shape['solidTopM']) if v is not None}
         self.assertEqual(sorted(tops), CAR_CELLS)
@@ -641,14 +648,14 @@ class ProtocolV33GroundTests(unittest.TestCase):
         self.assertNotIn(b'park', ground_raw.lower()); self.assertNotIn(b'park', (plan_dir / SHAPE.PLAN_NAME).read_bytes().lower())
         self.assertNotIn(b'park', (plan_dir / SHAPE.RECEIPT_NAME).read_bytes().lower())
         # The plan belongs to these annotations and poses: the static fixture (same averaged box) is refused, no output.
-        static = write_fixture(self.root / 'static', protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+        static = write_fixture(self.root / 'static', protocol=PROTOCOL_V34, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
         with self.assertRaisesRegex(ValueError, 'other annotations or poses'):
             tool.build(**static, car_shape_dir=plan_dir, car_shape_plan_sha256=plan_sha)
         self.assertFalse(static['output'].exists())
         with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
             tool.build(**{**args, 'output': self.root / 'a/again'}, car_shape_dir=plan_dir, car_shape_plan_sha256='0' * 64)
 
-    def test_v3_3_standing_ego_gives_too_few_sweeps(self):
+    def test_v3_4_standing_ego_gives_too_few_sweeps(self):
         args, _, _, _, result = car_shape_layer(self.root / 'a', approach=False)
         shape = json.loads((args['output'] / 'ground.json').read_bytes())['carShape']
         self.assertEqual((shape['status'], shape['refusal']['code'], shape['sweeps']['candidates'], shape['sweeps']['thinned']),
@@ -656,8 +663,8 @@ class ProtocolV33GroundTests(unittest.TestCase):
         self.assertTrue(all(v is None for v in shape['solidTopM']))
         self.assertEqual((result['carShape']['status'], result['carShape']['refusal'], result['carShape']['solidCells']), ('refused', 'too-few-sweeps', 0))
 
-    def test_v3_3_moving_track_has_no_car_shape(self):
-        args = write_fixture(self.root / 'a', moving=True, protocol=PROTOCOL_V33, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
+    def test_v3_4_moving_track_has_no_car_shape(self):
+        args = write_fixture(self.root / 'a', moving=True, protocol=PROTOCOL_V34, returns=V3_RETURNS, eligible=V3_ELIGIBLE)
         with self.assertRaisesRegex(ValueError, 'does not apply'):
             tool.build(**args, car_shape_dir=self.root, car_shape_plan_sha256='a' * 64)
         self.assertFalse(args['output'].exists())
@@ -679,8 +686,9 @@ REAL = ROOT / '.local/evaluation/av2-map-first-2026-10-11'
 
 @unittest.skipUnless((REAL / 'grounded-v2/ground.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c files absent')
 class RealGroundTests(unittest.TestCase):
-    """grounded-v3.3 (protocol v3.3, shape-v1 carShape) is the app's current 8c folder (since October 13, 2026; checked by
-    ProtocolV33GroundTests). grounded-v3.2 (the app's folder until then; the app now refuses its schema 2 ground), grounded-v3.1
+    """grounded-v3.4 (protocol v3.4, shape-v2 carShape) is the app's current 8c folder (checked by ProtocolV34GroundTests);
+    grounded-v3.3 (protocol v3.3, shape-v1) was the app's folder from October 13, 2026 until shape-v2; the shape-v2 app
+    refuses it. grounded-v3.2 (the app's folder until October 13; the app refuses its schema 2 ground), grounded-v3.1
     (rebuilds byte for byte apart from this script's own hash), grounded-v3, grounded-v2 and grounded/ are pinned history."""
 
     def test_real_layers_are_pinned_and_reproducible(self):

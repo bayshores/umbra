@@ -125,7 +125,7 @@ test('metric F loadApp: an app folder gives each function from its own module',a
 
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
 const skip=devDataPresent()?false:'AV2 8c development data is local-only and not present';
-// The v3.2 rows are history: they keep reading grounded-v3.2 (pao-baseline.mjs now serves grounded-v3.3).
+// The v3.2 rows are history: they keep reading grounded-v3.2 (pao-baseline.mjs now serves grounded-v3.4).
 const V32_DIR='grounded-v3.2/';
 // shape-v1: the current app refuses grounded-v3.2 (ground schema 2, no car shape); like metric-f.mjs --app-src, the rows
 // come from the app source of commit c7a39eb (tests/history-app.mjs), the code that produced the v3.2 rows.
@@ -157,10 +157,11 @@ test('metric F rows on AV2 8c (protocol v3.2): the app box, car-local points and
   }
 });
 
-// shape-v1 (placement protocol v3.3): the current app on grounded-v3.3. Each row's box result (the shape removed) is the
-// v3.2 app's row exactly, every row obeys the allowed changes, and the 8c adult rows lose every Blocked (prediction 6).
-test('metric F shape-v1 rows on AV2 8c (protocol v3.3): box results reproduce the v3.2 rows; allowed changes hold',{skip},async()=>{
-  assert.equal(GROUNDED_DIR,'grounded-v3.3/');
+// shape-v2 (placement protocol v3.4): the current app on grounded-v3.4. Each row's box result (the shape removed) is the
+// v3.2 app's row exactly, every row obeys the allowed changes (unchanged from shape-v1), and the 8c adult rows keep no
+// Blocked (shape-v2 prediction 9). The rows' car-shape section keeps the report key shapeV1 (shape-v2 changes.names).
+test('metric F shape-v2 rows on AV2 8c (protocol v3.4): box results reproduce the v3.2 rows; allowed changes hold',{skip},async()=>{
+  assert.equal(GROUNDED_DIR,'grounded-v3.4/');
   const dir=fileURLToPath(DEV.dir),{scene}=await loadSceneFrom({assembled:dir+'assembled/',grounded:dir+GROUNDED_DIR});
   const out=metricFRows(scene,suggestedSetup(scene,scene.suggestions));
   assert.ok(out.shapeV1,'the rows carry the car shape');
@@ -177,6 +178,7 @@ test('metric F shape-v1 rows on AV2 8c (protocol v3.3): box results reproduce th
       if(row.state==='blocked')assert.equal(row.box.state,'blocked','no new Blocked');
     });
   }
-  assert.equal(out.heights.adult.rows.filter(r=>r.state==='blocked').length,0,'8c adult Blocked falls to 0');
+  assert.equal(out.heights.adult.rows.filter(r=>r.state==='blocked').length,0,'8c adult Blocked stays 0');
+  assert.equal(out.heights.child.rows.filter(r=>r.state==='blocked').length,21,'8c child Blocked with the shape (contract A14)');
   assert.ok(out.heights.adult.rows.some(r=>r.box.state==='blocked'),'the box still calls some adult rows Blocked');
 });

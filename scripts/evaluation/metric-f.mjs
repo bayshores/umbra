@@ -12,15 +12,16 @@
 // (for example src/ of an earlier commit copied with git show); default: this repository's src/.
 // --check-baseline: a pao-baseline JSON whose setbackSweep.child and .adult rows these rows must reproduce (setbacks,
 // states and clearances to 1e-4 m), else the run stops.
-// --eval-shape: metric F shape-v1 approach-half split only (split-addendum.json; report only). An evaluation-only shape
+// --eval-shape: metric F shape-v2 approach-half split only (shape-v2/split-addendum.json; report only). An evaluation-only shape
 // file written by scripts/california/car_shape.py approach-split for this grounded scene; the app's own car shape of
 // the loaded scene is replaced by it (built from the far half of the sweeps) before any row is made. Never used by the app.
 //
-// Metric F shape-v1 (protocol v3): when the tested vehicle carries its LiDAR shape (ground.json carShape, placement
-// protocol v3.3), each row also gets the box result (the same row with the shape removed from the box: the result before
-// shape-v1) and the shape diagnostics (solidCutM, hitXM), and every row is checked against the shape-v1 allowed changes
-// (protocol resultRule.allowedChanges) on the fast and the full path. A violation is recorded (shapeV1.allowedChanges),
-// never hidden; a row whose app result differs from its recomputed shape result stops the run.
+// Metric F shape-v2 (protocol v4: the protocol v3 rules with the shape-v2 inputs): when the tested vehicle carries its
+// LiDAR shape (ground.json carShape, placement protocol v3.4), each row also gets the box result (the same row with the
+// shape removed from the box: the result before shape-v1) and the shape diagnostics (solidCutM, hitXM), and every row is
+// checked against the allowed changes (shape-v1 protocol resultRule.allowedChanges, unchanged in shape-v2) on the fast and
+// the full path. A violation is recorded (shapeV1.allowedChanges; the report key shapeV1 names the car-shape section for
+// both shape versions), never hidden; a row whose app result differs from its recomputed shape result stops the run.
 import {readFile,writeFile} from 'node:fs/promises';
 import {isDeepStrictEqual} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -207,7 +208,7 @@ async function main() {
   if(a['eval-shape']) {
     // Approach-half split (report only): the evaluation-only shape replaces the app's car shape of this loaded scene.
     const bytes=await readFile(a['eval-shape']),doc=JSON.parse(bytes);
-    if(doc.schema!=='shape-v1-approach-split')throw new Error('--eval-shape is not an approach-split shape file.');
+    if(doc.schema!=='shape-v2-approach-split')throw new Error('--eval-shape is not an approach-split shape file.');
     if(doc.scene?.ground?.sha256!==groundSha)throw new Error('--eval-shape was made from another ground.json.');
     if(!scene.carShape||doc.carShape?.track!==scene.carShape.track)throw new Error('--eval-shape names another vehicle than the scene car shape.');
     if(typeof app.prepareCarShape!=='function')throw new Error('The app has no prepareCarShape.');

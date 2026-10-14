@@ -7,7 +7,8 @@ curb with its front 1 m before the crossing. Nothing here is real data.
 BuilderTests run builder protocol version 3 (the v3 rules, still selectable); V4RuleTests cover the version 4 candidate
 rules (candidate-frame vehicle eligibility, Unknown when a real vehicle occupies the default spot, frame target variants);
 V41RuleTests cover the version 4.1 rule 1 filter (clusters outside the drivable area and moving tracks are ignored);
-V42RuleTests cover version 4.2 (shape-v1: the v4.1 choices, placement protocol v3.3, the shape-v1 and addendum pins);
+V43RuleTests cover version 4.3 (shape-v2: the v4.1 choices, placement protocol v3.4, the shape-v2 and addendum pins;
+version 4.2, shape-v1, runs only from its committed files at 8ec75f8);
 V3ReproducibilityTests compare the version 3 path with the frozen builder at commit cb2f497.
 """
 import argparse
@@ -53,7 +54,7 @@ PLACEMENT = {'protocolVersion': 3, 'pixelSelection': {'rule': 'exactProjection'}
                                   'person': {'label': 'child', 'heightMeters': 1.1, 'curbOffsetMeters': 0.30, 'reason': 'declared default'}}}
 SHAPE_PIN = {'path': tool.car_shape.SHAPE_PROTOCOL_PATH, 'sha256': tool.car_shape.SHAPE_PROTOCOL_SHA256}
 ADDENDUM_PIN = {'path': tool.car_shape.SPLIT_ADDENDUM_PATH, 'sha256': tool.car_shape.SPLIT_ADDENDUM_SHA256}
-PLACEMENT_V33 = {**PLACEMENT, 'protocolRevision': '3.3', 'carShape': {'shapeProtocol': SHAPE_PIN, 'groundSchemaVersion': 3}}
+PLACEMENT_V34 = {**PLACEMENT, 'protocolRevision': '3.4', 'carShape': {'shapeProtocol': SHAPE_PIN, 'groundSchemaVersion': 3}}
 
 
 def sha(data):
@@ -149,17 +150,17 @@ class Fixture:
         self.split = self.root / 'split.json'; self.split.write_text(json.dumps(split))
         self.lock = self.root / 'split.lock.json'; self.lock.write_text(json.dumps({'sha256': sha(self.split.read_bytes())}))
         self.placement = self.root / 'placement-protocol.json'
-        self.placement.write_text(json.dumps(PLACEMENT_V33 if version >= 4.2 else PLACEMENT))  # v4.2 pins placement protocol v3.3
+        self.placement.write_text(json.dumps(PLACEMENT_V34 if version >= 4.3 else PLACEMENT))  # v4.3 pins placement protocol v3.4
         self.protocol = self.root / 'builder-protocol.json'; self.write_protocol()
 
     def write_protocol(self, **changes):
         """The frozen builder protocol fields the builder checks: parameters, version, runtime code hashes and pins.
-        Version 3: parameters; version 4, 4.1 and 4.2: parametersByVariant (one entry per frame-target variant); version 4.2
-        also pins the shape-v1 protocol and the approach-half split addendum."""
+        Version 3: parameters; version 4, 4.1 and 4.3: parametersByVariant (one entry per frame-target variant); version 4.3
+        also pins the shape-v2 protocol and its approach-half split addendum."""
         if self.version == 3:
             doc = {'builderVersion': 3, 'parameters': tool.PARAMETERS_V3, 'code': tool.runtime_code_hashes(3)}
         else:
-            make = {4: tool.v4_parameters, 4.1: tool.v41_parameters, 4.2: tool.v42_parameters}[self.version]
+            make = {4: tool.v4_parameters, 4.1: tool.v41_parameters, 4.3: tool.v43_parameters}[self.version]
             doc = {'builderVersion': self.version, 'parametersByVariant': {n: make(t) for n, t in self.variants.items()},
                    'code': tool.runtime_code_hashes(self.version)}
         doc.update({'split': {'sha256': sha(self.split.read_bytes())}, 'placementProtocol': {'sha256': sha(self.placement.read_bytes())}})
@@ -169,8 +170,8 @@ class Fixture:
         self.protocol.write_text(json.dumps(doc))
 
     def write_lock(self, path=None, **changes):
-        """A protocol-lock.json naming this split, builder protocol and code (v4: also variant and approval; v4.2: also the
-        shape-v1 protocol and the split addendum), beside split.json unless path is given; returns its sha256."""
+        """A protocol-lock.json naming this split, builder protocol and code (v4: also variant and approval; v4.3: also the
+        shape-v2 protocol and its split addendum), beside split.json unless path is given; returns its sha256."""
         doc = {'split': {'sha256': sha(self.split.read_bytes())},
                'sceneBuilder': {'protocolSha256': sha(self.protocol.read_bytes()), 'code': tool.runtime_code_hashes(self.version)}}
         if self.version >= 4:
@@ -861,8 +862,8 @@ class V41RuleTests(unittest.TestCase):
         self.assertFalse(any((self.root / n).exists() for n in ('v4-parameters', 'threshold')))
 
 
-class V42RuleTests(unittest.TestCase):
-    """Builder protocol version 4.2 (shape-v1): the v4.1 rules and parameters, placement protocol v3.3, the shape-v1 and
+class V43RuleTests(unittest.TestCase):
+    """Builder protocol version 4.3 (shape-v2): the v4.1 rules and parameters, placement protocol v3.4, the shape-v2 and
     approach-half split addendum pins (protocol and held-out lock), car_shape.py as runtime code, and a carShape record
     saying whether the car shape applies. Nothing is planned or downloaded here."""
 
@@ -873,51 +874,51 @@ class V42RuleTests(unittest.TestCase):
         self.temp.cleanup()
 
     def pair(self, name, **options):
-        """The same synthetic log built under v4.1 and v4.2 (default variant)."""
+        """The same synthetic log built under v4.1 and v4.3 (default variant)."""
         s41 = tool.build(Fixture(self.root / f'{name}-41', version=4.1, **options).args())
-        fx = Fixture(self.root / f'{name}-42', version=4.2, **options)
+        fx = Fixture(self.root / f'{name}-43', version=4.3, **options)
         return s41, tool.build(fx.args()), fx
 
-    def test_v4_2_makes_the_v4_1_choices_and_records_that_the_shape_applies(self):
+    def test_v4_3_makes_the_v4_1_choices_and_records_that_the_shape_applies(self):
         target = frame_at(28.0)
-        s41, s42, fx = self.pair('annotated', on_disk=[target])
-        self.assertEqual((s41['status'], s42['status']), ('plan-written', 'plan-written'))
-        self.assertEqual((s42['builder']['version'], s42['builder']['variant']), (4.2, 'v4-12'))
-        self.assertEqual(s41['chosen'], s42['chosen'])
-        self.assertEqual(s41['evaluatedFrames'], s42['evaluatedFrames'])
-        self.assertEqual(s41['frameRuleV41'], s42['frameRuleV41'])
-        plans = [json.loads((self.root / f'annotated-{v}' / 'out' / 'plan.json').read_bytes()) for v in ('41', '42')]
+        s41, s43, fx = self.pair('annotated', on_disk=[target])
+        self.assertEqual((s41['status'], s43['status']), ('plan-written', 'plan-written'))
+        self.assertEqual((s43['builder']['version'], s43['builder']['variant']), (4.3, 'v4-12'))
+        self.assertEqual(s41['chosen'], s43['chosen'])
+        self.assertEqual(s41['evaluatedFrames'], s43['evaluatedFrames'])
+        self.assertEqual(s41['frameRuleV41'], s43['frameRuleV41'])
+        plans = [json.loads((self.root / f'annotated-{v}' / 'out' / 'plan.json').read_bytes()) for v in ('41', '43')]
         for plan in plans:
             [plan['sources'][r].update(path='same') for r in plan['sources']]
         self.assertEqual(plans[0], plans[1])  # same frame, crop and source bytes
         self.assertNotIn('carShape', s41)
-        shape = s42['carShape']
-        self.assertEqual((shape['applies'], shape['track'], shape['sweepPlanDir']), (True, CAR, f'.local/data/av2/shape-v1-{LOG}/'))
+        shape = s43['carShape']
+        self.assertEqual((shape['applies'], shape['track'], shape['sweepPlanDir']), (True, CAR, f'.local/data/av2/shape-v2-{LOG}/'))
         self.assertEqual((shape['shapeProtocol'], shape['shapeSplitAddendum']), (SHAPE_PIN, ADDENDUM_PIN))
-        self.assertEqual([line for line in s42['limitations'] if line not in s41['limitations']],
-                         [s42['limitations'][5]])
-        self.assertTrue(s42['limitations'][5].startswith('Builder v4.2:'))
-        self.assertEqual(s42['builder']['runtimeCode'], tool.runtime_code_hashes(4.2))
+        self.assertEqual([line for line in s43['limitations'] if line not in s41['limitations']],
+                         [s43['limitations'][5]])
+        self.assertTrue(s43['limitations'][5].startswith('Builder v4.3:'))
+        self.assertEqual(s43['builder']['runtimeCode'], tool.runtime_code_hashes(4.3))
         for path in (fx.root / 'out').iterdir():
             text = path.read_bytes()
             self.assertNotIn(b'park', text.lower()); self.assertNotIn(b'"Clear"', text)
 
-    def test_v4_2_shape_does_not_apply_to_a_declared_default_or_an_unknown_site(self):
-        s41, s42, _ = self.pair('default', car=False)
-        self.assertEqual(s41['chosen'], s42['chosen'])
-        self.assertEqual(s42['chosen']['currentVehicle']['status'], 'declared-default')
-        shape = s42['carShape']
+    def test_v4_3_shape_does_not_apply_to_a_declared_default_or_an_unknown_site(self):
+        s41, s43, _ = self.pair('default', car=False)
+        self.assertEqual(s41['chosen'], s43['chosen'])
+        self.assertEqual(s43['chosen']['currentVehicle']['status'], 'declared-default')
+        shape = s43['carShape']
         self.assertEqual((shape['applies'], shape['track'], shape['sweepPlanDir']), (False, None, None))
         # A real vehicle in the default spot: the site is Unknown, no frame is chosen and there is no car shape record.
-        s41, s42, _ = self.pair('occupied', car_x=31.0, car_y=-5.0, drift=0.05, evidence=[], expected_blocked=False)
-        self.assertEqual((s41['status'], s42['status']), (tool.OCCUPIED, tool.OCCUPIED))
-        self.assertEqual(s41['result'], s42['result'])
-        self.assertIsNone(s42['chosen']); self.assertIsNone(s42['carShape'])
+        s41, s43, _ = self.pair('occupied', car_x=31.0, car_y=-5.0, drift=0.05, evidence=[], expected_blocked=False)
+        self.assertEqual((s41['status'], s43['status']), (tool.OCCUPIED, tool.OCCUPIED))
+        self.assertEqual(s41['result'], s43['result'])
+        self.assertIsNone(s43['chosen']); self.assertIsNone(s43['carShape'])
 
-    def test_v4_2_protocol_is_checked(self):
-        fx = Fixture(self.root, version=4.2)
-        for name, changes, message in (('no-shape-pin', {'shapeProtocol': None}, 'shape-v1 protocol'),
-                                       ('other-shape', {'shapeProtocol': {**SHAPE_PIN, 'sha256': 'e' * 64}}, 'shape-v1 protocol'),
+    def test_v4_3_protocol_is_checked(self):
+        fx = Fixture(self.root, version=4.3)
+        for name, changes, message in (('no-shape-pin', {'shapeProtocol': None}, 'shape-v2 protocol'),
+                                       ('other-shape', {'shapeProtocol': {**SHAPE_PIN, 'sha256': 'e' * 64}}, 'shape-v2 protocol'),
                                        ('no-addendum', {'shapeSplitAddendum': None}, 'split addendum'),
                                        ('other-addendum', {'shapeSplitAddendum': {**ADDENDUM_PIN, 'sha256': 'e' * 64}}, 'split addendum'),
                                        ('v41-code', {'code': tool.runtime_code_hashes(4.1)}, 'every runtime code file')):
@@ -925,40 +926,40 @@ class V42RuleTests(unittest.TestCase):
                 fx.write_protocol(**changes)
                 with self.assertRaisesRegex(ValueError, message):
                     tool.build(fx.args(output=name))
-        # Placement protocol v3.3 is required (a v3 one, or a v3.3 pinning another shape protocol, is refused).
-        for name, placement in (('v3-placement', PLACEMENT),
-                                ('other-shape-placement', {**PLACEMENT_V33, 'carShape': {'shapeProtocol': {**SHAPE_PIN, 'sha256': 'e' * 64},
+        # Placement protocol v3.4 is required (a v3 or v3.3 one, or a v3.4 pinning another shape protocol, is refused).
+        for name, placement in (('v3-placement', PLACEMENT), ('v3.3-placement', {**PLACEMENT_V34, 'protocolRevision': '3.3'}),
+                                ('other-shape-placement', {**PLACEMENT_V34, 'carShape': {'shapeProtocol': {**SHAPE_PIN, 'sha256': 'e' * 64},
                                                                                          'groundSchemaVersion': 3}})):
             with self.subTest(name):
                 fx.placement.write_text(json.dumps(placement)); fx.write_protocol()
-                with self.assertRaisesRegex(ValueError, 'placement protocol v3.3'):
+                with self.assertRaisesRegex(ValueError, 'placement protocol v3.4'):
                     tool.build(fx.args(output=name))
-        fx.placement.write_text(json.dumps(PLACEMENT_V33)); fx.write_protocol()
-        params = tool.v42_parameters(tool.V4_VARIANTS['v4-12']); params['vehicle']['frameRuleIgnore']['trackMaxDisplacementFromFirstOverM'] = 1.5
+        fx.placement.write_text(json.dumps(PLACEMENT_V34)); fx.write_protocol()
+        params = tool.v43_parameters(tool.V4_VARIANTS['v4-12']); params['vehicle']['frameRuleIgnore']['trackMaxDisplacementFromFirstOverM'] = 1.5
         fx.write_protocol(parametersByVariant={'v4-12': params})
         with self.assertRaisesRegex(ValueError, 'parameters differ'):
             tool.build(fx.args(output='threshold'))
-        code = tool.runtime_code_hashes(4.2)
+        code = tool.runtime_code_hashes(4.3)
         self.assertEqual(code, {**tool.runtime_code_hashes(4.1), 'scripts/california/car_shape.py': sha((ROOT / 'scripts/california/car_shape.py').read_bytes())})
         fx.write_protocol(code={**code, 'scripts/california/car_shape.py': '0' * 64})
         with self.assertRaisesRegex(ValueError, 'Frozen code hash mismatch.*car_shape.py'):
             tool.build(fx.args(output='changed-shape-code'))
-        self.assertEqual(tool.v42_parameters(tool.V4_VARIANTS['v4-12']), tool.v41_parameters(tool.V4_VARIANTS['v4-12']))
+        self.assertEqual(tool.v43_parameters(tool.V4_VARIANTS['v4-12']), tool.v41_parameters(tool.V4_VARIANTS['v4-12']))
         shadow = types.ModuleType('car_shape'); shadow.__file__ = str(self.root / 'car_shape.py')
         fx.write_protocol()
         with mock.patch.dict(sys.modules, {'car_shape': shadow}):
             with self.assertRaisesRegex(ValueError, 'Module car_shape was loaded from'):
                 tool.build(fx.args(output='shadow'))
-        self.assertFalse(any((self.root / n).exists() for n in ('no-shape-pin', 'v41-code', 'v3-placement', 'threshold', 'changed-shape-code', 'shadow')))
+        self.assertFalse(any((self.root / n).exists() for n in ('no-shape-pin', 'v41-code', 'v3-placement', 'v3.3-placement', 'threshold', 'changed-shape-code', 'shadow')))
 
-    def test_v4_2_held_out_lock_names_the_shape_protocol_and_the_addendum(self):
-        fx = Fixture(self.root, version=4.2, role='held-out-blocked-test')
+    def test_v4_3_held_out_lock_names_the_shape_protocol_and_the_addendum(self):
+        fx = Fixture(self.root, version=4.3, role='held-out-blocked-test')
         fixed = self.root / 'locks' / 'protocol-lock.json'; fixed.parent.mkdir()
         with mock.patch.object(tool, 'LOCK_PATH_V4', fixed):
-            for name, pipeline, message in (('no-pipeline', None, 'shape-v1 protocol'),
+            for name, pipeline, message in (('no-pipeline', None, 'shape-v2 protocol'),
                                             ('no-addendum', {'shapeProtocol': SHAPE_PIN}, 'split addendum'),
                                             ('other-shape', {'shapeProtocol': {**SHAPE_PIN, 'sha256': 'e' * 64}, 'shapeSplitAddendum': ADDENDUM_PIN},
-                                             'shape-v1 protocol')):
+                                             'shape-v2 protocol')):
                 with self.subTest(name):
                     lock_sha = fx.write_lock(path=fixed, pipeline=pipeline)
                     with self.assertRaisesRegex(ValueError, message):
@@ -966,7 +967,7 @@ class V42RuleTests(unittest.TestCase):
             good = fx.write_lock(path=fixed)
             selection = tool.build(fx.args(output='locked', held_out_run=True, protocol_lock_sha256=good))
         self.assertEqual((selection['heldOutLock']['path'], selection['heldOutLock']['sha256']), (str(fixed), good))
-        self.assertEqual(selection['builder']['version'], 4.2)
+        self.assertEqual(selection['builder']['version'], 4.3)
 
 
 class V3ReproducibilityTests(unittest.TestCase):
@@ -1019,15 +1020,18 @@ class RealDataTests(unittest.TestCase):
     FROZEN_V4 = BASE / 'evaluation/pao-accuracy/scene-builder-v4/builder-protocol-v4.json'
     FROZEN_V41 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.1/builder-protocol-v4.1.json'
     FROZEN_V42 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.2/builder-protocol-v4.2.json'
+    FROZEN_V43 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json'
     V4_COMMIT = '772fdce'  # builder v4 runs only from these committed files (v4.1 changed the builder and shared scripts)
     V41_COMMIT = '37bf84d'  # builder v4.1 runs only from these committed files (v4.2 changed the builder and shared scripts)
+    V42_COMMIT = '8ec75f8'  # builder v4.2 (shape-v1) runs only from these committed files (v4.3 changed car_shape.py and the builder)
+    SHAPE_V1_PINS = ('07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825', 'cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626')
     V3_RUN = BASE / 'evaluation/pao-accuracy/scene-builder/v3/runs/8c52d911-2658849'
     PROTOCOL_V3_SHA = '9c22c1f613ebbbd292fe92ead485ffedafffcbfc2f039fd12ad136dc14172393'
     LOG = '8c52d911-fe34-3424-9864-d3fdfac38064'
 
     def test_frozen_protocols_match_this_builder(self):
         found = 0
-        for path, version in ((self.FROZEN_V42, 4.2), (self.FROZEN_V41, 4.1), (self.FROZEN_V4, 4), (self.FROZEN, 3)):
+        for path, version in ((self.FROZEN_V43, 4.3), (self.FROZEN_V42, 4.2), (self.FROZEN_V41, 4.1), (self.FROZEN_V4, 4), (self.FROZEN, 3)):
             freeze = path.with_name(path.stem + '-freeze.json')
             if not (path.exists() and freeze.exists()):
                 continue
@@ -1036,16 +1040,24 @@ class RealDataTests(unittest.TestCase):
             self.assertEqual(sha(raw), json.loads(freeze.read_bytes())['sha256'])
             self.assertEqual(protocol['builderVersion'], version)
             self.assertEqual(set(protocol['code']), set(tool.RUNTIME_CODE_BY_VERSION[version]))
-            if version == 4.2:  # this builder file and every shared module are the frozen v4.2 ones
-                self.assertEqual(protocol['code'], tool.runtime_code_hashes(4.2))
+            if version == 4.3:  # this builder file and every shared module are the frozen v4.3 ones
+                self.assertEqual(protocol['code'], tool.runtime_code_hashes(4.3))
                 for name, params in protocol['parametersByVariant'].items():
-                    self.assertEqual(params, tool.v42_parameters(params['frame']['target']), name)
+                    self.assertEqual(params, tool.v43_parameters(params['frame']['target']), name)
                 self.assertEqual({n: p['frame']['target'] for n, p in protocol['parametersByVariant'].items()}, tool.V4_VARIANTS)
                 self.assertEqual((protocol['shapeProtocol']['sha256'], protocol['shapeSplitAddendum']['sha256']),
                                  (tool.car_shape.SHAPE_PROTOCOL_SHA256, tool.car_shape.SPLIT_ADDENDUM_SHA256))
-                placement = self.BASE / 'evaluation/av2-map-first-2026-10-11/protocol-v3.3.json'
+                placement = self.BASE / 'evaluation/av2-map-first-2026-10-11/protocol-v3.4.json'
                 if placement.exists():
                     self.assertEqual(protocol['placementProtocol']['sha256'], sha(placement.read_bytes()))
+            elif version == 4.2:  # v4.2 (shape-v1) parameters are still the v4.1 ones; its code block names the 8ec75f8 files
+                for name, params in protocol['parametersByVariant'].items():
+                    self.assertEqual(params, tool.v42_parameters(params['frame']['target']), name)
+                self.assertEqual((protocol['shapeProtocol']['sha256'], protocol['shapeSplitAddendum']['sha256']), self.SHAPE_V1_PINS)
+                self.assertNotEqual(protocol['code']['scripts/california/car_shape.py'], sha((ROOT / 'scripts/california/car_shape.py').read_bytes()))
+                committed = committed_hashes(self.V42_COMMIT, tool.RUNTIME_CODE_BY_VERSION[4.2])
+                if committed is not None:
+                    self.assertEqual(protocol['code'], committed)
             elif version == 4.1:  # v4.1 parameters are still selectable; its code block names the 37bf84d files
                 for name, params in protocol['parametersByVariant'].items():
                     self.assertEqual(params, tool.v41_parameters(params['frame']['target']), name)

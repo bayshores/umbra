@@ -1,7 +1,7 @@
-// shape-v1 synthetic tests (.local/evaluation/pao-accuracy/shape-v1/design.md 16.2, JavaScript groups 1-12; the frozen
-// protocol.json resultRule, deepTest, representation and loaderValidation). No scene data: every shape, line and scene
-// here is built in memory. Car-local frame: x forward (front face at x = +L/2), y to the car's left, z above the box
-// bottom; cell (i, j) counts i from the front face and j from the left side.
+// Car-shape synthetic tests (.local/evaluation/pao-accuracy/shape-v1/design.md 16.2, JavaScript groups 1-12, which shape-v2
+// keeps unchanged; the frozen protocol.json resultRule, deepTest, representation and loaderValidation). No scene data:
+// every shape, line and scene here is built in memory. Car-local frame: x forward (front face at x = +L/2), y to the
+// car's left, z above the box bottom; cell (i, j) counts i from the front face and j from the left side.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {loadScene} from '../src/scene.mjs';
@@ -87,7 +87,7 @@ function bruteDeep(c,e,t,d=D) {
 
 const CAR8C={length:4.03,width:1.8825,height:1.489};// AV2 8c's averaged stationary vehicle sizes
 
-test('shape-v1 1: a fully measured car (every solid top at least the box height) gives exactly the box results',()=>{
+test('car shape 1: a fully measured car (every solid top at least the box height) gives exactly the box results',()=>{
   const dims=CAR8C,{length:L,width:W,height:H}=dims,half=[W/2,H/2,L/2];
   const P=prepareCarShape(record(dims,()=>H));
   assert.equal(P.allTopsAtLeastH,true);
@@ -118,7 +118,7 @@ test('shape-v1 1: a fully measured car (every solid top at least the box height)
   assert.deepEqual([...seen].sort(),['blocked','driver-inside-vehicle','person-inside-vehicle','plain','too-close-to-call']);
 });
 
-test('shape-v1 2: the piece test on an all-H shape equals the box shrunk by 0.10 m',()=>{
+test('car shape 2: the piece test on an all-H shape equals the box shrunk by 0.10 m',()=>{
   const dims=CAR8C,{length:L,width:W,height:H}=dims,half=[W/2,H/2,L/2];
   const P=prepareCarShape(record(dims,()=>H)),rand=random(2);
   let deep=0,shallow=0;
@@ -132,7 +132,7 @@ test('shape-v1 2: the piece test on an all-H shape equals the box shrunk by 0.10
   assert.ok(deep>=300&&shallow>=300,`${deep} deep, ${shallow} not deep`);
 });
 
-test('shape-v1 3: a low hood blocks only lines at least 0.10 m below its top; higher lines over it are not decided',()=>{
+test('car shape 3: a low hood blocks only lines at least 0.10 m below its top; higher lines over it are not decided',()=>{
   const dims=CAR8C,{length:L,height:H}=dims,c=record(dims,i=>i<12?.9:H),P=prepareCarShape(c),x=L/2-.6;
   assert.equal(P.allTopsAtLeastH,false);
   const at=z=>line(world([x,3,z],H),world([x,-3,z],H));
@@ -159,7 +159,7 @@ test('shape-v1 3: a low hood blocks only lines at least 0.10 m below its top; hi
   assert.equal(resultPhrase(results(at(1.2),dims,P,true)[1]),'unknown (vehicle height not proven)');
 });
 
-test('shape-v1 4: a line cutting 0.20 m into an empty (unproven) corner is not decided; the same cut into a measured corner blocks',()=>{
+test('car shape 4: a line cutting 0.20 m into an empty (unproven) corner is not decided; the same cut into a measured corner blocks',()=>{
   const dims=CAR8C,{length:L,width:W,height:H}=dims,P=prepareCarShape(record(dims,(i,j)=>i<5&&j<5?null:H));
   // Level lines at mid-height through the point 0.20 m inside the corner, at 45 degrees, so the box cut is 0.20 m and
   // every point of the line inside the box lies within 0.40 m of the corner (front-left: cells i < 5, j < 5 reach 0.49 m).
@@ -172,7 +172,7 @@ test('shape-v1 4: a line cutting 0.20 m into an empty (unproven) corner is not d
   assert.deepEqual([shaped2.state,shaped2.reason],['blocked',SHAPE_REASONS.blocked]);
 });
 
-test('shape-v1 5: one tall noise cell among lower neighbours never blocks a line at 1.20 m',()=>{
+test('car shape 5: one tall noise cell among lower neighbours never blocks a line at 1.20 m',()=>{
   const dims=CAR8C,{length:L,width:W,height:H}=dims,ci=20,cj=9;
   const P=prepareCarShape(record(dims,(i,j)=>i===ci&&j===cj?H:Math.abs(i-ci)<=1&&Math.abs(j-cj)<=1?.5:null));
   const x=L/2-(ci+.5)*(L/41),y=W/2-(cj+.5)*(W/19);
@@ -187,7 +187,7 @@ test('shape-v1 5: one tall noise cell among lower neighbours never blocks a line
   }
 });
 
-test('shape-v1 6: an unmeasured or refused shape turns every box Blocked into height-not-proven and changes nothing else',()=>{
+test('car shape 6: an unmeasured or refused shape turns every box Blocked into height-not-proven and changes nothing else',()=>{
   const dims=CAR8C;
   for(const [name,refusal] of [['measured, all null',null],['refused, too few sweeps',REFUSED('too-few-sweeps')],['refused, not stationary',REFUSED('not-stationary')]]) {
     const P=prepareCarShape(record(dims,()=>null,refusal)),rand=random(6),reason=refusal?SHAPE_REASONS.heightNotProvenRefused(refusal.reason):SHAPE_REASONS.heightNotProvenMeasured;
@@ -212,7 +212,7 @@ test('shape-v1 6: an unmeasured or refused shape turns every box Blocked into he
   }
 });
 
-test('shape-v1 7 and 8: on random small shapes every shape Blocked has a line point whose 0.10 m cube is inside the columns, and every row obeys table 8.2',()=>{
+test('car shape 7 and 8: on random small shapes every shape Blocked has a line point whose 0.10 m cube is inside the columns, and every row obeys table 8.2',()=>{
   const rand=random(7),count={blocked:0,shapeBlocked:0,notProven:0,shortcut:0,refused:0};
   for(let k=0;k<5000;k++) {
     const dims={length:.3+rand()*.9,width:.3+rand()*.9,height:.4+rand()*.6},H=dims.height,style=rand(),level=()=>.25+Math.floor(rand()*(H-.25)*1000)/1000;
@@ -289,10 +289,10 @@ const sweepOf=(s,targetHeight=1.1,driverDistance)=>setbackSweep(s,{pixels:PIXELS
   {label:'your vehicle',width:1.8,height:1.3,length:4},targetHeight);
 const sub=(a,b)=>a.map((n,i)=>n-b[i]);
 
-test('shape-v1 9: the car shape moves rigidly with the recorded vehicle; declared, resized and replacement vehicles keep the box',async()=>{
+test('car shape 9: the car shape moves rigidly with the recorded vehicle; declared, resized and replacement vehicles keep the box',async()=>{
   const s=await loadVehicle(vehicleFixture());
   assert.equal(s.carShape.track,'analytic');assert.equal(s.carShape.status,'measured');assert.equal(Object.isFrozen(s.carShape),true);
-  assert.deepEqual(JSON.parse(JSON.stringify(s.carShape)),{schema:'shape-v1',status:'measured',track:'analytic'});
+  assert.deepEqual(JSON.parse(JSON.stringify(s.carShape)),{schema:'shape-v2',status:'measured',track:'analytic'});
   const input=startInput(s),scenario=createScenario(s,input);
   assert.equal(scenario.baseline.pose,'annotated');
   for(const box of [scenario.baseline,scenario.proposed,scenario.whatIf])assert.equal(box.shape,s.carShape);
@@ -332,7 +332,7 @@ test('shape-v1 9: the car shape moves rigidly with the recorded vehicle; declare
   }
 });
 
-test('shape-v1 10: setback sweeps with a car shape never disagree with the full result rule, and change only box-Blocked rows',async()=>{
+test('car shape 10: setback sweeps with a car shape never disagree with the full result rule, and change only box-Blocked rows',async()=>{
   const s=await loadVehicle(vehicleFixture()),rand=random(10);
   const shapes=[['hood',hood],['box',()=>CAR.height],['empty front',i=>i<10?null:CAR.height],['all null',()=>null],
     ...Array.from({length:12},(_,k)=>[`noise ${k}`,()=>{const r=rand();return r<.25?null:r<.6?CAR.height:.25+Math.floor(rand()*(CAR.height-.25)*1000)/1000;}])];
@@ -364,7 +364,7 @@ test('shape-v1 10: setback sweeps with a car shape never disagree with the full 
   assert.ok(changed.blocked>=50&&changed.notProven>=50,JSON.stringify(changed));
 });
 
-test('shape-v1 11: the loader accepts valid car shapes and rejects every malformed one, with no box fallback',async()=>{
+test('car shape 11: the loader accepts valid car shapes and rejects every malformed one, with no box fallback',async()=>{
   // Valid: the hood, a fully measured car, an all-null measured shape and both refusals.
   for(const [name,options,status,full] of [['hood',{},'measured',false],['box',{top:()=>CAR.height},'measured',true],['all null',{top:()=>null},'measured',false],
     ['too few sweeps',{refusal:REFUSED('too-few-sweeps')},'refused',false],['not stationary',{refusal:REFUSED('not-stationary')},'refused',false]]) {
@@ -418,7 +418,7 @@ test('shape-v1 11: the loader accepts valid car shapes and rejects every malform
   await assert.rejects(loadVehicle(other),{message:'Invalid mapped ground: car shape track differs from the suggested vehicle.'},'track mismatch');
   // Earlier ground layers (schema 2: placement protocol v3.2, no car shape) are history.
   await assert.rejects(loadVehicle(vehicleFixture({ground:g=>{g.schemaVersion=2;delete g.carShape;}})),
-    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history).'},'schema 2');
+    {message:'Invalid mapped ground: schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history).'},'schema 2');
   // Prepared shapes: an invalid record is refused, and null stays null (no box stand-in).
   assert.equal(prepareCarShape(null),null);
   for(const bad of [{...carShapeRecord({track:'t',...CAR}),solidTopM:[1]},{...carShapeRecord({track:'t',...CAR}),box:{...CAR,height:0}}])
@@ -427,7 +427,7 @@ test('shape-v1 11: the loader accepts valid car shapes and rejects every malform
   assert.throws(()=>assessSightline(SPARSE,line([-3,0,0],[3,0,0]),mismatched),{message:'The measured car shape does not match the vehicle box.'});
 });
 
-test('shape-v1 12: phrases, facts and answers name "vehicle height not proven"; no new sentence uses withheld wording',async()=>{
+test('car shape 12: phrases, facts and answers name "vehicle height not proven"; no new sentence uses withheld wording',async()=>{
   const s=await loadVehicle(vehicleFixture()),sweep=sweepOf(s);
   const runs=reason=>sweep.rows.reduce((out,r,i)=>{if(r.reason===reason){if(i&&sweep.rows[i-1].reason===reason)out.at(-1)[1]=r.setback;else out.push([r.setback,r.setback]);}return out;},[]);
   const notProven=runs('height-not-proven'),fmt=n=>String(Number(n.toFixed(2)));

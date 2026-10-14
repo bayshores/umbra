@@ -50,10 +50,10 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
-// ground.json schemaVersion 3 (placement protocol v3.3): the schema 2 keys (protocol v3: the schema 1 keys plus the
+// ground.json schemaVersion 3 (placement protocol v3.4): the schema 2 keys (protocol v3: the schema 1 keys plus the
 // placement range limit and the fitted along-ray uncertainty band) plus carShape, the recorded stationary vehicle's
-// LiDAR shape (shape-v1). Schema 1 and 2 layers are history and are refused (they load only with the app source of
-// their own commit).
+// LiDAR shape (shape-v2). Schema 1 and 2 layers, and schema 3 layers with a shape-v1 car shape (placement protocol v3.3),
+// are history and are refused (they load only with the app source of their own commit).
 const GROUND_KEYS=['alongRayUncertainty','baseSceneSha256','boundaryEpsilonMeters','carShape','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind',
   'license','limitations','maxRangeMeters','placementRangeLimitMeters','processingCodeHashes','protocol','roadToleranceMeters','sceneId','schemaVersion','sources',
   'support','supportHeightAgreementMeters','supportRadiusMeters','terrain'];
@@ -72,7 +72,7 @@ function validateGround(g,scene) {
     hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),finite=v=>typeof v==='number'&&Number.isFinite(v),
     finite3=p=>Array.isArray(p)&&p.length===3&&p.every(finite),count=v=>Number.isSafeInteger(v)&&v>=0,
     positiveInt=v=>Number.isSafeInteger(v)&&v>0,keys=(v,list)=>object(v)&&Object.keys(v).sort().join()===list;
-  need(object(g)&&g.schemaVersion===3,'schemaVersion must be 3 (placement protocol v3.3 with the measured car shape; earlier ground layers are history)');
+  need(object(g)&&g.schemaVersion===3,'schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history)');
   need(keys(g,GROUND_KEYS.join()),'unexpected or missing top-level fields');
   need(g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
   need(hash(g.baseSceneSha256)&&keys(g.protocol,'bytes,path,readOnlyExternal,sha256')&&hash(g.protocol.sha256)&&text(g.protocol.path)&&count(g.protocol.bytes),'protocol record');
@@ -130,17 +130,20 @@ function validateGround(g,scene) {
   need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');
   if(g.carShape!==null)validateCarShape(g.carShape,c.items,{need,object,text,hash,finite,count,positiveInt,keys});
 }
-// shape-v1 (.local/evaluation/pao-accuracy/shape-v1/protocol.json dataSchema and loaderValidation): the recorded
+// shape-v2 (.local/evaluation/pao-accuracy/shape-v2/protocol.json: the shape-v1 dataSchema and loaderValidation with
+// the 0.25 m sweep step, schema 'shape-v2' and placement protocol v3.4): the recorded
 // stationary vehicle's LiDAR shape. Any failure rejects the whole scene; there is no box fallback. Whether it must be
 // present (exactly when suggestions name an annotated vehicle, with the same track) is checked after suggestions load.
 const CAR_SHAPE_KEYS='box,code,counts,diagnostics,frame,grid,protocol,refusal,removed,schema,solidTopM,status,sweeps,track';
 const CAR_SHAPE_SWEEP_KEYS='candidates,downloadDropped,kept,listing,planSha256,rule,scoring,shape,thinned';
-const CAR_SHAPE_RULE=Object.freeze({maxEgoDistanceM:30,minEgoStepM:1,maxKept:40,split:'alternate',minShapeSweeps:2,downloadAttempts:4,retryWaitsS:[5,10,20]});
+const CAR_SHAPE_SCHEMA='shape-v2',CAR_SHAPE_PLACEMENT_PROTOCOL='3.4';
+const CAR_SHAPE_RULE=Object.freeze({maxEgoDistanceM:30,minEgoStepM:.25,maxKept:40,split:'alternate',minShapeSweeps:2,downloadAttempts:4,retryWaitsS:[5,10,20]});
 const CAR_SHAPE_GRID_ORDER='index = i*lateral + j; i from the front face, j from the left side';
 function validateCarShape(s,cuboids,{need,object,text,hash,finite,count,positiveInt,keys}) {
   const fail=detail=>need(false,`car shape ${detail}`),check=(ok,detail)=>{if(!ok)fail(detail);};
   check(keys(s,CAR_SHAPE_KEYS),'has unexpected or missing fields');
-  check(s.schema==='shape-v1'&&['measured','refused'].includes(s.status)&&text(s.track)&&text(s.frame),'schema, status, track or frame');
+  check(s.schema!=='shape-v1','is shape-v1 (placement protocol v3.3); earlier car shapes are history');
+  check(s.schema===CAR_SHAPE_SCHEMA&&['measured','refused'].includes(s.status)&&text(s.track)&&text(s.frame),'schema, status, track or frame');
   const owners=cuboids.filter(box=>Object.hasOwn(box,'poseAverage')&&box.track===s.track);
   check(owners.length===1,'track must name exactly one averaged annotated cuboid');
   const [box]=owners,L=box.length,W=box.width,H=box.height;
@@ -174,7 +177,7 @@ function validateCarShape(s,cuboids,{need,object,text,hash,finite,count,positive
   const d=s.diagnostics;
   check(keys(d,'frontFaceToFirstSolidCellM,returnsBeyondEnds')&&(d.frontFaceToFirstSolidCellM===null||finite(d.frontFaceToFirstSolidCellM))&&
     keys(d.returnsBeyondEnds,'front,rear')&&count(d.returnsBeyondEnds.front)&&count(d.returnsBeyondEnds.rear),'diagnostics');
-  check(keys(s.protocol,'placementProtocolVersion,sha256,shapeProtocolSha256')&&s.protocol.placementProtocolVersion==='3.3'&&hash(s.protocol.sha256)&&
+  check(keys(s.protocol,'placementProtocolVersion,sha256,shapeProtocolSha256')&&s.protocol.placementProtocolVersion===CAR_SHAPE_PLACEMENT_PROTOCOL&&hash(s.protocol.sha256)&&
     hash(s.protocol.shapeProtocolSha256),'protocol record');
   check(keys(s.code,'path,sha256')&&s.code.path==='scripts/california/car_shape.py'&&hash(s.code.sha256),'code record');
 }
@@ -477,7 +480,7 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
     scene.suggestions=raw;
   }
   if(mapped) {
-    // shape-v1: the LiDAR shape exists exactly for the annotated stationary vehicle the suggestions name, by its track.
+    // car shape: the LiDAR shape exists exactly for the annotated stationary vehicle the suggestions name, by its track.
     const vehicle=scene.suggestions?.vehicle,shape=scene.ground.carShape;
     if((vehicle?.status==='annotated')!==(shape!==null))
       throw new Error('Invalid mapped ground: car shape must be present exactly when the suggestions name an annotated stationary vehicle.');

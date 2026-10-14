@@ -1,4 +1,4 @@
-"""Synthetic tests for shape-v1 (scripts/california/car_shape.py): the sweep rule, the download rule and its receipt, the
+"""Synthetic tests for shape-v2 (scripts/california/car_shape.py): the sweep rule, the download rule and its receipt, the
 pose and registration, the return filters, the solid top per cell, the millimetre floor, the refusals, the stationary test
 and the approach-half split addendum. Synthetic data only: nothing is downloaded (a fake bucket stands in for the public
 Argoverse files) and no real log file is read, except the frozen protocol files for their pins when they exist."""
@@ -221,7 +221,7 @@ class Site:
         return plan_dir, plan_sha, self.build(plan_dir, plan_sha)
 
     def ground_with(self, block):
-        """A minimal placement protocol v3.3 ground layer carrying this carShape (for the approach split)."""
+        """A minimal placement protocol v3.4 ground layer carrying this carShape (for the approach split)."""
         return json.dumps({'sceneId': 'fixture-scene', 'schemaVersion': 3, 'carShape': block, 'cuboids': {'items': [self.box]},
                            'frame': {'cityOrigin': ORIGIN.tolist()}}).encode()
 
@@ -264,23 +264,23 @@ class SweepRuleTests(unittest.TestCase):
         others = [{**r, 'track_uuid': OTHER} for r in rows]
         self.assertEqual(self.select(poses, others, listing)['candidates'], 0)
 
-    def test_thinning_keeps_the_next_sweep_a_full_metre_on(self):
-        poses = drive([120.0, 120.375, 120.875, 121.0, 121.5, 122.125, 122.125, 123.125])
+    def test_thinning_keeps_the_next_sweep_a_full_step_on(self):
+        poses = drive([120.0, 120.09375, 120.21875, 120.25, 120.375, 120.53125, 120.53125, 120.78125])
         result = self.select(poses, car_rows(poses), listing_entries([p['ts'] for p in poses]))
         self.assertEqual((result['candidates'], result['thinned']), (8, 4))
-        self.assertEqual([s['timestampNs'] for s in result['kept']], [T0, T0 + 3 * STEP, T0 + 5 * STEP, T0 + 7 * STEP])  # 1.0 m counts
+        self.assertEqual([s['timestampNs'] for s in result['kept']], [T0, T0 + 3 * STEP, T0 + 5 * STEP, T0 + 7 * STEP])  # 0.25 m counts
         self.assertEqual([s['set'] for s in result['kept']], ['shape', 'scoring', 'shape', 'scoring'])
         # The step is horizontal: a sideways move counts like a forward one.
-        poses = drive([120.0, 120.0, 120.0], ys=[200.0, 200.5, 201.0])
+        poses = drive([120.0, 120.0, 120.0], ys=[200.0, 200.125, 200.25])
         self.assertEqual(self.select(poses, car_rows(poses), listing_entries([p['ts'] for p in poses]))['thinned'], 2)
 
     def test_cap_keeps_40_evenly_spaced_and_the_split_alternates(self):
         poses, rows, listing = self.long_drive()
         result = self.select(poses, rows, listing)
-        thinned = list(range(11, 70, 2)) + list(range(72, 129, 2))  # 30 + 29 = 59 (the gap at k 70, 71 restarts the step)
-        self.assertEqual(result['thinned'], 59)
-        expected = [thinned[round(k * 58 / 39)] for k in range(40)]
-        self.assertEqual(len(set(expected)), 40); self.assertEqual((expected[0], expected[-1]), (11, 128))
+        thinned = [k for k in range(11, 130) if k not in (70, 71)]  # 117: every 0.5 m move clears the 0.25 m step
+        self.assertEqual(result['thinned'], 117)
+        expected = [thinned[round(k * 116 / 39)] for k in range(40)]
+        self.assertEqual(len(set(expected)), 40); self.assertEqual((expected[0], expected[-1]), (11, 129))
         self.assertEqual([s['timestampNs'] for s in result['kept']], [T0 + k * STEP for k in expected])
         self.assertEqual([s['set'] for s in result['kept']], ['shape', 'scoring'] * 20)
         for s, k in zip(result['kept'], expected):
@@ -314,12 +314,12 @@ class PlanAndDownloadTests(unittest.TestCase):
         site = Site(self.root / 'a', approach_drive())
         plan_dir, plan_sha = site.plan()  # no_network: choosing reads metadata only
         raw = (plan_dir / shape.PLAN_NAME).read_bytes(); plan = json.loads(raw)
-        self.assertEqual(sha(raw), plan_sha); self.assertEqual(plan_dir, site.out_root / f'shape-v1-{LOG}')
+        self.assertEqual(sha(raw), plan_sha); self.assertEqual(plan_dir, site.out_root / f'shape-v2-{LOG}')
         self.assertFalse((plan_dir / shape.SWEEP_DIR).exists()); self.assertFalse((plan_dir / shape.RECEIPT_NAME).exists())
         self.assertEqual((plan_dir / shape.LISTING_NAME).read_bytes(), site.listing_raw)
-        self.assertEqual((plan['candidates'], plan['thinned'], plan['kept']), (40, 20, 20))
-        self.assertEqual(plan['shape'], [str(T0 + k * STEP) for k in range(0, 40, 4)])
-        self.assertEqual(plan['scoring'], [str(T0 + k * STEP) for k in range(2, 40, 4)])
+        self.assertEqual((plan['candidates'], plan['thinned'], plan['kept']), (40, 40, 40))
+        self.assertEqual(plan['shape'], [str(T0 + k * STEP) for k in range(0, 40, 2)])
+        self.assertEqual(plan['scoring'], [str(T0 + k * STEP) for k in range(1, 40, 2)])
         self.assertEqual(plan['listing'], {'status': 'ok', 'attempts': 0, 'objects': 40})
         self.assertEqual(plan['rule'], shape.RULE); self.assertEqual(plan['shapeProtocol']['sha256'], shape.SHAPE_PROTOCOL_SHA256)
         self.assertNotIn(b'park', raw.lower()); self.assertNotIn(str(self.root), raw.decode())
@@ -348,7 +348,7 @@ class PlanAndDownloadTests(unittest.TestCase):
         plan_dir, plan_sha = shape.make_plan(**site.plan_args(saved_listing=False), fetch=bucket, sleep=waits.append)
         plan = json.loads((plan_dir / shape.PLAN_NAME).read_bytes())
         self.assertEqual(plan['listing'], {'status': 'ok', 'attempts': 3, 'objects': 40}); self.assertEqual(waits, [5, 10])
-        self.assertEqual(plan['inputs']['listing']['source'], 'fetched'); self.assertEqual(plan['kept'], 20)
+        self.assertEqual(plan['inputs']['listing']['source'], 'fetched'); self.assertEqual(plan['kept'], 40)
         self.assertEqual((plan_dir / shape.LISTING_NAME).read_bytes(), site.listing_raw)
 
     def test_failed_listing_gives_zero_candidates_and_too_few_sweeps(self):
@@ -377,7 +377,7 @@ class PlanAndDownloadTests(unittest.TestCase):
         receipt, bucket, waits = site.download(plan_dir, plan_sha, script)
         self.assertEqual(waits, [5, 10, 5, 10, 20])
         self.assertEqual(receipt['downloadDropped'], [{'timestampNs': second['timestampNs'], 'set': 'scoring', 'reason': 'download-failed', 'attempts': 4}])
-        self.assertEqual(len(receipt['sweeps']), 19)
+        self.assertEqual(len(receipt['sweeps']), 39)
         record = receipt['sweeps'][0]
         self.assertEqual((record['timestampNs'], record['attempts'], record['status'], record['source']), (first['timestampNs'], 3, 200, 'download'))
         self.assertEqual((record['sizeMatches'], record['md5MatchesEtag'], record['md5']), (True, True, first['etag']))
@@ -389,8 +389,8 @@ class PlanAndDownloadTests(unittest.TestCase):
         self.assertEqual([p.name for p in folder.iterdir() if p.name.startswith('.partial-')], [])
         self.assertEqual((plan_dir / shape.PLAN_NAME).read_bytes(), plan_raw)  # the split is never redone
         block = site.build(plan_dir, plan_sha)
-        self.assertEqual(block['status'], 'measured'); self.assertEqual((len(block['sweeps']['shape']), len(block['sweeps']['scoring'])), (10, 9))
-        self.assertEqual(block['sweeps']['downloadDropped'], receipt['downloadDropped']); self.assertEqual(block['sweeps']['kept'], 20)
+        self.assertEqual(block['status'], 'measured'); self.assertEqual((len(block['sweeps']['shape']), len(block['sweeps']['scoring'])), (20, 19))
+        self.assertEqual(block['sweeps']['downloadDropped'], receipt['downloadDropped']); self.assertEqual(block['sweeps']['kept'], 40)
         with self.assertRaisesRegex(ValueError, 'already receipted'):
             site.download(plan_dir, plan_sha)
 
@@ -445,8 +445,8 @@ class PlanAndDownloadTests(unittest.TestCase):
         self.assertEqual(shape.canonical(first), shape.canonical(second))
         self.assertNotIn(b'park', shape.canonical(first).lower())
         self.assertEqual(first['code'], {'path': 'scripts/california/car_shape.py', 'sha256': sha((ROOT / 'scripts/california/car_shape.py').read_bytes())})
-        self.assertEqual(first['protocol'], {'placementProtocolVersion': '3.3', 'sha256': PLACEMENT_SHA, 'shapeProtocolSha256': shape.SHAPE_PROTOCOL_SHA256})
-        self.assertEqual(first['solidTopM'], reference_tops(range(0, 40, 4)))
+        self.assertEqual(first['protocol'], {'placementProtocolVersion': '3.4', 'sha256': PLACEMENT_SHA, 'shapeProtocolSha256': shape.SHAPE_PROTOCOL_SHA256})
+        self.assertEqual(first['solidTopM'], reference_tops(range(0, 40, 2)))
 
 
 # ---------------------------------------------------------------------------------------------- the shape (5.3, 5.4, 6.2, 6.4)
@@ -664,13 +664,18 @@ class BlockTests(unittest.TestCase):
         # The banned word appears once: in the constant every writer checks its output against.
         self.assertEqual([line for line in source.splitlines() if 'park' in line.lower()], ["BANNED = b'park'"])
 
-    @unittest.skipUnless((ROOT / shape.SHAPE_PROTOCOL_PATH).exists(), 'frozen shape-v1 protocol absent')
+    @unittest.skipUnless((ROOT / shape.SHAPE_PROTOCOL_PATH).exists(), 'frozen shape-v2 protocol absent')
     def test_numbers_and_pins_equal_the_frozen_protocol(self):
-        raw = (ROOT / shape.SHAPE_PROTOCOL_PATH).read_bytes(); protocol = json.loads(raw)
+        raw = (ROOT / shape.SHAPE_PROTOCOL_PATH).read_bytes(); delta = json.loads(raw)
         self.assertEqual(sha(raw), shape.SHAPE_PROTOCOL_SHA256)
         self.assertEqual(sha((ROOT / shape.SPLIT_ADDENDUM_PATH).read_bytes()), shape.SPLIT_ADDENDUM_SHA256)
+        # shape-v2 is a list of changes to the frozen shape-v1 protocol: every number comes from the base except the step.
+        base_raw = (ROOT / delta['base']['path']).read_bytes(); protocol = json.loads(base_raw)
+        self.assertEqual(sha(base_raw), delta['base']['sha256'])
+        step = delta['changes']['sweeps.thinning.minEgoStepM']
         s = protocol['sweeps']
-        self.assertEqual((s['candidate']['maxEgoDistanceM']['value'], s['thinning']['minEgoStepM']['value'], s['cap']['maxKept']['value'],
+        self.assertEqual(s['thinning']['minEgoStepM']['value'], step['from'])
+        self.assertEqual((s['candidate']['maxEgoDistanceM']['value'], step['to'], s['cap']['maxKept']['value'],
                           s['minimum']['minShapeSweeps']['value'], s['downloads']['maxAttempts']['value'], s['downloads']['retryWaitsS']),
                          (shape.RULE['maxEgoDistanceM'], shape.RULE['minEgoStepM'], shape.RULE['maxKept'], shape.RULE['minShapeSweeps'],
                           shape.RULE['downloadAttempts'], shape.RULE['retryWaitsS']))
@@ -693,7 +698,7 @@ class BlockTests(unittest.TestCase):
             lock_path.write_bytes(raw); return sha(raw)
         pins = {'shapeProtocol': {'sha256': shape.SHAPE_PROTOCOL_SHA256}, 'shapeSplitAddendum': {'sha256': shape.SPLIT_ADDENDUM_SHA256}}
         digest = lock({'shapeProtocol': {'sha256': 'f' * 64}})
-        with self.assertRaisesRegex(ValueError, 'shape-v1 protocol'):
+        with self.assertRaisesRegex(ValueError, 'shape-v2 protocol'):
             shape.check_held_out(held, True, digest, lock_path=lock_path)
         digest = lock({'shapeProtocol': pins['shapeProtocol']})
         self.assertEqual(shape.check_held_out(held, True, digest, lock_path=lock_path)['sha256'], digest)
@@ -731,15 +736,15 @@ class ApproachSplitTests(unittest.TestCase):
         ground_raw = site.ground_with(block)
         doc, data = shape.approach_split_document(ground_raw, plan_dir, site.ann_raw, site.pose_raw, 'ground.json')
         split = doc['approachSplit']
-        # Kept: k = 0, 2, ..., 38 (x 115 .. 134). Far: x 115 .. 124; near: x 125, then the tie 126 / 134 (6.40 m) by time, ...
+        # Kept: every k = 0 .. 39 (x 115 .. 134.5). Far: x 115 .. 124.5; near: x 125, then the tie 125.5 / 134.5 (6.73 m) by time, ...
         x_of = lambda e: 115 + .5 * ((int(e['timestampNs']) - T0) // STEP)  # noqa: E731
-        self.assertEqual((split['K'], split['h'], split['unused']), (20, 10, []))
-        self.assertEqual([x_of(e) for e in split['far']], [115. + k for k in range(10)])
-        self.assertEqual([x_of(e) for e in split['near']], [125., 126., 134., 127., 133., 128., 132., 129., 131., 130.])
-        far_ks = list(range(0, 20, 2))
+        self.assertEqual((split['K'], split['h'], split['unused']), (40, 20, []))
+        self.assertEqual([x_of(e) for e in split['far']], [115. + .5 * k for k in range(20)])
+        self.assertEqual([x_of(e) for e in split['near']], [125.] + [x for d in (4.5, 4., 3.5, 3., 2.5, 2., 1.5, 1., .5) for x in (130 - d, 130 + d)] + [130.])
+        far_ks = list(range(20))
         self.assertEqual(doc['carShape']['solidTopM'], reference_tops(far_ks))
         self.assertEqual([e['timestampNs'] for e in doc['carShape']['sweeps']['shape']], [str(T0 + k * STEP) for k in far_ks])
-        self.assertEqual(doc['carShape']['sweeps']['kept'], 20); self.assertEqual(doc['scene']['appCarShapeSha256'], sha(shape.canonical(block)))
+        self.assertEqual(doc['carShape']['sweeps']['kept'], 40); self.assertEqual(doc['scene']['appCarShapeSha256'], sha(shape.canonical(block)))
         self.assertEqual(doc['addendum']['sha256'], shape.SPLIT_ADDENDUM_SHA256); self.assertNotIn(b'park', data.lower())
         self.assertEqual(shape.approach_split_document(ground_raw, plan_dir, site.ann_raw, site.pose_raw, 'ground.json')[1], data)
         # Every sweep used must still be the receipted file.

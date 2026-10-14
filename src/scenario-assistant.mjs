@@ -207,7 +207,7 @@ export function setbackSweep(scene,baseInput,vehicle,targetHeight=baseInput?.tar
     const row={setback,state:factState(r),...(r.reasonCode&&{reason:r.reasonCode}),gapM:r.gapM};
     if(row.state==='overlap'){const c=boxTests(s,box);Object.assign(row,{person:c.targetInside,driver:c.eyeInside});}
     // assessSightline with its diagnostics stays the authority: it confirms the first row of every run (state and reason
-    // only, so the shape-v1 diagnostics record is skipped).
+    // only, so the car-shape diagnostics record is skipped).
     const prev=rows.at(-1);
     if(row.state!=='overlap'&&(row.state!==prev?.state||row.reason!==prev?.reason)) {
       const full=assessSightline(scene,s,box,{ownPosition:own&&setback===s.baselineSetback,shapeCut:false});
@@ -228,7 +228,7 @@ export function setbackSweep(scene,baseInput,vehicle,targetHeight=baseInput?.tar
     at15ft:at(MARKS.at15ft),at20ft:at(MARKS.at20ft)};
 }
 // The line touches the tested box: Blocked, or Unknown only because it is too close to call or because the recorded
-// stationary vehicle's LiDAR shape does not prove its height there (shape-v1; the line cuts into its box), or the box
+// stationary vehicle's LiDAR shape does not prove its height there (car shape; the line cuts into its box), or the box
 // overlaps a real object while touching the line.
 const lineTouches=r=>r.state==='blocked'||r.reason==='too-close-to-call'||r.reason==='height-not-proven'||r.reason==='overlaps-real-object'&&r.gapM<=0;
 // A row whose placement is not tested: Unknown (or overlap) for any reason except too close to call.

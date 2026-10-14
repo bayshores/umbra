@@ -32,6 +32,11 @@ every v2 threshold and class rule and adds:
   shape) get the shape-v1 reports (score): flip table, no new Blocked (F0), allowed changes, lost supported rows,
   front-half flags and unresolved Blocked rows; --box-rows-from checks the box gaps and setbacks against the metric F v2
   rows (1e-9 m); --app-results (approach split) puts the app shape result next to each row.
+
+Metric F shape-v2 (protocol v4, metric-f-shape-v2/) runs the same rules on the shape-v2 car shape (a sweep kept every
+0.25 m of ego travel). Its protocol names shapeVersion 'shape-v2'; the report key shapeV1 still names the car-shape
+section. A scene that pins shapeV1Results gets a report-only comparison with the same scene under shape-v1. A delta split
+addendum (one with 'base') reads its unchanged sections from the base addendum after checking the base SHA-256.
 """
 import argparse
 import hashlib
@@ -44,6 +49,8 @@ from pathlib import Path
 import numpy as np
 
 SUBCOMMANDS = ('profile', 'score', 'summarize', 'receipt')
+# Approach-split files (evaluation-only far-half shapes) of shape-v1 (history) and shape-v2.
+APPROACH_SCHEMAS = ('shape-v1-approach-split', 'shape-v2-approach-split')
 
 
 # ----------------------------------------------------------------------------------------------- shared helpers
@@ -761,7 +768,7 @@ def cmd_profile(args):
                          'shapeSweeps': len(shape['sweeps']['shape']), 'scoringSweeps': len(shape['sweeps']['scoring'])},
             'listed': [{'timestampNs': str(t), 'sha256': d} for t, d in scoring['listed']],
             'used': used, 'dropped': loaded['dropped'], 'tooFew': too_few_scoring_sweeps(used)}
-        if source.get('schema') == 'shape-v1-approach-split':
+        if source.get('schema') in APPROACH_SCHEMAS:
             doc['scoringSweeps']['approachSplit'] = source['approachSplit']
             doc['scoringSweeps']['approachRefusal'] = None if shape['status'] != 'refused' else shape['refusal']['code']
     print(write_new(args.out, doc))
@@ -869,9 +876,29 @@ def shape_v1_entry(r, f):
     return entry
 
 
+def shape_version_comparison(entry, earlier):
+    """Report only (protocol v4): this scene's shape-v2 counts next to the frozen shape-v1 results of the same scene, per
+    target height: Blocked with the box, Blocked with the shape, box-Blocked rows F-supported on the scoring sweeps, and
+    how many of those the shape keeps Blocked. The two versions are scored on different scoring sweeps."""
+    out = {}
+    for name, h in entry['heights'].items():
+        e = earlier['heights'].get(name)
+        if 'error' in h or e is None or 'error' in e:
+            continue
+        def counts(rep):
+            lost = rep['lostSupported']
+            return {'boxBlocked': rep['counts']['boxBlocked'], 'shapeBlocked': rep['counts']['shapeBlocked'],
+                    'boxBlockedSupported': lost['boxBlockedSupported'], 'supportedKept': lost['boxBlockedSupported'] - lost['count'],
+                    'likelyFalse': rep['shapeBlockedClasses']['likelyFalse']}
+        out[name] = {'shapeV1': counts(e['shapeV1']), 'shapeV2': counts(h)}
+    return out
+
+
 def shape_v1_predictions(entry, prediction, v2_results):
-    """Report only: the shape-v1 protocol predictions for one scene against the result (upper limits, expected
-    height-not-proven rows, and the metric F v2 likely-false and ambiguous Blocked rows)."""
+    """Report only: the shape protocol predictions for one scene against the result (upper limits, expected
+    height-not-proven rows, the metric F v2 likely-false and ambiguous Blocked rows and, under protocol v4, the expected
+    number of F-supported box-Blocked rows the shape keeps Blocked). A prediction the protocol does not state for a height
+    is reported as None, never as a pass or a miss."""
     near = lambda a, b: abs(a - b) < 5e-5  # noqa: E731
     out = {}
     for name, h in entry['heights'].items():
@@ -883,11 +910,20 @@ def shape_v1_predictions(entry, prediction, v2_results):
         expected = prediction['heightNotProvenExpectedSetbacksM'].get(name)
         expected_list = [r['setbackM'] for r in v2_results['flip'][name] if r['box'] == 'blocked'] if expected == 'all' else (expected or [])
         v2 = v2_results['v2'].get(name, {}) if v2_results else {}
+        lost = h['lostSupported']; kept = lost['boxBlockedSupported'] - lost['count']
+        kept_expected = (prediction.get('supportedKeptExpected') or {}).get(name)
+        kept_met = None
+        if kept_expected and 'atLeast' in kept_expected:
+            kept_met = kept >= kept_expected['atLeast']
+        elif kept_expected and 'exactly' in kept_expected:
+            kept_met = kept == kept_expected['exactly'] and lost['boxBlockedSupported'] == kept_expected.get('of', lost['boxBlockedSupported'])
         out[name] = {'boxBlockedPredicted': prediction['boxBlocked'].get(name), 'boxBlocked': h['counts']['boxBlocked'],
                      'shapeBlockedUpperLimit': limit, 'shapeBlocked': h['counts']['shapeBlocked'],
                      'withinUpperLimit': None if limit is None else h['counts']['shapeBlocked'] <= limit,
-                     'expectedHeightNotProvenButStillBlocked': [x for x in expected_list if not any(near(x, y) for y in hnp)],
-                     'heightNotProvenNotInTheExpectedList': [y for y in hnp if not any(near(x, y) for x in expected_list)],
+                     'expectedHeightNotProvenButStillBlocked': None if expected is None else [x for x in expected_list if not any(near(x, y) for y in hnp)],
+                     'heightNotProvenNotInTheExpectedList': None if expected is None else [y for y in hnp if not any(near(x, y) for x in expected_list)],
+                     'supportedKeptExpected': kept_expected, 'supportedKept': kept, 'boxBlockedSupported': lost['boxBlockedSupported'],
+                     'supportedKeptAsExpected': kept_met,
                      'v2LikelyFalseBlockedNowHeightNotProven': [x for x in v2.get('likelyFalse', []) if any(near(x, y) for y in hnp)],
                      'v2LikelyFalseBlockedNotHeightNotProven': [x for x in v2.get('likelyFalse', []) if not any(near(x, y) for y in hnp)],
                      'v2AmbiguousBlockedNowHeightNotProven': [x for x in v2.get('ambiguous', []) if any(near(x, y) for y in hnp)],
@@ -924,16 +960,32 @@ def cmd_summarize_shape_v1(args, protocol, digest, docs):
                       'flip': {n: h['shapeV1']['flipTable'] for n, h in r['heights'].items() if 'error' not in h}}
             prediction = protocol.get('predictions', {}).get('scenes', {}).get(name)
             entry['predictions'] = shape_v1_predictions(entry, prediction, v2) if prediction and v2 else None
+            if spec.get('shapeV1Results'):  # protocol v4: the same scene under shape-v1 (report only)
+                assert sha(spec['shapeV1Results']) == spec['shapeV1ResultsSha256'], f'{name}: the shape-v1 results differ from the protocol'
+                entry['shapeV1Comparison'] = shape_version_comparison(entry, json.loads(Path(spec['shapeV1Results']).read_bytes()))
             entry['targetMet'] = (entry['total']['likelyFalse'] == 0) if entry['scored'] else None
         scenes.append(entry)
-    doc = {'kind': 'metric-f shape-v1 approach-split summary' if approach else 'metric-f shape-v1 summary', 'protocolSha256': digest,
+    version = protocol.get('shapeVersion', 'shape-v1')
+    doc = {'kind': f'metric-f {version} approach-split summary' if approach else f'metric-f {version} summary', 'protocolSha256': digest,
            'label': protocol['label'], 'heightFrame': protocol['definition']['heightFrame'], 'scenes': scenes}
     if approach:
         add = protocol['approachSplit']['addendum']; raw = Path(add['path']).read_bytes()
         assert hashlib.sha256(raw).hexdigest() == add['sha256'], 'The split addendum differs from its pinned SHA-256'
         addendum = json.loads(raw)
+        renamed = None
+        if 'base' in addendum:  # a delta addendum (shape-v2): these sections are the base addendum's, read through its names rule
+            base_raw = Path(addendum['base']['path']).read_bytes()
+            assert hashlib.sha256(base_raw).hexdigest() == addendum['base']['sha256'], 'The base split addendum differs from its pinned SHA-256'
+            renamed = [('metric F shape-v1 (protocol v3)', 'metric F shape-v2 (protocol v4)'), ('metric F shape-v1', 'metric F shape-v2')]
+            def rename(value):
+                if isinstance(value, str):
+                    for old, new in renamed:
+                        value = value.replace(old, new)
+                    return value
+                return [rename(v) for v in value] if isinstance(value, list) else {k: rename(v) for k, v in value.items()} if isinstance(value, dict) else value
+            addendum = {k: rename(v) for k, v in json.loads(base_raw).items()}
         doc.update({'addendum': add, 'notAGate': addendum['notAGate'], 'dependenceThatRemains': addendum['dependenceThatRemains'],
-                    'whatDiffers': addendum['whatDiffers'], 'limits': addendum['limits'],
+                    'whatDiffers': addendum['whatDiffers'], 'limits': addendum['limits'], 'baseTextsRenamed': renamed,
                     'noNewBlockedAllScenes': all(s['noNewBlockedReportOnly'] for s in scenes)})
     else:
         doc.update({'target': protocol['target']['rule'],

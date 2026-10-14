@@ -57,6 +57,11 @@ must pin the shape-v1 protocol and the approach-half split addendum by sha256, a
 (the chosen current vehicle is annotated) and where its sweep plan belongs; the sweep plan itself needs the averaged box
 of the scene's ground.json, so car_shape.py plan/download and prepare_av2_ground.py --car-shape-dir make the shape after
 this step (metadata only here: nothing is downloaded).
+
+Builder version 4.3 (shape-v2; development-only candidate): identical to 4.2 except that it pins placement protocol v3.4,
+which pins the frozen shape-v2 protocol (the sweep thinning step 0.25 m instead of 1.0 m; every other shape rule unchanged)
+and its approach-half split addendum. The sweep plan folder is .local/data/av2/shape-v2-<log>/. Builder v4.2 now runs only
+from its committed files (8ec75f8).
 """
 import argparse
 import copy
@@ -81,7 +86,7 @@ REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS)); sys.path.insert(0, str(SCRIPTS / 'sponsors')); sys.path.insert(0, str(HERE))
 from common import canonical, digest, parse, publish, require, snapshot  # noqa: E402
 import prepare_av2  # noqa: E402
-import car_shape  # noqa: E402  (v4.2: shape-v1 pins; the shape itself is built by prepare_av2_ground.py)
+import car_shape  # noqa: E402  (v4.2+: car-shape pins; the shape itself is built by prepare_av2_ground.py)
 from remap_support import supported_rectangle  # noqa: E402
 _spec = importlib.util.spec_from_file_location('suggest_av2_placements', HERE / 'suggest_av2_placements.py')
 suggest_tool = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(suggest_tool)
@@ -99,8 +104,10 @@ ground_tool = suggest_tool.ground_tool  # the prepare_av2_ground module instance
 # v4.2: shape-v1. The v4.1 rules and parameters unchanged; pins placement protocol v3.3, the shape-v1 protocol and the
 #     approach-half split addendum; car_shape.py is runtime code. Builder v4.1 now runs only from its committed files
 #     (37bf84d), as v4 runs from 772fdce and v3 from cb2f497.
-BUILDER_VERSION = 4.2  # the newest version this file runs
-SUPPORTED_VERSIONS = (3, 4, 4.1, 4.2)
+# v4.3: shape-v2 (sweep thinning step 0.25 m). The v4.2 rules and parameters unchanged; pins placement protocol v3.4, the
+#     shape-v2 protocol and its split addendum. Builder v4.2 now runs only from its committed files (8ec75f8).
+BUILDER_VERSION = 4.3  # the newest version this file runs
+SUPPORTED_VERSIONS = (3, 4, 4.1, 4.2, 4.3)
 MAX_FILE = 16_000_000
 S3 = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 SIDES = ('left', 'right')
@@ -116,7 +123,7 @@ RUNTIME_CODE_V3 = ('scripts/california/build_av2_scene.py', 'scripts/california/
 RUNTIME_CODE = RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',)
 # v4.2 adds car_shape.py (imported by prepare_av2_ground.py and by this file).
 RUNTIME_CODE_V42 = RUNTIME_CODE + ('scripts/california/car_shape.py',)
-RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE, 4.2: RUNTIME_CODE_V42}
+RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE, 4.2: RUNTIME_CODE_V42, 4.3: RUNTIME_CODE_V42}
 # v4: modules imported by name must be the hashed files (a same-named file earlier on sys.path would run unhashed code).
 MODULE_FILES = {'common': 'scripts/sponsors/common.py', 'prepare_av2': 'scripts/california/prepare_av2.py',
                 'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py',
@@ -187,8 +194,8 @@ def v41_parameters(target):
     return params
 
 
-# v4.2 changes no parameter: its parameter object is the v4.1 one.
-v42_parameters = v41_parameters
+# v4.2 and v4.3 change no parameter: their parameter object is the v4.1 one.
+v42_parameters = v43_parameters = v41_parameters
 
 
 def _sha(path):
@@ -204,7 +211,7 @@ def runtime_code_hashes(version=BUILDER_VERSION):
 # ------------------------------------------------------------------ freeze guards
 def protocol_rules(protocol, variant):
     """(version, parameters) of the frozen builder protocol: version 3 carries exactly PARAMETERS_V3 (no variant);
-    version 4, 4.1 and 4.2 carry named variants (parametersByVariant) and --protocol-variant picks one."""
+    version 4, 4.1, 4.2 and 4.3 carry named variants (parametersByVariant) and --protocol-variant picks one."""
     version = protocol.get('builderVersion')
     require(version in SUPPORTED_VERSIONS, f'Builder protocol version must be one of {SUPPORTED_VERSIONS}')
     if version == 3:
@@ -215,7 +222,8 @@ def protocol_rules(protocol, variant):
     require(isinstance(variants, dict) and variants and 'parameters' not in protocol, f'A builder version {version} protocol needs parametersByVariant')
     require(isinstance(variant, str) and variant in variants,
             'Choose one of the protocol variants with --protocol-variant: ' + ', '.join(sorted(variants)))
-    params = variants[variant]; expected = v42_parameters if version == 4.2 else v41_parameters if version == 4.1 else v4_parameters
+    params = variants[variant]
+    expected = {4.3: v43_parameters, 4.2: v42_parameters, 4.1: v41_parameters}.get(version, v4_parameters)
     require(isinstance(params, dict) and params == expected((params.get('frame') or {}).get('target')),
             'Builder protocol parameters differ from this builder')
     return version, params
@@ -234,11 +242,11 @@ def check_frozen_protocol(protocol, split_sha, placement_sha, variant=None):
     require((protocol.get('split') or {}).get('sha256') == split_sha, 'Builder protocol was frozen against another split.json')
     require((protocol.get('placementProtocol') or {}).get('sha256') == placement_sha,
             'Placement protocol sha256 differs from the one pinned in the builder protocol')
-    if version >= 4.2:  # shape-v1: the frozen shape protocol and the approach-half split addendum
+    if version >= 4.2:  # the frozen car-shape protocol (shape-v2 in this file) and its approach-half split addendum
         require((protocol.get('shapeProtocol') or {}).get('sha256') == car_shape.SHAPE_PROTOCOL_SHA256,
-                'Builder protocol v4.2 must pin the frozen shape-v1 protocol (shapeProtocol.sha256)')
+                f'Builder protocol v{version} must pin the frozen {car_shape.SCHEMA} protocol (shapeProtocol.sha256)')
         require((protocol.get('shapeSplitAddendum') or {}).get('sha256') == car_shape.SPLIT_ADDENDUM_SHA256,
-                'Builder protocol v4.2 must pin the approach-half split addendum (shapeSplitAddendum.sha256)')
+                f'Builder protocol v{version} must pin the {car_shape.SCHEMA} approach-half split addendum (shapeSplitAddendum.sha256)')
     if version >= 4:
         check_module_origins()
     return version, params
@@ -264,8 +272,8 @@ def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code, 
     """M7 only. protocol-lock.json, read by its pinned sha256, must name this split, this builder protocol and the
     same runtime code hashes. Called before any held-out, control or reserve log file is opened.
     v3: the lock beside split.json. v4: the lock at LOCK_PATH_V4 only, which must also name the variant
-    (sceneBuilder.variant) and an approval block (approval.by and approval.utc, non-empty strings). v4.2: it must also
-    name the frozen shape-v1 protocol and the split addendum (pipeline.shapeProtocol.sha256, pipeline.shapeSplitAddendum.sha256)."""
+    (sceneBuilder.variant) and an approval block (approval.by and approval.utc, non-empty strings). v4.2+: it must also
+    name the frozen car-shape protocol (shape-v2 in this file) and its split addendum (pipeline.shapeProtocol.sha256, pipeline.shapeSplitAddendum.sha256)."""
     path = Path(split_path).resolve().parent / LOCK_NAME if version == 3 else LOCK_PATH_V4
     require(isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256),
             f'Held-out runs need --protocol-lock-sha256 (the sha256 of {LOCK_NAME} recorded at the M6 lock)')
@@ -287,7 +295,7 @@ def check_protocol_lock(split_path, lock_sha256, split_sha, protocol_sha, code, 
         pipeline = lock.get('pipeline') if isinstance(lock.get('pipeline'), dict) else {}
         pin = lambda name: (pipeline.get(name) if isinstance(pipeline.get(name), dict) else {}).get('sha256')  # noqa: E731
         require(pin('shapeProtocol') == car_shape.SHAPE_PROTOCOL_SHA256,
-                f'{LOCK_NAME} does not name the frozen shape-v1 protocol (pipeline.shapeProtocol.sha256)')
+                f'{LOCK_NAME} does not name the frozen {car_shape.SCHEMA} protocol (pipeline.shapeProtocol.sha256)')
         require(pin('shapeSplitAddendum') == car_shape.SPLIT_ADDENDUM_SHA256,
                 f'{LOCK_NAME} does not name the approach-half split addendum (pipeline.shapeSplitAddendum.sha256)')
     return {'path': str(path), 'sha256': lock_sha256}
@@ -993,10 +1001,11 @@ def build(args):
             and placement['pixelSelection']['rule'] == 'exactProjection', 'Placement protocol v3 (averaged pose, exact projection) required')
     require('average_prefix' in inspect.signature(ground_tool.cuboids_from_annotations).parameters,
             'Shared ground code lacks the protocol v3 averaged pose')
-    if version >= 4.2:  # placement protocol v3.3 pins the same frozen shape-v1 protocol
-        require(placement.get('protocolRevision') == '3.3' and
+    if version >= 4.2:  # the placement protocol pins the same frozen car-shape protocol (v4.3: v3.4 and shape-v2)
+        revision = car_shape.PLACEMENT_PROTOCOL_VERSION if version >= 4.3 else '3.3'
+        require(placement.get('protocolRevision') == revision and
                 (placement.get('carShape') or {}).get('shapeProtocol', {}).get('sha256') == car_shape.SHAPE_PROTOCOL_SHA256,
-                'Builder v4.2 needs placement protocol v3.3 pinning the frozen shape-v1 protocol')
+                f'Builder v{version} needs placement protocol v{revision} pinning the frozen {car_shape.SCHEMA} protocol')
     epsilon = placement['tolerances']['boundaryEpsilonMeters']; range_limit = placement['placementRange']['limitMeters']
     max_range = placement['tolerances']['maxRangeMeters']
     log_dir = Path(args.log_dir).resolve(); require(log_dir.name == log, 'Log directory name must be the log id')
@@ -1117,8 +1126,8 @@ def build(args):
                                            'through the placement protocol checks.')
     if version >= 4.2:
         selection['carShape'] = None  # set below when a frame is chosen
-        selection['limitations'].insert(5, 'Builder v4.2: the choices are the v4.1 ones. When the chosen current vehicle is the annotated '
-                                           'stationary vehicle, its LiDAR shape (shape-v1) is built after this step from a hashed sweep plan '
+        selection['limitations'].insert(5, f'Builder v{version}: the choices are the v4.1 ones. When the chosen current vehicle is the annotated '
+                                           f'stationary vehicle, its LiDAR shape ({car_shape.SCHEMA}) is built after this step from a hashed sweep plan '
                                            'and receipted public sweeps (car_shape.py, prepare_av2_ground.py --car-shape-dir); this step '
                                            'reads metadata only and downloads nothing.')
     if cross_check['status'] == 'mismatch':
@@ -1161,7 +1170,7 @@ def build(args):
             applies = vehicle['status'] == 'annotated'
             selection['carShape'] = {
                 'applies': applies, 'track': vehicle['track'] if applies else None,
-                'sweepPlanDir': f'.local/data/av2/shape-v1-{log}/' if applies else None,
+                'sweepPlanDir': f'.local/data/av2/{car_shape.SCHEMA}-{log}/' if applies else None,
                 'shapeProtocol': {'path': car_shape.SHAPE_PROTOCOL_PATH, 'sha256': car_shape.SHAPE_PROTOCOL_SHA256},
                 'shapeSplitAddendum': {'path': car_shape.SPLIT_ADDENDUM_PATH, 'sha256': car_shape.SPLIT_ADDENDUM_SHA256},
                 'rule': ('The car shape applies exactly when the chosen current vehicle is the annotated stationary vehicle: '

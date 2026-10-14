@@ -37,9 +37,9 @@ def protocol_v32(**parameters):
     return protocol
 
 
-def protocol_v33():
-    """protocol v3.2 plus protocolRevision '3.3' and the carShape section (ground.json schemaVersion 3)."""
-    protocol = protocol_v32(); protocol['protocolRevision'] = '3.3'; protocol['carShape'] = copy.deepcopy(fixture.PROTOCOL_V33['carShape'])
+def protocol_v34():
+    """protocol v3.2 plus protocolRevision '3.4' and the carShape section (ground.json schemaVersion 3, shape-v2)."""
+    protocol = protocol_v32(); protocol['protocolRevision'] = '3.4'; protocol['carShape'] = copy.deepcopy(fixture.PROTOCOL_V34['carShape'])
     return protocol
 
 
@@ -340,9 +340,9 @@ class SuggestionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'exactly the parameters and refusal codes'):
                 tool.suggest(scene, ground, terrain, positions, eligible, {**protocol, 'crossingApplicability': changed})
 
-    def test_v3_3_reads_schema_3_and_needs_a_matching_car_shape(self):
+    def test_v3_4_reads_schema_3_and_needs_a_matching_car_shape(self):
         # The measured car shape of the annotated vehicle: the suggestions equal protocol v3.2's for the same scene.
-        args, _, _, _, _ = fixture.car_shape_layer(self.root / 'shape', protocol=protocol_v33())
+        args, _, _, _, _ = fixture.car_shape_layer(self.root / 'shape', protocol=protocol_v34())
         doc = self.document(self.paths(args)); old = self.document(self.grounded('v32', protocol=protocol_v32()))
         self.assertEqual(doc['vehicle']['status'], 'annotated')
         for key in ('vehicle', 'crossing', 'person', 'roadAxis', 'curb', 'tolerances', 'limitations', 'schemaVersion'):
@@ -350,8 +350,8 @@ class SuggestionTests(unittest.TestCase):
         self.assertNotIn(b'park', tool.canonical(doc).lower())
         # An annotated vehicle with carShape null (--no-car-shape) is refused; a declared default with null is accepted.
         with self.assertRaisesRegex(ValueError, 'carShape does not match the suggested vehicle'):
-            self.document(self.grounded('null', protocol=protocol_v33(), build={'no_car_shape': True}))
-        default = self.document(self.grounded('default', protocol=protocol_v33(), annotations=False, build={'no_car_shape': True}))
+            self.document(self.grounded('null', protocol=protocol_v34(), build={'no_car_shape': True}))
+        default = self.document(self.grounded('default', protocol=protocol_v34(), annotations=False, build={'no_car_shape': True}))
         self.assertEqual(default['vehicle']['status'], 'declared-default')
         self.assertEqual(default['vehicle'], self.document(self.grounded('default32', protocol=protocol_v32(), annotations=False))['vehicle'])
         # A car shape of another track is refused.
@@ -364,7 +364,7 @@ class SuggestionTests(unittest.TestCase):
             tool.suggest(scene, ground, terrain, positions, eligible, protocol_v32())
         scene, ground, terrain, positions, eligible, _, _ = tool.load(**self.grounded('v32b', protocol=protocol_v32()))
         with self.assertRaisesRegex(ValueError, 'schemaVersion 3'):
-            tool.suggest(scene, ground, terrain, positions, eligible, protocol_v33())
+            tool.suggest(scene, ground, terrain, positions, eligible, protocol_v34())
 
     def test_along_ray_limitation_names_the_band_method(self):
         fitted = tool.along_ray_limitation({'method': 'fitThisDevelopmentScene'})

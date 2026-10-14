@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Palo Alto accuracy harness (tasks M0, M2, M4d). Loads the local AV2 8c development scene (current folder GROUNDED_DIR,
-// placement protocol v3.3 with the recorded stationary vehicle's shape-v1 LiDAR shape) the way tests/av2-ground.test.mjs
+// placement protocol v3.4 with the recorded stationary vehicle's shape-v2 LiDAR shape) the way tests/av2-ground.test.mjs
 // does and measures the app's own geometry (src/*.mjs) against named references. Development-grade, AV2-referenced
 // numbers from one development scene: not surveyed, not held-out, never a passed gate. Metric K (LiDAR shadow) is computed
 // by v3.1-analysis/metric_k.py next to the grounded folder.
@@ -50,10 +50,11 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Output names for the app's pixel keys (its vehicle-front key is not used in written results).
 const pixelsOut=p=>({crossing:p.crossing,vehicleFront:p.parking,person:p.target});
 
-// The current grounded folder (app contract A13): placement protocol v3.3, grounded-v3.2/ plus the recorded stationary
-// vehicle's shape-v1 LiDAR shape (ground schemaVersion 3). Earlier folders are history (the app refuses grounded-v3.2/ and
-// older; tests/history-app.mjs loads them with the app source of their own commit).
-export const GROUNDED_DIR='grounded-v3.3/';
+// The current grounded folder (app contract A14): placement protocol v3.4, grounded-v3.2/ plus the recorded stationary
+// vehicle's shape-v2 LiDAR shape (ground schemaVersion 3; shape-v2 reads more LiDAR sweeps than shape-v1). Earlier folders
+// are history (the app refuses grounded-v3.3/ and older; tests/history-app.mjs loads them with the app source of their own
+// commit).
+export const GROUNDED_DIR='grounded-v3.4/';
 export const devDataPresent=()=>existsSync(new URL(GROUNDED_DIR+'scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
   &&existsSync(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir));
 
@@ -283,7 +284,7 @@ function appIntervals(lo,hi,test) {
 export function setbackSweepBaseline(scene,setup) {
   const child=Number(setup.targetHeight),out={definition:{
     sweep:'app setbackSweep (src/scenario-assistant.mjs) at the suggested driver distance: rows every 0.25 m from limits.minimumSetback, plus the last setback and the 15 ft / 20 ft marks',
-    vehicle:'annotated pose of the suggested stationary vehicle moved along the lane axis (whatIfBox), as the app does; it carries the recorded vehicle\'s shape-v1 LiDAR shape',
+    vehicle:'annotated pose of the suggested stationary vehicle moved along the lane axis (whatIfBox), as the app does; it carries the recorded vehicle\'s shape-v2 LiDAR shape',
     boxDeep:'boxDeepIntervalsM: the line cuts at least 0.10 m into the box (the box alone would say Blocked; the v3.2 appBlockedIntervalsM); confirmed when the app gives Blocked or Unknown height-not-proven inside and neither just outside',
     appBlocked:'appBlockedIntervalsM: the app\'s own Blocked (createScenario proposedVisibility), 0.05 m scan with every change bisected to 1e-6 m',
     clearance:'signed sightline-to-box clearance, metres (positive: the line misses the box; negative: it cuts in)',
@@ -543,7 +544,7 @@ export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=
     note:'Node only, single process, warm module cache except the cold load; browser load and drag latency are measured separately'};
 }
 
-// ---------------------------------------------------------------- expected values (app contract A5-A7 and A13)
+// ---------------------------------------------------------------- expected values (app contract A5-A7 and A14)
 // The protocol v2 planning-lane reproduction (first-load gap 0.0251 m, residuals 0.144/0.177/0.210 m, 41 touching rows) is
 // recorded in baseline-2026-10-12.json and after-m1-fixes-2026-10-12/; the app no longer loads protocol v2 data. These
 // are the contract's protocol v3 values (grounded-v3.1 and grounded-v3.2 have the same geometry), from independent
@@ -554,17 +555,18 @@ function expectations(b) {
   check('first-load clearance (m), contract A6',.06241,b.firstLoad.clearanceM,1e-4);
   check('first-load baseline setback (m), contract A6',.41981,b.firstLoad.baselineSetbackM,1e-4);
   // Contract A6 lists 0.005 m grid values; these are the bisected ends (a grid value can be up to one step inside).
-  // The A6 Blocked intervals are box-deep since shape-v1 (the box alone; the geometry is unchanged in grounded-v3.3).
+  // The A6 Blocked intervals are box-deep since shape-v1 (the box alone; the geometry is unchanged in grounded-v3.4).
   for(const [k,[a,z]] of [['child',[1.093,10.038]],['adult',[6.028,10.038]]]) {
     const iv=b.setbackSweep[k].boxDeepIntervalsM;
     check(`${k} box-deep (v3.2 app Blocked) from (m), contract A6`,a,iv[0]?.[0],.006);check(`${k} box-deep (v3.2 app Blocked) until (m), contract A6`,z,iv.at(-1)?.[1],.006);
   }
-  // Contract A13 (the 8.2 check, scene-builder-v4.2/allowed-changes-8.2.json): first load unchanged, sweep rows with the shape.
+  // Contract A14 (the shape-v2 allowed-change check, scene-builder-v4.3/allowed-changes-v4.3.json): first load unchanged,
+  // sweep rows with the shape.
   const same=(name,expected,measured)=>checks.push({name,expected,measured,tolerance:0,pass:JSON.stringify(expected)===JSON.stringify(measured)});
-  same('first-load results unchanged (Unknown / Unknown), contract A13 and shape-v1 prediction 2',['unknown','unknown'],[b.firstLoad.current,b.firstLoad.proposed]);
-  for(const [k,want] of [['child',{rows:57,blocked:12,heightNotProven:26}],['adult',{rows:57,blocked:0,heightNotProven:17}]]) {
+  same('first-load results unchanged (Unknown / Unknown), contract A14 and shape-v2 prediction 2',['unknown','unknown'],[b.firstLoad.current,b.firstLoad.proposed]);
+  for(const [k,want] of [['child',{rows:57,blocked:21,heightNotProven:17}],['adult',{rows:57,blocked:0,heightNotProven:17}]]) {
     const x=b.setbackSweep[k];
-    same(`${k} setback-sweep rows with the shape (rows, Blocked, height-not-proven), contract A13`,want,{rows:x.count,blocked:x.blockedRows,heightNotProven:x.heightNotProvenRows});
+    same(`${k} setback-sweep rows with the shape (rows, Blocked, height-not-proven), contract A14`,want,{rows:x.count,blocked:x.blockedRows,heightNotProven:x.heightNotProvenRows});
   }
   const touch=b.setbackSweep.child.lineTouchesIntervalsM;
   check('child line touches from (m), contract A6',.683,touch[0]?.[0],.006);check('child line touches until (m), contract A6',10.453,touch.at(-1)?.[1],.006);
@@ -575,7 +577,7 @@ function expectations(b) {
   check('metric C person point used (m)',0,b.suggestionConsistency.roles.person.pointUsed.horizontalM,1e-6);
   check('metric C vehicle front point used (m)',0,b.suggestionConsistency.roles.vehicleFront.pointUsed.horizontalM,1e-6);
   check('stored vehicle-front pixelUV ray hit residual (m), contract A5 (metric C NOT met there)',1.02848,b.suggestionConsistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1e-4);
-  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1, v3.2 and v3.3 have the same geometry), and A13 (shape-v1 counts of the 8.2 check)',checks,allPass:checks.every(c=>c.pass)};
+  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 to v3.4 have the same geometry), and A14 (shape-v2 counts of the allowed-change check)',checks,allPass:checks.every(c=>c.pass)};
 }
 
 function provenance() {
@@ -642,7 +644,7 @@ async function main(argv) {
     const firstResultMs=performance.now()-t0,sweeps=arg('--sweeps')?Number(arg('--sweeps')):300;
     b={schemaVersion:1,kind:'pao-accuracy metric J timing',generatedUtc:new Date().toISOString(),provenance:provenance(),
       scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,ground:entry.ground,suggestions:entry.suggestions},
-      gate:'setback sweep p50 <= 5 ms with the shape (shape-v1 prediction 8, metric J)',
+      gate:'setback sweep p50 <= 5 ms with the shape (shape-v2 prediction 12, metric J)',
       timing:await timing(setup,{sweeps,firstLoadMs,firstResultMs})};
     b.gatePass=b.timing.setbackSweepMs.p50<=5&&b.timing.setbackSweepAdultMs.p50<=5;
     name=`timing-${date}.json`;
