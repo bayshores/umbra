@@ -176,7 +176,7 @@ def tool_inputs(node):
         item = stack.pop()
         if isinstance(item, dict):
             kind = item.get('type')
-            if kind in TOOL_CALL_FIELDS:
+            if isinstance(kind, str) and kind in TOOL_CALL_FIELDS:  # some records carry a non-text 'type'
                 parts = [item[f] for f in TOOL_CALL_FIELDS[kind] if item.get(f) is not None]
                 yield str(item.get('name', kind)), ' '.join(p if isinstance(p, str) else json.dumps(p, sort_keys=True) for p in parts)
                 continue

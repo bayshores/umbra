@@ -201,6 +201,15 @@ class TranscriptScanTests(unittest.TestCase):
         self.assertEqual(result['toolCalls'], len(CLEAN))
         self.assertEqual(result['bindingCalls'], 3)
 
+    def test_claude_code_tool_list_records_are_read_without_error(self):
+        # Claude Code subagent transcripts carry 'attachment' records whose tool schemas have a property named
+        # 'type' (a dict, not a record type); the scan once failed on them.
+        tools = json.dumps({'type': 'attachment', 'attachment': {'tools': [{'name': 'Bash', 'schema': {'input_schema': {
+            'type': 'object', 'properties': {'type': {'type': 'string'}, 'command': {'type': 'string'}}}}}]}})
+        result = isolation.scan_transcript(self.write('tools.jsonl', [tools] + CLEAN), 'L1', 'V01', self.rules)
+        self.assertEqual(result['hits'], [])
+        self.assertEqual(result['toolCalls'], len(CLEAN))
+
     def test_each_forbidden_access_is_a_hit(self):
         for label, line in FORBIDDEN.items():
             with self.subTest(label):
