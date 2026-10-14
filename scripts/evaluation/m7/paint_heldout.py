@@ -65,6 +65,8 @@ def main():
     if not args.rehearse and record['protocolLockSha256'] != args.protocol_lock_sha256:
         parser.error('the site folder was built under another lock')
     entry, _ = common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256)  # before any network access
+    if not args.rehearse:
+        common.run_marker('paint', log, crossing, out)  # painted once: a second run could hide an A fail
     out.mkdir(parents=True)
     steps = []
 

@@ -14,17 +14,19 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
      is checked, with --site, --baseline, --metric-f-results (those that exist), --labels and --out labels-de.json.
      Held-out: --labels is required exactly for the sites the committed label manifest lists with labels, and must
      have that sha256 (checked before the output folder is made); the receipt records its file name and sha256.
+     Step logs and error tails replace the labels folder with a placeholder (it can be the coordinator-only folder).
   5. score.py site with the inputs that exist and the failed steps named (--failed-step)
 A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
 (B cannot pass, H is a miss at a Blocked-test site, the rest not scored); it is listed in the receipt and the other
 steps still run. A site without a built scene goes straight to score.py. Nothing is downloaded here. Step logs and
-error tails have the banned vehicle-status word masked (p*rk) before they are written.
+error tails have the banned vehicle-status word masked (p*rk) before they are written. Held-out: the committed lost-site
+list must exist before this first scoring run (statistics.lostSiteRule; the receipt records its sha256 and the label
+manifest's), and a run marker allows one evaluation per site.
 """
 import argparse
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
@@ -39,12 +41,6 @@ VARIANT = 'v4-18.5'  # run_heldout.py VARIANT
 F_DIR = '.local/evaluation/pao-accuracy/metric-f-shape-v2'
 F_PROTOCOL = ['--protocol', f'{F_DIR}/protocol-v4.json', '--protocol-lock', f'{F_DIR}/protocol-v4.lock.json']
 BUILT = ('built-shape', 'built-box')
-BANNED = re.compile('park', re.IGNORECASE)  # common.write_new refuses it; node traces can quote source lines
-
-
-def masked(text):
-    return BANNED.sub('p*rk', text)
-
 
 def main():
     parser = argparse.ArgumentParser(description=(__doc__ or '').split('\n')[0])
@@ -83,11 +79,20 @@ def main():
         if (labels or {}).get('sha256') != wanted:
             parser.error('--labels must be given exactly when the committed label manifest lists labels for this site, with that sha256')
         manifest = {'file': common.LABELS_MANIFEST_REL, 'sha256': manifest_sha}
+    lost = None
+    if not args.rehearse:  # statistics.lostSiteRule: the lost-site list is committed before the first scoring run
+        names, lost_sha = common.lost_sites()
+        if f'{log[:8]}/{crossing}' in names:
+            parser.error('this site is on the committed lost-site list: it is not scored')
+        lost = {'file': common.LOST_SITES_REL, 'sha256': lost_sha}
+    hidden = [Path(args.labels).resolve().parent] if args.labels else []  # never written into a log or the receipt
     pinned = None
     if labels and record['outcome'] in BUILT:
         pinned = json.loads(score.LABELS_ADDENDUM.read_bytes())['deCode']['scorer']
         if sha_file(ROOT / pinned['file']) != pinned['sha256']:
             parser.error(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
+    if not args.rehearse:
+        common.run_marker('evaluate', log, crossing, out)  # one evaluation per held-out site
     out.mkdir(parents=True)
     steps = []
 
@@ -97,9 +102,9 @@ def main():
         for kind, text in (('stdout', result.stdout), ('stderr', result.stderr)):
             fd = os.open(out / f'{step}-{kind}.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
             with os.fdopen(fd, 'wb') as handle:
-                handle.write(masked(text).encode())
+                handle.write(common.masked(text, hidden).encode())
         steps.append({'step': step, 'exit': result.returncode, 'seconds': round(time.time() - start, 2),
-                      **({'error': masked((result.stderr.strip() or result.stdout.strip())[-400:])} if result.returncode else {})})
+                      **({'error': common.masked((result.stderr.strip() or result.stdout.strip())[-400:], hidden)} if result.returncode else {})})
         return result.returncode == 0
 
     py = [sys.executable, '-I', '-B']
@@ -143,7 +148,7 @@ def main():
     doc = {'kind': 'pao-m7-site-evaluation', 'mode': record['mode'], 'site': record['site'],
            'siteRecord': {'file': rel(found[0]), 'sha256': sha_file(found[0])},
            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256, 'buildOutcome': record['outcome'],
-           'labelsAddendumSha256': addendum_sha, 'labels': labels, 'labelsManifest': manifest,
+           'labelsAddendumSha256': addendum_sha, 'labels': labels, 'labelsManifest': manifest, 'lostSiteList': lost,
            'paint': rel(inputs['paint']) if 'paint' in inputs else None,
            'steps': steps, 'notScoredBecauseAStepFailed': [s['step'] for s in steps if s['exit']],
            'outputs': {rel(p): sha_file(p) for p in sorted(out.rglob('*.json'))},

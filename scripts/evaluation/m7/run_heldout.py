@@ -374,6 +374,8 @@ def main():
         parser.error(f'{out} exists; every run writes a new folder')
     entry, lock = common.guard(args.log, args.crossing, args.rehearse, args.protocol_lock_sha256)  # before any network or file access
     build = Build(args, entry, lock)  # reads the labels addendum sha256 before any folder is made
+    if not args.rehearse:
+        common.run_marker('build', args.log, args.crossing, out)  # a held-out site is built once
     out.mkdir(parents=True)
     (out / 'logs').mkdir()
     try:

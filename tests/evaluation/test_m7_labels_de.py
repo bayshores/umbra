@@ -1,6 +1,8 @@
 """M7 after the re-review of 2026-10-14: the D/E hook (labels addendum anchor, label manifest, D and E rules, E in H), the
-summary's completeness checks, masked stop reasons and the chunked-listing download rule. Synthetic fixtures only, no AV2
-data, no network, no git: the committed-anchor readers are replaced in each test.
+summary's completeness checks, masked stop reasons and the chunked-listing download rule; after the second re-review
+the written-once anchors, the anchors each site score records, one run per step (markers and the evaluate receipt) and
+the coordinator-only folder kept out of written text. Synthetic fixtures only, no AV2 data, no network, no git: the
+committed-anchor readers, preflight and git are replaced in each test.
 
 Run: nice -n 10 /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -B -m unittest discover -s tests/evaluation -p 'test_m7*.py'
 """
@@ -87,6 +89,7 @@ class LabelsDE(Tmp):
     def test_each_mismatch_is_refused(self):
         for change in ({'kind': 'other'}, {'site': {'logId': SITE['logId'], 'crossingId': '2'}}, {'groundSha256': '44' * 32},
                        {'labelsAddendumSha256': '55' * 32}, {'labels': {}}, {'labels': {'sha256': 'not-a-sha'}},
+                       {'labels': {'sha256': LABELS, 'path': '/somewhere/labels.json'}},
                        {'scorer': {'file': PINNED['file'], 'sha256': '66' * 32}}):
             with self.subTest(change=change), self.assertRaises(SystemExit):
                 self.check(de_doc(**change))
@@ -213,18 +216,22 @@ HELD = 'held-out'
 class HeldOutSummary(Tmp):
     """Held-out completeness: paint record for every site; with an anchored addendum, D/E as the label manifest lists."""
 
-    def run_summary(self, docs, manifest=None, addendum=ADDENDUM_SHA):
+    def run_summary(self, docs, manifest=None, addendum=ADDENDUM_SHA, lost=(set(), '00' * 32), runs=None):
         split = [{'logId': d['site']['logId'], 'crossingId': d['site']['crossingId'], 'role': 'held-out-blocked-test'} for d in docs]
-        with mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)), \
+        with mock.patch.object(common, 'preflight', return_value={}), \
+                mock.patch.object(common, 'lost_sites', return_value=lost), \
                 mock.patch.object(common, 'split_sites', return_value=split), \
                 mock.patch.object(common, 'labels_addendum', return_value=addendum), \
-                mock.patch.object(common, 'labels_manifest', return_value=(manifest or {}, '99' * 32)):
+                mock.patch.object(common, 'labels_manifest', return_value=(manifest or {}, '99' * 32)), \
+                mock.patch.object(score, 'one_run', side_effect=runs or (lambda path, doc: [])):
             return score.summarize(argparse.Namespace(scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
 
-    def doc(self, name, labels=None, failed=(), paint=True):
+    def doc(self, name, labels=None, failed=(), paint=True, anchors=None):
         inputs = {'failedSteps': list(failed), **({'paint': {'file': 'p', 'sha256': '00' * 32}} if paint else {}),
                   **({'labelsDE': {'labelsSha256': labels}} if labels else {})}
-        return site_score(name, mode=HELD, role='held-out-blocked-test', labelsAddendumSha256=ADDENDUM_SHA, inputs=inputs)
+        return site_score(name, mode=HELD, role='held-out-blocked-test', labelsAddendumSha256=ADDENDUM_SHA, inputs=inputs,
+                          scorer={'sha256': PINNED['sha256']},
+                          anchors=anchors or {'lostSiteList': '00' * 32, 'labelsManifest': '99' * 32})
 
     def test_complete_inputs_pass(self):
         got = self.run_summary([self.doc('aaaaaaaa/1', LABELS), self.doc('bbbbbbbb/2'), self.doc('cccccccc/3', failed=['labels-de'])],
@@ -249,6 +256,91 @@ class HeldOutSummary(Tmp):
         with self.assertRaises(SystemExit) as stop:
             self.run_summary([self.doc('aaaaaaaa/1')], addendum=None)
         self.assertIn('labels addendum', str(stop.exception))
+
+    def test_a_manifest_or_lost_list_changed_after_scoring_is_refused(self):
+        # The reviewer's probe: a D fail removed by editing the manifest, a miss removed by adding it to the lost list.
+        for name, anchors in (('manifest', {'lostSiteList': '00' * 32, 'labelsManifest': '98' * 32}),
+                              ('lost list', {'lostSiteList': '01' * 32, 'labelsManifest': '99' * 32}), ('none recorded', None)):
+            docs = [self.doc('aaaaaaaa/1')]
+            docs[0]['anchors'] = anchors
+            with self.subTest(name), self.assertRaises(SystemExit) as stop:
+                self.run_summary(docs, {'aaaaaaaa/1': None})
+            self.assertIn('lost-site list or label manifest', str(stop.exception))
+
+    def test_a_score_from_another_score_py_is_refused(self):
+        docs = [self.doc('aaaaaaaa/1')]
+        docs[0]['scorer'] = {'sha256': 'cd' * 32}
+        with self.assertRaises(SystemExit) as stop:
+            self.run_summary(docs, {'aaaaaaaa/1': None})
+        self.assertIn('locked one', str(stop.exception))
+
+    def test_a_score_that_is_not_the_recorded_run_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.run_summary([self.doc('aaaaaaaa/1')], {'aaaaaaaa/1': None}, runs=lambda path, doc: ['failed steps differ'])
+        self.assertIn('one recorded run', str(stop.exception))
+
+
+class OneRun(Tmp):
+    """Held-out run markers and the evaluate receipt: one run of each step per site, failed steps from the receipt."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(common, 'RUN_MARKERS', self.dir / 'markers')
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.log, self.crossing = SITE['logId'], SITE['crossingId']
+        for folder in ('site', 'paint', 'eval'):
+            (self.dir / folder).mkdir()
+        record = self.write('site/build-receipt.json', {'site': SITE})
+        paint = self.write('paint/paint-receipt.json', {'x': 1})
+        self.inputs = {'siteRecord': {'file': common.rel(record), 'sha256': common.sha_file(record)},
+                       'paint': {'file': common.rel(paint), 'sha256': common.sha_file(paint)}, 'failedSteps': ['metric-k']}
+        self.score = self.write('eval/score.json', {'site': SITE, 'inputs': self.inputs})
+        driver = M7_DIR / 'evaluate_site.py'
+        self.receipt = {'kind': 'pao-m7-site-evaluation', 'site': SITE, 'siteRecord': self.inputs['siteRecord'],
+                        'steps': [{'step': 'baseline', 'exit': 0}, {'step': 'metric-k', 'exit': 1}, {'step': 'score', 'exit': 0}],
+                        'outputs': {common.rel(self.score): common.sha_file(self.score)},
+                        'driver': {'sha256': common.sha_file(driver)}}
+        for step, folder in (('build', 'site'), ('paint', 'paint'), ('evaluate', 'eval')):
+            common.run_marker(step, self.log, self.crossing, self.dir / folder)
+
+    def check(self, receipt=None, inputs=None):
+        self.write('eval/evaluate-receipt.json', receipt or self.receipt)
+        return score.one_run(self.score, {'site': SITE, 'inputs': inputs or self.inputs})
+
+    def test_the_recorded_run_passes(self):
+        self.assertEqual(self.check(), [])
+
+    def test_a_second_run_of_a_step_is_refused(self):
+        for step in ('build', 'paint', 'evaluate'):
+            with self.subTest(step), self.assertRaises(SystemExit) as stop:
+                common.run_marker(step, self.log, self.crossing, self.dir / 'other')
+            self.assertIn('never rerun', str(stop.exception))
+
+    def test_a_failed_step_claim_not_in_the_receipt_is_refused(self):
+        self.assertIn('failed steps differ from the evaluate receipt', self.check(inputs={**self.inputs, 'failedSteps': ['labels-de']}))
+
+    def test_runs_other_than_the_marked_ones_are_refused(self):
+        (self.dir / 'paint2').mkdir()
+        other = self.write('paint2/paint-receipt.json', {'x': 1})
+        got = self.check(inputs={**self.inputs, 'paint': {'file': common.rel(other), 'sha256': common.sha_file(other)}})
+        self.assertIn('not the paint run the paint marker names', got)
+        self.assertIn('evaluate receipt does not name this score', self.check({**self.receipt, 'outputs': {}}))
+
+
+class CommittedOnce(Tmp):
+    def test_an_anchor_with_a_second_commit_is_refused(self):
+        path = self.write('anchor.json', {'lostSites': []})
+        for count, ok in (('1\n', True), ('2\n', False)):
+            git = lambda *args, count=count: count if args[0] == 'rev-list' else ''  # noqa: E731
+            with self.subTest(count=count), mock.patch.object(common, 'git', side_effect=git), \
+                    mock.patch.object(common.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+                if ok:
+                    self.assertEqual(common.committed(str(path), 'x')[0], {'lostSites': []})
+                else:
+                    with self.assertRaises(SystemExit) as stop:
+                        common.committed(str(path), 'x')
+                    self.assertIn('written once', str(stop.exception))
 
 
 class Anchors(Tmp):
@@ -292,17 +384,34 @@ class HeldOutSiteScore(Tmp):
                                                             'stopped': {'step': 'download', 'reason': 'test'}}))
         args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
                                   metric_k=None, paint=None)
-        with mock.patch.object(common, 'labels_addendum', return_value=ADDENDUM_SHA), self.assertRaises(SystemExit):
+        with mock.patch.object(common, 'preflight', return_value={}), \
+                mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)):
+            with mock.patch.object(common, 'labels_addendum', return_value=ADDENDUM_SHA), self.assertRaises(SystemExit):
+                score.score_site(args)
+            with mock.patch.object(common, 'labels_addendum', return_value=None):
+                got = score.score_site(args)
+            self.assertEqual((got['labelsAddendumSha256'], got['metrics']['D']['outcome']), (None, 'not scored'))
+            self.assertEqual(got['anchors'], {'lostSiteList': '00' * 32, 'labelsManifest': None})
+        with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'labels_addendum', return_value=None), \
+                mock.patch.object(common, 'lost_sites', return_value=({'aaaaaaaa/1'}, '00' * 32)), self.assertRaises(SystemExit) as stop:
             score.score_site(args)
-        with mock.patch.object(common, 'labels_addendum', return_value=None):
-            got = score.score_site(args)
-        self.assertEqual((got['labelsAddendumSha256'], got['metrics']['D']['outcome']), (None, 'not scored'))
+        self.assertIn('lost-site list', str(stop.exception))
 
 
 class StopsAndDownloads(Tmp):
     def test_stop_reasons_mask_the_banned_word(self):
         word = 'PA' + 'RK'  # built here so this file never holds the word itself
         self.assertEqual(common.SiteStop('x', f'a {word}ed car').reason, 'a p*rked car')
+
+    def test_the_coordinator_only_folder_is_never_written(self):
+        folder = str(self.dir / 'coordinator')
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: folder}):
+            self.assertEqual(common.masked(f'open {folder}/labels.json and /x/y/z.json', ['/x/y']),
+                             'open <coordinator-only folder>/labels.json and <coordinator-only folder>/z.json')
+            self.assertNotIn(folder, common.SiteStop('x', f'{folder}/a').reason)
+            with self.assertRaises(ValueError):
+                common.write_new(self.dir / 'out.json', {'error': f'{folder}/labels.json'})
+        self.assertFalse((self.dir / 'out.json').exists())
 
     def fake_curl(self, headers, body=b'<xml/>'):
         def run(argv, **_):

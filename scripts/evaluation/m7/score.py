@@ -14,8 +14,11 @@ the rest are not scored; it never counts as a pass. D and E are scored only from
 addendum pins (protocol-lock labels.scoringCondition); without the addendum they are "not scored". A held-out site must
 have been built under the committed labels addendum anchor. A held-out summary must hold exactly the held-out sites minus
 the committed lost-site list, each with its paint record and, when the addendum is anchored, a D/E file for every site
-the committed label manifest lists with labels (unless its labels-de step failed or it has no built scene). Nothing here
-changes a result the app shows.
+the committed label manifest lists with labels (unless its labels-de step failed or it has no built scene). Held-out,
+both steps run preflight (the approved lock, this score.py pinned in it); each site score records the sha256 of the
+lost-site list and label manifest it was made under and the summary refuses any other; and the summary takes each site's
+failed steps from the receipt of the one evaluate_site.py run its marker names, on the site and paint folders their
+markers name (one run each). Nothing here changes a result the app shows.
 """
 import argparse
 from collections import Counter
@@ -344,6 +347,7 @@ def labels_de(path, addendum, addendum_sha, ground_sha, site, labels_sha=None):
         ('ground.json', doc.get('groundSha256') == ground_sha),
         ('labels addendum', doc.get('labelsAddendumSha256') == addendum_sha),
         ('labels sha256', isinstance(labels, str) and common.HEX64.fullmatch(labels) and labels_sha in (None, labels)),
+        ('labels (only its sha256: never a path)', set(doc.get('labels') or {}) == {'sha256'}),
         ('D/E scorer', doc.get('scorer') == {'file': pinned['file'], 'sha256': pinned['sha256']})) if not ok]
     if problems:
         raise SystemExit(f'D/E file {path} differs from this site in: {", ".join(problems)}')
@@ -412,6 +416,9 @@ def score_site(args):
     held_out = record['mode'].startswith('held-out')
     test_site = role == BLOCKED_TEST or role in DEVELOPMENT_ROLES
     failed = sorted(set(args.failed_step or []))
+    name = f"{record['site']['logId'][:8]}/{record['site']['crossingId']}"
+    if held_out:
+        common.preflight(record.get('protocolLockSha256'))  # the approved lock, with this score.py pinned in it
     # Held-out: the committed anchor, the addendum file and the site's build receipt must name the same addendum (or none).
     addendum_sha = common.labels_addendum(held_out, LABELS_ADDENDUM)
     if held_out and record.get('labelsAddendumSha256', 'missing') != addendum_sha:
@@ -419,11 +426,17 @@ def score_site(args):
     addendum = load(LABELS_ADDENDUM) if addendum_sha else None
     if args.labels_de and addendum is None:
         raise SystemExit('--labels-de needs the labels addendum (protocol-lock labels.scoringCondition)')
-    labels_sha = None
-    if args.labels_de and held_out:
-        labels_sha = common.labels_manifest(addendum_sha)[0][f"{record['site']['logId'][:8]}/{record['site']['crossingId']}"]
-        if labels_sha is None:
-            raise SystemExit('--labels-de for a site the committed label manifest lists without labels')
+    labels_sha, anchors = None, None
+    if held_out:
+        lost, lost_sha = common.lost_sites()
+        if name in lost:
+            raise SystemExit(f'{name} is on the committed lost-site list: it is not scored')
+        entries, manifest_sha = common.labels_manifest(addendum_sha) if addendum_sha else ({}, None)
+        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha}  # the summary refuses any other
+        if args.labels_de:
+            labels_sha = entries[name]
+            if labels_sha is None:
+                raise SystemExit('--labels-de for a site the committed label manifest lists without labels')
     ground_path = site / 'grounded/ground.json'
     ground_sha = sha_file(ground_path) if built and ground_path.is_file() else None
     if built and record.get('outputs', {}).get(rel(ground_path)) != ground_sha:
@@ -503,13 +516,39 @@ def score_site(args):
         metrics['D'], metrics['E'] = not_scored(why), not_scored(why)
     doc = {'kind': 'pao-m7-site-score', 'label': LABEL, 'mode': record['mode'],
            'site': record['site'], 'build': {'outcome': record['outcome'], 'stopped': record.get('stopped'), 'fixedBand': record.get('fixedBand')},
-           'protocolLockSha256': record.get('protocolLockSha256'), 'labelsAddendumSha256': addendum_sha, 'inputs': inputs,
+           'protocolLockSha256': record.get('protocolLockSha256'), 'labelsAddendumSha256': addendum_sha, 'anchors': anchors,
+           'inputs': inputs,
            'metrics': dict(sorted(metrics.items())),
            'scorer': {'file': 'scripts/evaluation/m7/score.py', 'sha256': sha_file(__file__)}, 'finishedUtc': now()}
     return doc
 
 
 # ---------------------------------------------------------------- summary
+
+def one_run(path, doc):
+    """Held-out: what is wrong with this site score as the one run of each step at its site (empty: nothing). It must be
+    the score.json of the evaluate_site.py run that the site's evaluate marker names, whose receipt (made by this
+    evaluate_site.py) lists exactly the failed steps the score used; its site record and paint record must lie in the
+    folders the build and paint markers name."""
+    log, crossing = doc['site']['logId'], doc['site']['crossingId']
+    folder = Path(path).resolve().parent
+    receipt_path = folder / 'evaluate-receipt.json'
+    if not receipt_path.is_file():
+        return ['no evaluate_site.py receipt next to the score']
+    receipt = load(receipt_path)
+    failed = sorted(s['step'] for s in receipt.get('steps', []) if s.get('exit') and s.get('step') != 'score')
+    parent = lambda key: str(Path(doc['inputs'][key]['file']).parent) if key in doc['inputs'] else None  # noqa: E731
+    return [what for what, ok in (
+        ('evaluate receipt for another site', receipt.get('kind') == 'pao-m7-site-evaluation' and receipt.get('site') == doc['site']),
+        ('evaluate receipt does not name this score', receipt.get('outputs', {}).get(rel(path)) == sha_file(path)),
+        ('evaluate receipt for another site record', receipt.get('siteRecord') == doc['inputs']['siteRecord']),
+        ('failed steps differ from the evaluate receipt', failed == doc['inputs']['failedSteps']),
+        ('evaluate receipt made by another evaluate_site.py',
+         (receipt.get('driver') or {}).get('sha256') == sha_file(Path(__file__).resolve().parent / 'evaluate_site.py')),
+        ('not the evaluation the evaluate marker names', common.marked_folder('evaluate', log, crossing) == rel(folder)),
+        ('not the build the build marker names', common.marked_folder('build', log, crossing) == parent('siteRecord')),
+        ('not the paint run the paint marker names', common.marked_folder('paint', log, crossing) == parent('paint'))) if not ok]
+
 
 def summarize(args):
     scores = [(Path(p), load(p)) for p in args.scores]
@@ -529,6 +568,9 @@ def summarize(args):
     held_out = next(iter(modes)).startswith('held-out')
     site_set = None
     if held_out:
+        common.preflight(next(iter(locks)))  # the approved lock, with this score.py pinned in it
+        if {d['scorer']['sha256'] for _, d in scores} != {sha_file(__file__)}:
+            raise SystemExit('held-out site scores made by another score.py than the locked one')
         # Exactly the split.json held-out sites minus the committed lost-site list (statistics.lostSiteRule).
         lost, lost_sha = common.lost_sites()
         expected = {f"{x['logId'][:8]}/{x['crossingId']}" for x in common.split_sites() if x['role'] in HELD_OUT_ROLES}
@@ -557,6 +599,15 @@ def summarize(args):
             if wrong:
                 raise SystemExit(f'held-out sites whose D/E input does not match the committed label manifest: {wrong}')
             site_set['labelsManifest'] = {'file': common.LABELS_MANIFEST_REL, 'sha256': manifest_sha}
+        # The anchor files a site score was made under must be the committed ones now (each is written once).
+        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha if addendum_sha else None}
+        stale = [n for n, (_, d) in zip(names, scores) if d.get('anchors') != anchors]
+        if stale:
+            raise SystemExit(f'held-out sites scored under another lost-site list or label manifest than the committed ones: {stale}')
+        # One run of each step per site, and the failed steps taken from that run's receipt (never a bare claim).
+        runs = {n: problems for n, (p, d) in zip(names, scores) if (problems := one_run(p, d))}
+        if runs:
+            raise SystemExit(f'held-out site scores that are not the one recorded run of each step: {runs}')
     by_metric = {m: {n: d['metrics'][m]['outcome'] for n, (_, d) in zip(names, scores)}
                  for m in ('A', 'B', 'C', 'D', 'E', 'F', 'F0', 'H', 'I', 'J', 'K')}
     reasons = {m: {n: d['metrics'][m].get('reason') for n, (_, d) in zip(names, scores) if d['metrics'][m].get('reason')}
