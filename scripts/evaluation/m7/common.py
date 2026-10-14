@@ -180,13 +180,16 @@ def curl(url, target, headers, max_bytes):
                     '--max-filesize', str(max_bytes), '--dump-header', str(headers), '--output', str(target), url], check=True)
     text = headers.read_text(errors='replace').lower().splitlines()
     head = {line.split(':', 1)[0].strip(): line.split(':', 1)[1].strip() for line in text if ':' in line}
+    if 'content-length' not in head and head.get('transfer-encoding') == 'chunked':
+        return None, head.get('etag', '').strip('"')  # S3 sends listings chunked, without a Content-Length
     return int(head['content-length']), head.get('etag', '').strip('"')
 
 
 def fetch(url, folder, name, max_bytes, listing=None):
     """GET url into folder/attempt-<n>/name (a new empty folder per attempt; at most RETRIES retries). With a listing
     entry: bytes == HTTP Content-Length == listing Size, and MD5 == HTTP ETag == listing ETag for single-part objects
-    (multi-part: the HTTP ETag equals the listing ETag and the size matches). Returns (path, receipt)."""
+    (multi-part: the HTTP ETag equals the listing ETag and the size matches). Without one (a listing fetch) a chunked
+    response without Content-Length is accepted; an object download always needs it. Returns (path, receipt)."""
     errors = []
     for attempt in range(RETRIES + 1):
         where = Path(folder) / f'attempt-{attempt}'
@@ -195,7 +198,9 @@ def fetch(url, folder, name, max_bytes, listing=None):
         try:
             length, etag = curl(url, target, headers, max_bytes)
             data = target.read_bytes(); md5 = hashlib.md5(data).hexdigest()
-            if len(data) != length:
+            if length is None and listing is not None:
+                raise ValueError('object download without Content-Length')
+            if length is not None and len(data) != length:
                 raise ValueError(f'{len(data)} bytes, Content-Length {length}')
             if listing is not None:
                 if len(data) != listing['bytes'] or etag != listing['etag']:
@@ -203,7 +208,8 @@ def fetch(url, folder, name, max_bytes, listing=None):
                 if '-' not in etag and md5 != etag:
                     raise ValueError(f'MD5 {md5} != ETag {etag}')
             os.chmod(target, 0o444)
-            return target, {'url': url, 'path': rel(target), 'bytes': len(data), 'httpETag': etag, 'md5': md5, 'sha256': sha(data),
+            return target, {'url': url, 'path': rel(target), 'bytes': len(data), 'httpContentLength': 'none (chunked)' if length is None else length,
+                            'httpETag': etag, 'md5': md5, 'sha256': sha(data),
                             'md5Check': 'none (listing fetch)' if listing is None else
                             ('single-part: MD5 == ETag' if '-' not in etag else 'multi-part ETag: size and ETag only'),
                             'attempt': attempt, 'earlierErrors': errors, 'utc': now()}

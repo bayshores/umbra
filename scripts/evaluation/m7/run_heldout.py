@@ -1,7 +1,7 @@
 """M7 held-out scene build for one site: public listings and metadata -> frozen builder v4.3 (variant v4-18.5) pass 1 ->
 the sensor files it names -> pass 2 -> prepare_av2 -> assemble -> per-scene placement protocol v3.4 -> ground (box) ->
-suggestions; when the builder says the car shape applies: car_shape.py plan (hashed and recorded before any sweep is
-downloaded) -> car_shape.py download -> ground with the car shape -> suggestions.
+suggestions; when the builder says the car shape applies: ground (box, no suggestions) -> car_shape.py plan (hashed and
+recorded before any sweep is downloaded) -> car_shape.py download -> ground with the car shape -> suggestions.
 
   nice -n 10 /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -I -B scripts/evaluation/m7/run_heldout.py \
       --log <uuid> --crossing <id> --out .local/evaluation/pao-accuracy/m7/<log8>-<crossing> \
@@ -251,7 +251,10 @@ class Build:
                            'trackPrefixUsed': doc['currentVehicle']['trackPrefix']})
         return self.out / name, digest
 
-    def ground(self, step, folder, protocol, protocol_sha, shape_args):
+    def ground(self, step, folder, protocol, protocol_sha, shape_args, suggest=True):
+        """prepare_av2_ground.py, then suggest_av2_placements.py unless suggest is False: the box pass of a car-shape site
+        only feeds car_shape.py plan, and the frozen suggester refuses a box ground.json for an annotated stationary
+        vehicle (found by the 2026-10-14 rehearsal)."""
         annotations = self.data / 'annotations.feather'
         self.must(step, self.py + ['scripts/california/prepare_av2_ground.py',
                                    '--scene', str(self.out / 'assembled/scene.json'), '--scene-sha256', sha_file(self.out / 'assembled/scene.json'),
@@ -260,6 +263,8 @@ class Build:
                                    '--protocol', str(protocol), '--protocol-sha256', protocol_sha,
                                    '--annotations', str(annotations), '--annotations-sha256', sha_file(annotations),
                                    '--output', str(self.out / folder), *shape_args])
+        if not suggest:
+            return
         env = {**os.environ, 'SOURCE_DATE_EPOCH': SOURCE_DATE_EPOCH}
         self.must(step.replace('ground', 'suggest'),
                   self.py + ['scripts/california/suggest_av2_placements.py', '--grounded', str(self.out / folder),
@@ -321,7 +326,7 @@ class Build:
         if not shape['applies']:
             self.ground('ground', 'grounded', protocol, protocol_sha, ['--no-car-shape'])
             return 'built-box'
-        self.ground('ground-box', 'grounded-box', protocol, protocol_sha, ['--no-car-shape'])
+        self.ground('ground-box', 'grounded-box', protocol, protocol_sha, ['--no-car-shape'], suggest=False)
         plan_dir, plan_sha = self.shape(selection)
         self.ground('ground', 'grounded', protocol, protocol_sha, ['--car-shape-dir', str(plan_dir), '--car-shape-plan-sha256', plan_sha])
         return 'built-shape'
