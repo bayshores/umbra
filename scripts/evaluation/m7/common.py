@@ -6,7 +6,9 @@ HEAD whose tracked files equal pipeline.commit except the anchor files (ANCHOR_R
 file unchanged, and the labels addendum equal to its committed anchor (null: no addendum file). The main checkout is used (ignored .local/ data and protocols live only there; a fresh worktree has none).
 Each anchor file under ANCHOR_DIR is written once: exactly one commit on origin/main touches it, so a later change makes
 every driver refuse. Held-out, each driver runs once per site: a run marker (RUN_MARKERS, O_EXCL) names its output folder
-and a second run is refused. Rehearsal (development logs) skips the lock, anchor and marker checks and nothing else.
+and the driver's process id, and a second run is refused. A marked run that ended (its process is gone) without its own
+record is recorded once as stopped by its driver (ended_run), so every site still reaches the summary. Rehearsal
+(development logs) skips the lock, anchor and marker checks and nothing else.
 """
 from datetime import datetime, timezone
 import hashlib
@@ -15,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -30,6 +33,8 @@ LABELS_MANIFEST_REL = f'{ANCHOR_DIR}/labels-manifest.json'  # {"labelsAddendumSh
 HEX64 = re.compile('[0-9a-f]{64}')
 RUN_MARKERS = ROOT / '.local/evaluation/pao-accuracy/m7/run-markers'  # held-out: <step>-<log8>-<crossing>.json, one per run
 COORDINATOR_ENV = 'PAO_LABELS_COORDINATOR_DIR'  # the coordinator-only labels folder: never written into any file
+DE_CODE = ROOT / '.local/evaluation/pao-accuracy/lock/de-code'  # ignored: the D/E code, every file pinned by the labels addendum
+FETCH_TRIES = 3  # preflight's git fetch of origin/main: a dropped connection is tried again, at most 3 times in all
 DEVELOPMENT_ROLES = ('development', 'development-optional')
 HELD_OUT_ROLES = ('held-out-blocked-test', 'held-out-left-side-case', 'held-out-control', 'held-out-control-declared-only')
 BUCKET = 'https://argoverse.s3.amazonaws.com/'
@@ -49,11 +54,16 @@ class SiteStop(Exception):
         self.step, self.reason = step, reason
 
 
+def coordinator_folders():
+    """The coordinator-only folder as PAO_LABELS_COORDINATOR_DIR gives it and resolved (empty when it is not set)."""
+    value = os.environ.get(COORDINATOR_ENV, '').rstrip('/')
+    return list(dict.fromkeys([value, str(Path(value).resolve())])) if len(value) > 1 else []
+
+
 def masked(text, folders=()):
     """text with the banned vehicle-status word masked (p*rk) and the coordinator-only folder (and any folder given)
     replaced by a placeholder: tool output can quote either."""
-    for folder in [os.environ.get(COORDINATOR_ENV, ''), *folders]:
-        folder = str(folder).rstrip('/')
+    for folder in sorted({str(f).rstrip('/') for f in [*coordinator_folders(), *folders]}, key=len, reverse=True):
         if len(folder) > 1:
             text = text.replace(folder, '<coordinator-only folder>')
     return re.sub('park', 'p*rk', text, flags=re.IGNORECASE)
@@ -86,8 +96,7 @@ def write_new(path, data, mode=0o444):
     data = dump(data) if isinstance(data, (dict, list)) else data
     if b'park' in data.lower():
         raise ValueError(f'{path}: banned vehicle-status word')
-    folder = os.environ.get(COORDINATOR_ENV, '').rstrip('/')
-    if len(folder) > 1 and folder.encode() in data:
+    if any(folder.encode() in data for folder in coordinator_folders()):
         raise ValueError(f'{path}: names the coordinator-only folder')
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     with os.fdopen(fd, 'wb') as handle:
@@ -128,9 +137,28 @@ def committed(relative, what):
 
 
 def lost_sites():
-    """The committed lost-site list (statistics.lostSiteRule). Returns ({'<log8>/<crossing>', ...}, its sha256)."""
+    """The committed lost-site list (statistics.lostSiteRule), needed before any held-out build. Each entry names a site
+    once, with non-empty evidence text and a date (YYYY-MM-DD) no later than the UTC day of the list's one commit.
+    Returns ({'<log8>/<crossing>', ...}, its sha256)."""
     doc, digest = committed(LOST_SITES_REL, 'the lost-site list (possibly empty)')
-    return {f"{x['logId'][:8]}/{x['crossingId']}" for x in doc['lostSites']}, digest
+    stamp = git('log', '-1', '--format=%cI', 'origin/main', '--', LOST_SITES_REL).strip()
+    day = datetime.fromisoformat(stamp).astimezone(timezone.utc).date().isoformat()
+    names = set()
+    for x in doc['lostSites']:
+        name, date = f"{x['logId'][:8]}/{x['crossingId']}", x.get('date')
+        if name in names or not str(x.get('evidence') or '').strip() or not iso_day(date) or date > day:
+            raise SystemExit(f'{LOST_SITES_REL}: {name} must appear once, with evidence text and a date (YYYY-MM-DD) no later '
+                             f'than the list\'s commit ({day})')
+        names.add(name)
+    return names, digest
+
+
+def iso_day(value):
+    """True for a real calendar day written YYYY-MM-DD."""
+    try:
+        return isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}', value) and bool(datetime.strptime(value, '%Y-%m-%d'))
+    except ValueError:
+        return False
 
 
 def labels_addendum(held_out, path=LABELS_ADDENDUM):
@@ -182,7 +210,7 @@ def run_marker(step, log, crossing, folder):
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         write_new(path, {'kind': 'pao-m7-run-marker', 'step': step, 'site': {'logId': log, 'crossingId': str(crossing)},
-                         'folder': rel(folder), 'utc': now()})
+                         'folder': rel(folder), 'pid': os.getpid(), 'utc': now()})
     except FileExistsError:
         raise SystemExit(f'{step} already ran for {log[:8]}/{crossing} ({rel(path)}): a held-out site is never rerun') from None
 
@@ -191,6 +219,45 @@ def marked_folder(step, log, crossing):
     """The output folder the run marker of this step names for this site, or None."""
     path = marker_path(step, log, crossing)
     return json.loads(path.read_bytes())['folder'] if path.is_file() else None
+
+
+def ended_run(step, log, crossing):
+    """Held-out: the output folder (a Path) the run marker of this step names for this site, once that run has ended (the
+    process the marker names is gone). Used only to record a stop for a marked run that left no record of its own."""
+    path = marker_path(step, log, crossing)
+    if not path.is_file():
+        raise SystemExit(f'{step} never ran for {log[:8]}/{crossing}: there is nothing to record')
+    marker = json.loads(path.read_bytes())
+    pid = marker.get('pid')
+    if not isinstance(pid, int) or pid <= 0:
+        raise SystemExit(f'{rel(path)} names no process')
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ROOT / marker['folder']
+    except PermissionError:
+        pass
+    raise SystemExit(f'the {step} run for {log[:8]}/{crossing} (process {pid}) may still be running: wait until it ends')
+
+
+def de_code(addendum):
+    """The D/E scorer ({file, sha256}) the labels addendum pins, after checking the D/E code (labels.scoringCondition):
+    every file in DE_CODE is pinned in the addendum's deCode.files ({repository path: sha256}) with that sha256, nothing
+    else is in that folder (no link), and the scorer is one of those files. The scorer runs with -I -B: it can import only
+    the standard library, this folder (by adding it to its own path) and files the protocol lock pins."""
+    code = addendum.get('deCode') or {}
+    files, scorer = code.get('files') or {}, code.get('scorer') or {}
+    found = sorted(DE_CODE.rglob('*')) if DE_CODE.is_dir() else []
+    present = sorted(rel(p) for p in found if p.is_file() or p.is_symlink())
+    problems = [what for what, ok in (
+        ('a link in the D/E code folder', not any(p.is_symlink() for p in found)),
+        (f'the files in {rel(DE_CODE)} differ from the pinned ones', present == sorted(files)),
+        ('a pinned D/E file differs from its sha256', all((ROOT / f).is_file() and sha_file(ROOT / f) == v for f, v in files.items())),
+        ('the scorer is not one of the pinned D/E files', bool(scorer.get('file')) and files.get(scorer['file']) == scorer.get('sha256')))
+        if not ok]
+    if problems:
+        raise SystemExit('the D/E code differs from the labels addendum: ' + '; '.join(problems))
+    return {'file': scorer['file'], 'sha256': scorer['sha256']}
 
 
 def git(*args):
@@ -210,6 +277,17 @@ def pinned_files(node, out=None):
         for value in node:
             pinned_files(value, out)
     return out
+
+
+def fetch_origin():
+    """git fetch origin main, tried again after a failure (FETCH_TRIES in all, 10 s apart): a dropped connection should
+    not stop a site."""
+    for attempt in range(FETCH_TRIES):
+        if subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT).returncode == 0:
+            return
+        if attempt + 1 < FETCH_TRIES:
+            time.sleep(10)
+    raise SystemExit(f'git fetch origin main failed {FETCH_TRIES} times')
 
 
 def preflight(lock_sha256):
@@ -235,7 +313,7 @@ def preflight(lock_sha256):
     extra = [p for p in changed if p != ANCHOR_REL and not p.startswith(ANCHOR_DIR + '/')]
     if extra:
         raise SystemExit('Tracked files differ from pipeline.commit: ' + ', '.join(extra))
-    subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT, check=True)
+    fetch_origin()
     try:
         anchor = json.loads(git('show', f'origin/main:{ANCHOR_REL}'))
     except subprocess.CalledProcessError:

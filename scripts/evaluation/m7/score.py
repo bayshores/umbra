@@ -4,6 +4,7 @@
       [--baseline <pao-baseline.mjs --scene output>] [--metric-f-results <metric_f_car_top.py score output>] \
       [--metric-k <metric_k.py output>] [--paint <paint_heldout.py folder>] [--failed-step <evaluate_site.py step> ...] \
       [--labels-de <the labels-addendum-pinned D/E scorer's output>]
+  ... score.py site --site <folder> --paint <folder> --evaluation-stopped <evaluate-stopped.json> --out <new file>
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py summary --scores <site score> ... --out <new file>
 
 Every target is written as pass, fail or not scored (with its reason), using the locked rules (protocol-lock.json
@@ -18,7 +19,17 @@ the committed label manifest lists with labels (unless its labels-de step failed
 both steps run preflight (the approved lock, this score.py pinned in it); each site score records the sha256 of the
 lost-site list and label manifest it was made under and the summary refuses any other; and the summary takes each site's
 failed steps from the receipt of the one evaluate_site.py run its marker names, on the site and paint folders their
-markers name (one run each). Nothing here changes a result the app shows.
+markers name (one run each). A marked evaluation that ended without a score (its score step failed, or it left no
+receipt) is scored by evaluate_site.py --record-stopped with --evaluation-stopped: handled like a site with no feasible
+frame (B cannot pass, H a miss at a Blocked-test site, D/E and the rest not scored), with A from its paint record; the
+summary checks it against that folder's evaluate-stopped.json. The summary lists by name every held-out site the label
+manifest lists with labels whose D or E is not scored.
+
+The D/E file (labels.scoringCondition) is one JSON object with exactly the keys kind ("pao-m7-labels-de"), site
+({logId, crossingId}: strings, and nothing else), groundSha256, labelsAddendumSha256, labels ({sha256} only: never a path),
+scorer ({file, sha256}), D ({labelledVehicle, errorsPx1024: [{feature, errorPx}], unresolvedLabels, reason?}) and E
+({labelledVehicle, rows: [{height, setbackM, appState, e}], assumption, reason?}). Nothing here changes a result the app
+shows.
 """
 import argparse
 from collections import Counter
@@ -51,6 +62,8 @@ F_STEPS = ('metric-f-rows', 'metric-f-profile', 'metric-f-score')  # evaluate_si
 I_SAMPLES = 3000  # pao-baseline.mjs default placement samples (honesty counters)
 NOT_SCORED_DE = 'not scored: reference not precise enough (no labels addendum; labels.scoringCondition not met)'
 DE_KIND = 'pao-m7-labels-de'  # the addendum-pinned D/E scorer's output (labels.scoringCondition)
+DE_KEYS = {'kind', 'site', 'groundSha256', 'labelsAddendumSha256', 'labels', 'scorer', 'D', 'E'}  # exactly these
+STOPPED_KIND = 'pao-m7-evaluation-stopped'  # evaluate_site.py --record-stopped
 D_MEDIAN_PX, D_MAX_PX = 3.0, 6.0  # metrics.D, 1024 px width
 D_FEATURES = ('L', 'R', 'S1', 'S2', 'S3')  # metrics.D: each is compared or listed unresolved, once
 E_STATES = ('blocked', 'not blocked', 'unresolved')
@@ -339,20 +352,30 @@ def metric_k(doc):
 def labels_de(path, addendum, addendum_sha, ground_sha, site, labels_sha=None):
     """The D/E file for this site, made by the scorer the labels addendum pins, for this ground.json and this addendum,
     naming the sha256 of the labels it used (held-out: the one the committed label manifest lists for this site)."""
-    doc, pinned = load(path), addendum['deCode']['scorer']
+    doc, pinned = load(path), common.de_code(addendum)  # the D/E code folder is checked against the addendum pins
     named, labels = doc.get('site') or {}, (doc.get('labels') or {}).get('sha256')
     problems = [what for what, ok in (
+        ('keys (exactly ' + ', '.join(sorted(DE_KEYS)) + ')', set(doc) == DE_KEYS),
         ('kind', doc.get('kind') == DE_KIND),
-        ('site', named.get('logId') == site['logId'] and named.get('crossingId') == site['crossingId']),
+        ('site (logId and crossingId strings only)', set(named) == {'logId', 'crossingId'} and isinstance(named.get('crossingId'), str)
+         and named.get('logId') == site['logId'] and named.get('crossingId') == str(site['crossingId'])),
         ('ground.json', doc.get('groundSha256') == ground_sha),
         ('labels addendum', doc.get('labelsAddendumSha256') == addendum_sha),
         ('labels sha256', isinstance(labels, str) and common.HEX64.fullmatch(labels) and labels_sha in (None, labels)),
         ('labels (only its sha256: never a path)', set(doc.get('labels') or {}) == {'sha256'}),
-        ('D/E scorer', doc.get('scorer') == {'file': pinned['file'], 'sha256': pinned['sha256']})) if not ok]
+        ('D/E scorer', doc.get('scorer') == pinned),
+        ('D and E objects', isinstance(doc.get('D'), dict) and isinstance(doc.get('E'), dict))) if not ok]
     if problems:
         raise SystemExit(f'D/E file {path} differs from this site in: {", ".join(problems)}')
-    if sha_file(ROOT / pinned['file']) != pinned['sha256']:
-        raise SystemExit(f'{pinned["file"]} differs from the sha256 the labels addendum pins')
+    return doc
+
+
+def evaluation_stopped(path, record, record_path):
+    """The evaluate-stopped.json that evaluate_site.py --record-stopped wrote for this site record."""
+    doc = load(path)
+    if doc.get('kind') != STOPPED_KIND or doc.get('site') != record['site'] \
+            or doc.get('siteRecord') != {'file': rel(record_path), 'sha256': sha_file(record_path)}:
+        raise SystemExit(f'{path} is not the evaluate-stopped record of this site record')
     return doc
 
 
@@ -417,6 +440,11 @@ def score_site(args):
     test_site = role == BLOCKED_TEST or role in DEVELOPMENT_ROLES
     failed = sorted(set(args.failed_step or []))
     name = f"{record['site']['logId'][:8]}/{record['site']['crossingId']}"
+    if args.evaluation_stopped and not held_out:
+        raise SystemExit('--evaluation-stopped is for held-out sites (evaluate_site.py --record-stopped)')
+    if args.evaluation_stopped and (failed or args.baseline or args.metric_f_results or args.metric_k or args.labels_de):
+        raise SystemExit('--evaluation-stopped takes only --site, --paint and --out: the stopped evaluation\'s outputs are not used')
+    stopped = evaluation_stopped(args.evaluation_stopped, record, record_path) if args.evaluation_stopped else None
     if held_out:
         common.preflight(record.get('protocolLockSha256'))  # the approved lock, with this score.py pinned in it
     # Held-out: the committed anchor, the addendum file and the site's build receipt must name the same addendum (or none).
@@ -451,14 +479,19 @@ def score_site(args):
             raise SystemExit('a D/E file for a site without a built scene')
         de = labels_de(args.labels_de, addendum, addendum_sha, ground_sha, record['site'], labels_sha)
         inputs['labelsDE'] = {'file': rel(args.labels_de), 'sha256': sha_file(args.labels_de), 'labelsSha256': de['labels']['sha256']}
+    if stopped:
+        inputs['evaluationStopped'] = {'file': rel(args.evaluation_stopped), 'sha256': sha_file(args.evaluation_stopped)}
     metrics = {}
-    reason = (f"no built scene: {record['outcome']}" + (f" ({record['stopped']['step']}: {record['stopped']['reason']})" if record.get('stopped') else ''))
+    reason = '; '.join(x for x in (
+        None if built else f"no built scene: {record['outcome']}" + (f" ({record['stopped']['step']}: {record['stopped']['reason']})"
+                                                                      if record.get('stopped') else ''),
+        stopped and f"the evaluation stopped: {stopped['reason']}") if x)
     paint = Path(args.paint).resolve() if args.paint else None
     if paint:
         inputs['paint'] = {'file': rel(paint_record(paint)), 'sha256': sha_file(paint_record(paint))}
     metrics['A'] = metric_a(paint, inputs['siteRecord']['sha256'])
     results = None
-    if not built:
+    if not built or stopped:  # handled like a site with no feasible frame
         metrics['B'] = outcome('fail', reason + '; B cannot pass')
         for k in ('C', 'F', 'F0', 'I', 'J', 'K'):
             metrics[k] = not_scored(reason)
@@ -511,7 +544,7 @@ def score_site(args):
                                           'listed by name, leaves the miss count', childBlockedRows=sweep['child']['blockedRows'])
         metrics['K'] = metric_k(k) if k else not_scored('the metric K step failed' if 'metric-k' in failed else 'no metric K run')
     if not de:
-        why = (NOT_SCORED_DE if addendum is None else reason if not built else 'the labels-de step failed' if 'labels-de' in failed
+        why = (NOT_SCORED_DE if addendum is None else reason if not built or stopped else 'the labels-de step failed' if 'labels-de' in failed
                else 'no D/E file for this site (no held-out labels for it)')
         metrics['D'], metrics['E'] = not_scored(why), not_scored(why)
     doc = {'kind': 'pao-m7-site-score', 'label': LABEL, 'mode': record['mode'],
@@ -525,29 +558,57 @@ def score_site(args):
 
 # ---------------------------------------------------------------- summary
 
+def failed_step(step):
+    """An evaluate_site.py step that failed: a non-zero exit, or output the driver refused."""
+    return bool(step.get('exit') or step.get('refused'))
+
+
 def one_run(path, doc):
-    """Held-out: what is wrong with this site score as the one run of each step at its site (empty: nothing). It must be
-    the score.json of the evaluate_site.py run that the site's evaluate marker names, whose receipt (made by this
-    evaluate_site.py) lists exactly the failed steps the score used; its site record and paint record must lie in the
-    folders the build and paint markers name."""
+    """Held-out: what is wrong with this site score as the one run of each step at its site (empty: nothing). It must lie
+    in the folder the site's evaluate marker names, with its site record and paint record in the folders the build and
+    paint markers name. A scored evaluation: the score.json that the receipt (made by this evaluate_site.py, its score step
+    passed) names, with exactly the failed steps that receipt lists. A stopped evaluation (evaluate_site.py
+    --record-stopped): stopped-score.json, made from that folder's evaluate-stopped.json, where the receipt is missing or
+    its score step failed."""
     log, crossing = doc['site']['logId'], doc['site']['crossingId']
-    folder = Path(path).resolve().parent
+    path = Path(path).resolve()
+    folder = path.parent
     receipt_path = folder / 'evaluate-receipt.json'
-    if not receipt_path.is_file():
-        return ['no evaluate_site.py receipt next to the score']
-    receipt = load(receipt_path)
-    failed = sorted(s['step'] for s in receipt.get('steps', []) if s.get('exit') and s.get('step') != 'score')
+    receipt = load(receipt_path) if receipt_path.is_file() else None
+    score_steps = [s for s in (receipt or {}).get('steps', []) if s.get('step') == 'score']
+    scored = len(score_steps) == 1 and not failed_step(score_steps[0])
+    driver = sha_file(Path(__file__).resolve().parent / 'evaluate_site.py')
     parent = lambda key: str(Path(doc['inputs'][key]['file']).parent) if key in doc['inputs'] else None  # noqa: E731
-    return [what for what, ok in (
-        ('evaluate receipt for another site', receipt.get('kind') == 'pao-m7-site-evaluation' and receipt.get('site') == doc['site']),
-        ('evaluate receipt does not name this score', receipt.get('outputs', {}).get(rel(path)) == sha_file(path)),
-        ('evaluate receipt for another site record', receipt.get('siteRecord') == doc['inputs']['siteRecord']),
-        ('failed steps differ from the evaluate receipt', failed == doc['inputs']['failedSteps']),
-        ('evaluate receipt made by another evaluate_site.py',
-         (receipt.get('driver') or {}).get('sha256') == sha_file(Path(__file__).resolve().parent / 'evaluate_site.py')),
+    checks = [
         ('not the evaluation the evaluate marker names', common.marked_folder('evaluate', log, crossing) == rel(folder)),
         ('not the build the build marker names', common.marked_folder('build', log, crossing) == parent('siteRecord')),
-        ('not the paint run the paint marker names', common.marked_folder('paint', log, crossing) == parent('paint'))) if not ok]
+        ('not the paint run the paint marker names', common.marked_folder('paint', log, crossing) == parent('paint'))]
+    if 'evaluationStopped' in doc['inputs']:
+        stop_path = folder / 'evaluate-stopped.json'
+        stop = load(stop_path) if stop_path.is_file() else {}
+        checks += [
+            ('a stopped score is not stopped-score.json', path.name == 'stopped-score.json'),
+            ('the score names another evaluate-stopped.json', stop_path.is_file() and doc['inputs']['evaluationStopped']
+             == {'file': rel(stop_path), 'sha256': sha_file(stop_path)}),
+            ('evaluate-stopped.json for another site record', stop.get('kind') == STOPPED_KIND and stop.get('site') == doc['site']
+             and stop.get('siteRecord') == doc['inputs']['siteRecord']),
+            ('evaluate-stopped.json made by another evaluate_site.py', (stop.get('driver') or {}).get('sha256') == driver),
+            ('evaluate-stopped.json names another evaluate receipt', stop.get('evaluateReceipt')
+             == ({'file': rel(receipt_path), 'sha256': sha_file(receipt_path)} if receipt else None)),
+            ('the marked evaluation was scored: it is not a stopped site', not scored),
+            ('a stopped site lists failed steps', doc['inputs']['failedSteps'] == [])]
+    else:
+        failed = sorted(s['step'] for s in (receipt or {}).get('steps', []) if failed_step(s) and s.get('step') != 'score')
+        checks += [
+            ('no evaluate_site.py receipt next to the score', receipt is not None),
+            ('the score step of the evaluate receipt failed', scored),
+            ('evaluate receipt for another site', (receipt or {}).get('kind') == 'pao-m7-site-evaluation'
+             and (receipt or {}).get('site') == doc['site']),
+            ('evaluate receipt does not name this score', (receipt or {}).get('outputs', {}).get(rel(path)) == sha_file(path)),
+            ('evaluate receipt for another site record', (receipt or {}).get('siteRecord') == doc['inputs']['siteRecord']),
+            ('failed steps differ from the evaluate receipt', failed == doc['inputs']['failedSteps']),
+            ('evaluate receipt made by another evaluate_site.py', ((receipt or {}).get('driver') or {}).get('sha256') == driver)]
+    return [what for what, ok in checks if not ok]
 
 
 def summarize(args):
@@ -566,7 +627,7 @@ def summarize(args):
     if len(set(names)) != len(names):
         raise SystemExit('a site is scored twice')
     held_out = next(iter(modes)).startswith('held-out')
-    site_set = None
+    site_set, labels_info = None, None
     if held_out:
         common.preflight(next(iter(locks)))  # the approved lock, with this score.py pinned in it
         if {d['scorer']['sha256'] for _, d in scores} != {sha_file(__file__)}:
@@ -590,15 +651,21 @@ def summarize(args):
             raise SystemExit('held-out site scores made under another labels addendum than the committed anchor')
         if addendum_sha:
             # Every site the committed label manifest lists with labels has its D/E file, unless its labels-de step
-            # failed or it has no built scene; no site has a D/E file the manifest does not list.
+            # failed, its evaluation stopped or it has no built scene; no site has a D/E file the manifest does not list.
             wanted, manifest_sha = common.labels_manifest(addendum_sha)
             wrong = [n for n, (_, d) in zip(names, scores)
                      if (d['inputs'].get('labelsDE') or {}).get('labelsSha256', wanted[n]) != wanted[n]
                      or wanted[n] and 'labelsDE' not in d['inputs'] and 'labels-de' not in d['inputs']['failedSteps']
-                     and d['build']['outcome'] in BUILT]
+                     and 'evaluationStopped' not in d['inputs'] and d['build']['outcome'] in BUILT]
             if wrong:
                 raise SystemExit(f'held-out sites whose D/E input does not match the committed label manifest: {wrong}')
             site_set['labelsManifest'] = {'file': common.LABELS_MANIFEST_REL, 'sha256': manifest_sha}
+            labelled = [n for n in names if wanted[n]]
+            labels_info = {'sitesWithLabels': labelled,
+                           'dOrENotScored': {n: {m: d['metrics'][m].get('reason') for m in ('D', 'E') if d['metrics'][m]['outcome'] == 'not scored'}
+                                             for n, (_, d) in zip(names, scores) if wanted[n]
+                                             and any(d['metrics'][m]['outcome'] == 'not scored' for m in ('D', 'E'))},
+                           'note': 'listed by name: a site the label manifest lists with labels whose D or E is not scored'}
         # The anchor files a site score was made under must be the committed ones now (each is written once).
         anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha if addendum_sha else None}
         stale = [n for n, (_, d) in zip(names, scores) if d.get('anchors') != anchors]
@@ -659,6 +726,7 @@ def summarize(args):
                   'estimatorsDisagreeSites': a_flag('estimatorsDisagree'), 'notConfirmedByPaintV4Sites': a_flag('notConfirmedByPaintV4'),
                   'note': 'fail-only: "not scored" says nothing about the map, and A never passes; a fail means the true offset is '
                           'very likely at least about 0.20 m, or a look-alike line fooled both estimators (counted against the app)'},
+            'labels': labels_info,
             'statistics': {'unit': 'one intersection', 'miss': miss,
                            'falseBlocked': false_blocked},
             'gate': 'incomplete (the visibility gate is never recorded as passed)',
@@ -676,6 +744,7 @@ def main():
     s.add_argument('--paint')
     s.add_argument('--failed-step', action='append', help='an evaluate_site.py step that failed (repeatable)')
     s.add_argument('--labels-de', help='the D/E file of the scorer the labels addendum pins')
+    s.add_argument('--evaluation-stopped', help='evaluate_site.py --record-stopped: the evaluate-stopped.json of this site')
     s.add_argument('--out', required=True)
     m = sub.add_parser('summary')
     m.add_argument('--scores', nargs='+', required=True)

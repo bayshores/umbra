@@ -6,6 +6,7 @@ recorded before any sweep is downloaded) -> car_shape.py download -> ground with
   nice -n 10 /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -I -B scripts/evaluation/m7/run_heldout.py \
       --log <uuid> --crossing <id> --out .local/evaluation/pao-accuracy/m7/<log8>-<crossing> \
       (--protocol-lock-sha256 <sha256> | --rehearse [--fixed-band])
+  ... run_heldout.py --log <uuid> --crossing <id> --record-interrupted --protocol-lock-sha256 <sha256>
 
 Held-out sites run only after common.preflight (approved lock, pushed anchor, clean checkout, every pin unchanged); the
 builder and car_shape.py check the lock again before they open a file of the log. --rehearse runs the same steps on a
@@ -17,7 +18,10 @@ builder's own rules). A calibration refusal by the builder is "not scored: calib
 site with the step named (site-stopped.json); it is never rerun. Nothing here prints an app result: the step logs hold
 the tools' own output, and the coordinator does not open grounded/ before the held-out label hashes are committed.
 The receipt records the labels addendum sha256 the run works under (held-out: its committed anchor; null when D and E
-are not scored); score.py refuses a held-out site built under another value.
+are not scored); score.py refuses a held-out site built under another value. Held-out: the committed lost-site list must
+exist and not name the site (statistics.lostSiteRule), and a run marker allows one build per site. --record-interrupted
+(held-out): a marked build that ended (its process is gone) without a site record is recorded once as stopped
+(site-stopped.json in its folder, step "interrupted"), so the site is still scored like a site with no feasible frame.
 The shape sweeps follow the frozen shape-v2 attempt rule inside car_shape.py (4 attempts; a sweep that never matches is
 recorded as dropped).
 
@@ -359,7 +363,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--log', required=True)
     parser.add_argument('--crossing', required=True)
-    parser.add_argument('--out', required=True)
+    parser.add_argument('--out', help='a new folder under .local/ (not with --record-interrupted)')
+    parser.add_argument('--record-interrupted', action='store_true', help='held-out: record a marked build that ended without a site record')
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--protocol-lock-sha256')
     mode.add_argument('--rehearse', action='store_true')
@@ -367,12 +372,29 @@ def main():
     args = parser.parse_args()
     if args.fixed_band and not args.rehearse:
         parser.error('--fixed-band is for rehearsals; held-out runs always use the fixed band')
-    out = Path(args.out).resolve()
-    if not out.is_relative_to(ROOT / '.local'):
+    if args.record_interrupted and (args.rehearse or args.out):
+        parser.error('--record-interrupted takes only --log, --crossing and --protocol-lock-sha256')
+    if not args.record_interrupted and not args.out:
+        parser.error('--out is required')
+    out = None if args.record_interrupted else Path(args.out).resolve()
+    if out and not out.is_relative_to(ROOT / '.local'):
         parser.error('--out must be under .local/ (ignored by git): downloads are never committed')
-    if os.path.lexists(out):
+    if out and os.path.lexists(out):
         parser.error(f'{out} exists; every run writes a new folder')
     entry, lock = common.guard(args.log, args.crossing, args.rehearse, args.protocol_lock_sha256)  # before any network or file access
+    if not args.rehearse and f'{args.log[:8]}/{args.crossing}' in common.lost_sites()[0]:  # committed before any held-out build
+        parser.error('this site is on the committed lost-site list: it is not built')
+    if args.record_interrupted:
+        folder = common.ended_run('build', args.log, args.crossing)
+        if any((folder / n).is_file() for n in ('build-receipt.json', 'site-stopped.json')):
+            parser.error('the marked build has its site record: there is nothing to record')
+        args.out = str(folder)
+        build = Build(args, entry, lock)
+        folder.mkdir(parents=True, exist_ok=True)
+        build.receipt('stopped', SiteStop('interrupted', 'the marked build ended without a site record (recorded afterwards with '
+                                                         '--record-interrupted)'))
+        print(json.dumps({'site': f'{args.log[:8]}/{args.crossing}', 'stopped': 'interrupted', 'record': rel(folder / 'site-stopped.json')}))
+        sys.exit(3)
     build = Build(args, entry, lock)  # reads the labels addendum sha256 before any folder is made
     if not args.rehearse:
         common.run_marker('build', args.log, args.crossing, out)  # a held-out site is built once
