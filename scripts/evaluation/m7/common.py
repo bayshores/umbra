@@ -223,7 +223,8 @@ def marked_folder(step, log, crossing):
 
 def ended_run(step, log, crossing):
     """Held-out: the output folder (a Path) the run marker of this step names for this site, once that run has ended (the
-    process the marker names is gone). Used only to record a stop for a marked run that left no record of its own."""
+    process the marker names is gone, or its id now belongs to a process that started after the marker was written). Used
+    only to record a stop for a marked run that left no record of its own."""
     path = marker_path(step, log, crossing)
     if not path.is_file():
         raise SystemExit(f'{step} never ran for {log[:8]}/{crossing}: there is nothing to record')
@@ -237,7 +238,20 @@ def ended_run(step, log, crossing):
         return ROOT / marker['folder']
     except PermissionError:
         pass
+    # The marked run wrote its marker after it started; a process with that id that started later reuses the id.
+    started, marked = started_utc(pid), datetime.strptime(marker['utc'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+    if started is not None and started > marked:
+        return ROOT / marker['folder']
     raise SystemExit(f'the {step} run for {log[:8]}/{crossing} (process {pid}) may still be running: wait until it ends')
+
+
+def started_utc(pid):
+    """When process pid started (UTC, whole seconds), or None when ps cannot tell."""
+    result = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True, env={**os.environ, 'LC_ALL': 'C'})
+    try:
+        return datetime.strptime(' '.join(result.stdout.split()), '%a %b %d %H:%M:%S %Y').astimezone(timezone.utc)
+    except ValueError:
+        return None
 
 
 def de_code(addendum):

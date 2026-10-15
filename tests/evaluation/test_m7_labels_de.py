@@ -7,10 +7,12 @@ committed-anchor readers, preflight and git are replaced in each test.
 Run: nice -n 10 /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 -B -m unittest discover -s tests/evaluation -p 'test_m7*.py'
 """
 import argparse
+from datetime import datetime, timedelta, timezone
 import hashlib
 import importlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -541,6 +543,16 @@ class EndedRun(Tmp):
             self.assertIn('may still be running', self.ended())
         with mock.patch.object(common.os, 'kill', side_effect=ProcessLookupError):
             self.assertEqual(common.ended_run('paint', self.log, self.crossing), (self.dir / 'paint').resolve())
+
+    def test_a_process_id_reused_after_the_marker_counts_as_ended(self):
+        started = common.started_utc(os.getpid())
+        self.assertTrue(started is not None and started <= datetime.now(timezone.utc))
+        common.run_marker('paint', self.log, self.crossing, self.dir / 'paint')
+        later = datetime.now(timezone.utc) + timedelta(seconds=5)
+        with mock.patch.object(common, 'started_utc', return_value=later):
+            self.assertEqual(common.ended_run('paint', self.log, self.crossing), (self.dir / 'paint').resolve())
+        with mock.patch.object(common, 'started_utc', return_value=None):  # ps cannot tell: still treated as running
+            self.assertIn('may still be running', self.ended())
 
     def test_a_marker_naming_no_process_is_refused(self):
         path = common.marker_path('paint', self.log, self.crossing)
