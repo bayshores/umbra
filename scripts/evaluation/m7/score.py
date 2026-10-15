@@ -355,7 +355,8 @@ def metric_k(doc):
 def labels_de(path, addendum, addendum_sha, ground_sha, site, labels_sha=None):
     """The D/E file for this site, made by the scorer the labels addendum pins, for this ground.json and this addendum,
     naming the sha256 of the labels it used (held-out: the one the committed label manifest lists for this site)."""
-    doc, pinned = load(path), common.de_code(addendum)  # the D/E code folder is checked against the addendum pins
+    doc = json.loads(Path(path).read_bytes(), object_pairs_hook=common.unique_keys)  # a repeated key is refused
+    pinned = common.de_code(addendum)  # the D/E code folder is checked against the addendum pins
     named, labels = doc.get('site') or {}, (doc.get('labels') or {}).get('sha256')
     problems = [what for what, ok in (
         ('keys (exactly ' + ', '.join(sorted(DE_KEYS)) + ')', set(doc) == DE_KEYS),

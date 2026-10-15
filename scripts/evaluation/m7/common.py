@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import tempfile
 import time
@@ -96,24 +97,73 @@ def json_strings(node):
             yield from json_strings(value)
 
 
+JSON_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"')  # one JSON string literal inside other text
+WITHHELD = '<text withheld: it names the coordinator-only folder>'
+
+
+def unique_keys(pairs):
+    """json object_pairs_hook: a repeated key is refused (json.loads would keep only its last value)."""
+    keys = [key for key, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise SystemExit('a JSON object repeats a key')
+    return dict(pairs)
+
+
+def spellings(form):
+    """form as plain text and as JSON writes it, escaped once or twice (\\u00e9 for non-ASCII, \\/ for /), NFC and NFD."""
+    out = set()
+    for text in {unicodedata.normalize('NFC', form), unicodedata.normalize('NFD', form)}:
+        level = {text}
+        for _ in range(3):
+            out |= level
+            level = {e for t in level for d in (json.dumps(t)[1:-1], json.dumps(t, ensure_ascii=False)[1:-1])
+                     for e in (d, d.replace('/', '\\/'))}
+    return sorted(out, key=len, reverse=True)
+
+
+def decoded_texts(text, depth=3):
+    """text, the strings of text read as one JSON value, and every JSON string literal inside it, decoded to depth levels
+    (a JSON document quoted inside a log line, or inside another JSON string)."""
+    texts, todo = [text], [text]
+    for _ in range(depth):
+        found = []
+        for item in todo:
+            try:
+                found += list(json_strings(json.loads(item, strict=False)))
+            except (ValueError, RecursionError):
+                pass
+            for literal in JSON_STRING.findall(item):
+                try:
+                    found.append(json.loads(literal, strict=False))
+                except ValueError:
+                    pass
+        texts += found
+        todo = [t for t in found if '"' in t or '\\' in t]
+    return texts
+
+
 def names_folder(data, folders=()):
-    """True when data (bytes) names the coordinator-only folder or a folder given, in any form folder_forms lists, as
-    plain text or inside a JSON string (escapes such as \\u00e9 or \\/ decoded), ignoring case and Unicode normalization."""
-    texts = [data.decode('utf-8', 'replace')]
-    try:
-        texts += list(json_strings(json.loads(data)))
-    except (ValueError, RecursionError):
-        pass
-    forms = [fold(f) for f in folder_forms(folders)]
-    return any(form in fold(text) for text in texts for form in forms)
+    """True when data (bytes or text) names the coordinator-only folder or a folder given, in any form folder_forms
+    lists, as plain text, JSON-escaped (spellings) or inside JSON strings (decoded_texts), ignoring case and Unicode
+    normalization."""
+    text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
+    forms = {fold(s) for f in folder_forms(folders) for s in spellings(f)}
+    if not forms:
+        return False
+    texts = fold('\0'.join(decoded_texts(text)))  # no form holds a NUL, so no match spans two texts
+    return any(form in texts for form in forms)
 
 
 def masked(text, folders=()):
     """text with the banned vehicle-status word masked (p*rk) and the coordinator-only folder (and any folder given, in
-    every form folder_forms lists, any case) replaced by a placeholder: tool output can quote either."""
+    every form folder_forms lists and every spelling, any case) replaced by a placeholder: tool output can quote
+    either. Text that still names a folder (names_folder: a case match only casefold finds, or a quoted JSON document)
+    is withheld whole, so a masked text can always be written."""
     text = unicodedata.normalize('NFC', text)
-    for form in folder_forms(folders):
-        text = re.sub(re.escape(unicodedata.normalize('NFC', form)), '<coordinator-only folder>', text, flags=re.IGNORECASE)
+    for form in sorted({s for f in folder_forms(folders) for s in spellings(f)}, key=len, reverse=True):
+        text = re.sub(re.escape(form), '<coordinator-only folder>', text, flags=re.IGNORECASE)
+    if names_folder(text, folders):
+        text = WITHHELD
     return re.sub('park', 'p*rk', text, flags=re.IGNORECASE)
 
 
@@ -370,15 +420,30 @@ def pinned_files(node, out=None):
     return out
 
 
-def fetch_origin():
-    """git fetch origin main, tried again after a failure (FETCH_TRIES in all, 10 s apart, each stopped after
-    FETCH_SECONDS): a dropped connection should not stop a site."""
-    for attempt in range(FETCH_TRIES):
+def fetch_once():
+    """One git fetch origin main, stopped after FETCH_SECONDS. It runs in its own process group with no shared output
+    and no prompt, and on the time limit the whole group (git and its https helper) is killed, so nothing it started
+    keeps a caller's captured output open past the limit."""
+    proc = subprocess.Popen(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                            env={**child_env(), 'GIT_TERMINAL_PROMPT': '0'})
+    try:
+        return proc.wait(timeout=FETCH_SECONDS) == 0
+    except subprocess.TimeoutExpired:
         try:
-            if subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT, timeout=FETCH_SECONDS).returncode == 0:
-                return
-        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
             pass
+        proc.wait()
+        return False
+
+
+def fetch_origin():
+    """git fetch origin main (fetch_once), tried again after a failure (FETCH_TRIES in all, 10 s apart): a dropped
+    connection should not stop a site."""
+    for attempt in range(FETCH_TRIES):
+        if fetch_once():
+            return
         if attempt + 1 < FETCH_TRIES:
             time.sleep(10)
     raise SystemExit(f'git fetch origin main failed {FETCH_TRIES} times')

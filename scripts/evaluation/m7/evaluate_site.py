@@ -14,14 +14,16 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
   4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after the D/E
      code folder is checked against the addendum (common.de_code), with --site, --baseline, --metric-f-results (those
      that exist), --labels and --out <a new file in a temporary folder outside the repository>; that file is copied to
-     labels-de.json only if score.py's D/E checks accept it (labels_de, metric_d, metric_e) and it names neither the
-     coordinator-only folder nor the labels folder in any form (common.names_folder: as given, resolved or relative to
-     the repository, any case, JSON escapes decoded) and holds no banned word; otherwise the step is recorded as refused
+     labels-de.json only if it is JSON with no repeated key, score.py's D/E checks accept it (labels_de, metric_d,
+     metric_e) and, as written and once decoded, it names neither the coordinator-only folder nor the labels folder in
+     any form (common.names_folder: as given, resolved or relative to the repository, any case, JSON escapes decoded)
+     and holds no banned word; otherwise the step is recorded as refused
      (a failed step: only D and E are not scored). Held-out: --labels is required exactly for the sites the committed
      label manifest lists with labels, must have that sha256 and must lie inside the coordinator-only folder named by
      PAO_LABELS_COORDINATOR_DIR, which must lie outside the repository, as must the temporary folder (checked before the
      output folder is made); the receipt records its file name and sha256. Step logs and error tails replace both
-     folders with a placeholder, and no step is given that environment variable.
+     folders, in any spelling, with a placeholder (a text that still names one is withheld whole, so a log can never
+     stop the run), and no step is given that environment variable.
   5. score.py site with the inputs that exist and the failed steps named (--failed-step). Held-out, its preflight
      fetches origin/main: before it starts, this driver waits (up to an hour) until git fetch works.
 A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
@@ -77,14 +79,20 @@ def site_record(parser, args, site):
 
 
 def copy_de(made, target, hidden, problem):
-    """The D/E scorer's output, copied to target unless it names the coordinator-only folder or a hidden folder in any
-    form (common.names_folder), score.py would refuse it (problem(): de_problem), or it holds the banned word. Returns
-    None, or why it was refused."""
+    """The D/E scorer's output, copied to target unless it is not JSON with unique keys, it names the coordinator-only
+    folder or a hidden folder in any form (common.names_folder, also once decoded), it holds the banned word (also once
+    decoded), or score.py would refuse it (problem(): de_problem). Returns None, or why it was refused."""
     if not made.is_file():
         return 'the D/E scorer wrote no output'
     data = made.read_bytes()
-    if common.names_folder(data, hidden):
+    try:
+        dumped = common.dump(json.loads(data, object_pairs_hook=common.unique_keys))  # what score.py would write from it
+    except (SystemExit, ValueError, RecursionError) as error:
+        return f'the D/E output is not JSON with unique keys ({type(error).__name__})'
+    if common.names_folder(data, hidden) or common.names_folder(dumped, hidden):
         return 'the D/E output names the coordinator-only folder or the labels folder'
+    if b'park' in dumped.lower():
+        return 'the D/E output holds the banned vehicle-status word (p*rk)'
     why = problem()
     if why:
         return why

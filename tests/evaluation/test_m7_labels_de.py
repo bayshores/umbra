@@ -17,6 +17,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -131,6 +132,13 @@ class LabelsDE(Tmp):
     def test_labels_other_than_the_manifest_lists_are_refused(self):
         with self.assertRaises(SystemExit):
             self.check(de_doc(), '77' * 32)
+
+    def test_a_repeated_key_is_refused(self):
+        path = self.dir / 'de.json'
+        path.write_text(json.dumps(de_doc())[:-1] + ', "kind": "other"}')  # json.loads alone would keep the last value
+        with self.assertRaises(SystemExit) as stop:
+            score.labels_de(path, ADDENDUM, ADDENDUM_SHA, GROUND, SITE, LABELS)
+        self.assertIn('repeats a key', str(stop.exception))
 
     def test_d_e_code_that_differs_from_the_addendum_stops_before_the_file_is_read(self):
         with mock.patch.object(common, 'de_code', side_effect=SystemExit('the D/E code differs')), self.assertRaises(SystemExit):
@@ -588,21 +596,39 @@ class EndedRun(Tmp):
 
 class FetchOrigin(unittest.TestCase):
     def test_a_failed_fetch_is_tried_again(self):
-        done = lambda code: subprocess.CompletedProcess([], code)  # noqa: E731
-        with mock.patch.object(common.subprocess, 'run', side_effect=[done(1), done(0)]) as run, \
+        with mock.patch.object(common, 'fetch_once', side_effect=[False, True]) as once, \
                 mock.patch.object(common.time, 'sleep') as sleep:
             common.fetch_origin()
-        self.assertEqual((run.call_count, sleep.call_count), (2, 1))
-        with mock.patch.object(common.subprocess, 'run', return_value=done(128)) as run, \
+        self.assertEqual((once.call_count, sleep.call_count), (2, 1))
+        with mock.patch.object(common, 'fetch_once', return_value=False) as once, \
                 mock.patch.object(common.time, 'sleep') as sleep, self.assertRaises(SystemExit):
             common.fetch_origin()
-        self.assertEqual((run.call_count, sleep.call_count), (common.FETCH_TRIES, common.FETCH_TRIES - 1))
+        self.assertEqual((once.call_count, sleep.call_count), (common.FETCH_TRIES, common.FETCH_TRIES - 1))
 
-    def test_a_hung_fetch_is_stopped_and_counts_as_a_failed_try(self):
-        with mock.patch.object(common.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 1)) as run, \
-                mock.patch.object(common.time, 'sleep'), self.assertRaises(SystemExit):
-            common.fetch_origin()
-        self.assertEqual((run.call_count, run.call_args.kwargs['timeout']), (common.FETCH_TRIES, common.FETCH_SECONDS))
+    def test_a_hung_fetch_and_every_process_it_started_are_stopped(self):
+        real, started = subprocess.Popen, []
+
+        def popen(argv, **kw):  # a fetch that hangs and has started a helper, like git and git-remote-https
+            started.append((argv, kw, real(['/bin/sh', '-c', 'sleep 30 & sleep 30'], **kw)))
+            return started[-1][2]
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(Path(tempfile.gettempdir()) / 'coordinator')}), \
+                mock.patch.object(common.subprocess, 'Popen', side_effect=popen), mock.patch.object(common, 'FETCH_SECONDS', 1):
+            begin = time.monotonic()
+            self.assertFalse(common.fetch_once())
+        self.assertLess(time.monotonic() - begin, 10)
+        argv, kw, proc = started[0]
+        self.assertEqual(argv, ['git', 'fetch', '--quiet', 'origin', 'main'])
+        self.assertEqual((kw['stdin'], kw['stdout'], kw['stderr'], kw['start_new_session']),
+                         (subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL, True))  # nothing shares a caller's output
+        self.assertEqual((common.COORDINATOR_ENV in kw['env'], kw['env']['GIT_TERMINAL_PROMPT']), (False, '0'))
+        for _ in range(50):  # the helper too: the whole process group is gone
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail('a process the fetch started is still running')
 
     def test_the_score_step_waits_for_the_network(self):
         with mock.patch.object(common, 'fetch_origin', side_effect=[SystemExit('down'), SystemExit('down'), None]) as fetch, \
@@ -845,6 +871,52 @@ class EvaluateHeldOut(HeldOutDriver):
         self.assertFalse((self.out / 'labels-de.json').exists())
         self.assertIn(('--failed-step', 'labels-de'), list(zip(calls[-1], calls[-1][1:])))
 
+    def test_odd_d_e_output_fails_only_its_step(self):
+        (self.site / 'grounded').mkdir()
+        (self.site / 'grounded/ground.json').write_text('{}')
+        word = 'p\\u0061' + 'rk'  # the banned word with one letter JSON-escaped
+        for text, why in (('{"kind": "x", "kind": "y"}', 'not JSON with unique keys'),
+                          ('{"note": "%s"}' % str(self.labels).replace('/', '\\/'), 'names the coordinator-only folder'),
+                          ('{"note": "%s"}' % word, 'banned vehicle-status word')):
+            calls = []
+
+            def run(argv, **_):
+                calls.append(argv)
+                if '--labels' in argv:
+                    Path(argv[argv.index('--out') + 1]).write_text(text)
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            for marker in common.RUN_MARKERS.glob('evaluate-*'):
+                marker.unlink()
+            with self.subTest(why=why), mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+                out = self.out = self.dir / '.local' / f'eval-{len(why)}'
+                code, err = self.evaluate()
+                self.assertEqual(code, 0, err)
+                receipt = json.loads((out / 'evaluate-receipt.json').read_bytes())
+                steps = {s['step']: s for s in receipt['steps']}
+                self.assertIn(why, steps['labels-de']['refused'])
+                self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['labels-de'])
+                self.assertFalse((out / 'labels-de.json').exists())
+                self.assertIn(('--failed-step', 'labels-de'), list(zip(calls[-1], calls[-1][1:])))
+
+    def test_a_tool_printing_the_folder_in_any_spelling_cannot_stop_or_leak(self):
+        folder = self.coord.parent / 'Co\u00f6rdinator-\u00df'  # non-ASCII: JSON escapes it; casefold turns its last letter into ss
+        folder.mkdir()
+        labels = folder / 'labels.json'
+        labels.write_bytes(self.labels.read_bytes())
+
+        def run(argv, **_):
+            if '--labels' in argv:  # the D/E scorer prints its labels path as one JSON document and inside an error line
+                return subprocess.CompletedProcess(argv, 1, json.dumps({'labels': str(labels)}), 'cannot read ' + json.dumps(str(labels)))
+            return subprocess.CompletedProcess(argv, 0, f'{str(folder).upper()}/x', json.dumps(json.dumps({'p': str(labels)})))
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(folder)}), \
+                mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+            code, err = self.evaluate(labels=labels)
+            self.assertIn(code, (0, 3), err)
+            self.assertTrue((self.out / 'evaluate-receipt.json').is_file())  # the evaluation finished with its receipt
+            self.assertIn('labels-de-stdout.txt', [p.name for p in self.out.iterdir()])
+            for path in self.written():
+                self.assertFalse(common.names_folder(path.read_bytes()), path)
+
     def test_a_coordinator_or_temporary_folder_inside_the_repository_is_refused(self):
         inside = self.dir / 'coordinator'
         inside.mkdir()
@@ -965,9 +1037,22 @@ class StopsAndDownloads(Tmp):
                         common.write_new(self.dir / 'out.json', text.encode())
             self.assertFalse(common.names_folder(b'{"x": "/somewhere/else"}'))
             self.assertEqual(common.masked(f'open {str(folder).upper()}/a'), 'open <coordinator-only folder>/a')
+            once = json.dumps(f'{folder}/a')
+            self.assertEqual(common.masked(f'error: {once}'), 'error: "<coordinator-only folder>/a"')
+            self.assertEqual(common.masked(f'error: {json.dumps(once)}'), 'error: "\\"<coordinator-only folder>/a\\""')
+            line = 'log ' + json.dumps({'k': once})  # a JSON document holding an escaped JSON string, quoted in a log line
+            self.assertTrue(common.names_folder(line))
+            self.assertNotIn('Coordinator', common.masked(line))
             env = common.child_env(A='1')
             self.assertEqual((common.COORDINATOR_ENV in env, env['A']), (False, '1'))
         self.assertTrue(common.names_folder(b'{"x": "some/labels/a.json"}', [common.ROOT / 'some' / 'labels']))  # relative to the repository
+        sharp = self.dir / 'Stra\u00dfe'
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(sharp)}):
+            text = f'open {str(sharp).upper()}/a'  # STRASSE: only casefold matches it, so the text is withheld whole
+            self.assertTrue(common.names_folder(text))
+            self.assertEqual(common.masked(text), common.WITHHELD)
+            self.assertEqual(common.write_new(self.dir / 'log.txt', common.masked(text).encode()), common.sha(common.WITHHELD.encode()))
+        (self.dir / 'log.txt').unlink()
         self.assertEqual(list(self.dir.iterdir()), [])
 
     def test_the_resolved_coordinator_folder_is_masked_and_refused_too(self):
