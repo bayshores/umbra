@@ -1,9 +1,12 @@
 """M7 (held-out run) shared helpers: the split roles, the lock and anchor checks, and receipted public AV2 downloads.
 
 Nothing here opens a held-out file. preflight() is the only way into held-out work: protocol-lock.json at its fixed path
-with the sha256 given, an approval block, the same sha256 in the tracked anchor on origin/main, an empty git status, a
+with the sha256 given, an approval block, the same bytes as the candidate its approval names once status and approval are
+put back as shown, the lock record naming both sha256 values, the same sha256 in the tracked anchor on origin/main
+(written once, like the anchors under ANCHOR_DIR), an empty git status, a
 HEAD whose tracked files equal pipeline.commit except the anchor files (ANCHOR_REL and ANCHOR_DIR/), every pinned
-file unchanged, and the labels addendum equal to its committed anchor (null: no addendum file). The main checkout is used (ignored .local/ data and protocols live only there; a fresh worktree has none).
+file unchanged, and the labels addendum equal to its committed anchor and to the one the lock pins (labels.addendum;
+null only with labels.noAddendum, Sean's recorded answer: no addendum file). The main checkout is used (ignored .local/ data and protocols live only there; a fresh worktree has none).
 Each anchor file under ANCHOR_DIR is written once: exactly one commit on origin/main touches it, so a later change makes
 every driver refuse. Held-out, each driver runs once per site: a run marker (RUN_MARKERS, O_EXCL) names its output folder
 and the driver's process id, and a second run is refused. A marked run that ended (its process is gone) without its own
@@ -28,11 +31,14 @@ ROOT = Path(__file__).resolve().parents[3]
 SPLIT = ROOT / '.local/evaluation/pao-accuracy/split.json'
 SPLIT_SHA = '47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4'
 LOCK_PATH = ROOT / '.local/evaluation/pao-accuracy/protocol-lock.json'
+LOCK_RECORD = ROOT / '.local/evaluation/pao-accuracy/lock/protocol-lock.record.json'  # written by write_protocol_lock.py approve
+CANDIDATE_STATUS = 'CANDIDATE (not approved; no held-out run may use it)'  # the candidate's status, as Sean was shown it
 ANCHOR_REL = 'scripts/evaluation/pao-lock-anchor.json'
-ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list, labels addendum anchor and held-out label manifest
+ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list, labels addendum anchor, held-out label manifest, runs list
 LOST_SITES_REL = f'{ANCHOR_DIR}/lost-sites.json'  # protocol-lock statistics.lostSiteRule: {"lostSites": [{logId, crossingId, evidence}]}
 LABELS_ADDENDUM = ROOT / '.local/evaluation/pao-accuracy/lock/labels-addendum.json'  # protocol-lock labels.scoringCondition (4)
 ADDENDUM_ANCHOR_REL = f'{ANCHOR_DIR}/labels-addendum-anchor.json'  # {"labelsAddendumSha256": <sha256> or null (D/E not scored)}
+RUNS_REL = f'{ANCHOR_DIR}/runs.json'  # {"runs": [{logId, crossingId, siteRecordSha256, paintRecordSha256}]}: score.py runs-list
 LABELS_MANIFEST_REL = f'{ANCHOR_DIR}/labels-manifest.json'  # {"labelsAddendumSha256", "sites": [{logId, crossingId, labelsSha256, reason}]}
 HEX64 = re.compile('[0-9a-f]{64}')
 RUN_MARKERS = ROOT / '.local/evaluation/pao-accuracy/m7/run-markers'  # held-out: <step>-<log8>-<crossing>.json, one per run
@@ -326,6 +332,34 @@ def labels_manifest(addendum_sha):
     return entries, digest
 
 
+def held_out_names():
+    """{'<log8>/<crossing>': split.json entry} of every held-out site minus the committed lost-site list."""
+    lost, _ = lost_sites()
+    return {n: x for x in split_sites() if x['role'] in HELD_OUT_ROLES and (n := f"{x['logId'][:8]}/{x['crossingId']}") not in lost}
+
+
+def runs_list():
+    """The committed held-out runs list (statistics.oneRunRule): written once by score.py runs-list after every held-out
+    build and paint run has its record and before any evaluate_site.py run, it names each held-out site minus the
+    lost-site list once, with the sha256 of its one site record and one paint record. Returns ({'<log8>/<crossing>':
+    (site record sha256, paint record sha256)}, its sha256)."""
+    doc, digest = committed(RUNS_REL, 'the held-out runs list (score.py runs-list)')
+    keys = {'logId', 'crossingId', 'siteRecordSha256', 'paintRecordSha256'}
+    runs = {}
+    for x in doc.get('runs') if isinstance(doc.get('runs'), list) else [None]:
+        ok = isinstance(x, dict) and set(x) == keys and all(isinstance(x[k], str) for k in keys) \
+            and all(HEX64.fullmatch(x[k]) for k in ('siteRecordSha256', 'paintRecordSha256'))
+        name = f"{x['logId'][:8]}/{x['crossingId']}" if ok else None
+        if not ok or name in runs:
+            raise SystemExit(f'{RUNS_REL}: each entry is {{logId, crossingId, siteRecordSha256, paintRecordSha256}} and names a site once')
+        runs[name] = (x['siteRecordSha256'], x['paintRecordSha256'])
+    held = held_out_names()
+    if set(runs) != set(held) or any(held[n]['logId'] != x['logId'] for x in doc['runs'] for n in [f"{x['logId'][:8]}/{x['crossingId']}"]):
+        raise SystemExit(f'{RUNS_REL} must name every held-out site minus the lost-site list once; missing '
+                         f'{sorted(set(held) - set(runs))}, extra {sorted(set(runs) - set(held))}')
+    return runs, digest
+
+
 def marker_path(step, log, crossing):
     return RUN_MARKERS / f'{step}-{log[:8]}-{crossing}.json'
 
@@ -475,8 +509,15 @@ def preflight(lock_sha256):
         raise SystemExit('protocol-lock.json differs from the given sha256')
     lock = json.loads(raw)
     approval = lock.get('approval') or {}
-    if not all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('by', 'utc')):
+    if not all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('by', 'utc', 'how', 'candidateSha256', 'recordedUtc')):
         raise SystemExit('protocol-lock.json has no approval')
+    # The lock is the candidate Sean approved: the same bytes once its status and approval are put back as shown.
+    shown = (json.dumps({**lock, 'status': CANDIDATE_STATUS, 'approval': None}, indent=1, ensure_ascii=False) + '\n').encode()
+    if sha(shown) != approval['candidateSha256']:
+        raise SystemExit('protocol-lock.json differs from the candidate its approval names (approval.candidateSha256)')
+    record = json.loads(LOCK_RECORD.read_bytes()) if LOCK_RECORD.is_file() else {}
+    if (record.get('file'), record.get('sha256'), record.get('candidateSha256')) != (rel(LOCK_PATH), lock_sha256, approval['candidateSha256']):
+        raise SystemExit(f'{rel(LOCK_RECORD)} is missing or names another lock')
     commit = lock['pipeline']['commit']
     status = git('status', '--porcelain')
     if status.strip():
@@ -488,10 +529,7 @@ def preflight(lock_sha256):
     if extra:
         raise SystemExit('Tracked files differ from pipeline.commit: ' + ', '.join(extra))
     fetch_origin()
-    try:
-        anchor = json.loads(git('show', f'origin/main:{ANCHOR_REL}'))
-    except subprocess.CalledProcessError:
-        raise SystemExit(f'origin/main has no {ANCHOR_REL}: commit and push the anchor first') from None
+    anchor, _ = committed(ANCHOR_REL, 'the lock anchor (write_protocol_lock.py approve)')  # pushed and written once
     if anchor.get('protocolLockSha256') != lock_sha256:
         raise SystemExit('The anchor on origin/main names another lock')
     for path, value in pinned_files(lock):
@@ -501,7 +539,10 @@ def preflight(lock_sha256):
         for path, value in group.items():
             if sha_file(ROOT / path) != value:
                 raise SystemExit(f'{path} differs from its sha256 in the lock')
-    labels_addendum(True)
+    # The labels addendum Sean approved inside the lock (labels.addendum), or none only with his recorded answer.
+    pinned, addendum = lock.get('labels', {}).get('addendum'), labels_addendum(True)
+    if (pinned or {}).get('sha256') != addendum or pinned is None and not str(lock['labels'].get('noAddendum') or '').strip():
+        raise SystemExit('the labels addendum differs from the one the lock pins (labels.addendum, or labels.noAddendum)')
     return lock
 
 

@@ -9,7 +9,12 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
   1. pao-baseline.mjs --scene (metrics B, C, I; J's Node values)
   2. a site with the recorded vehicle's LiDAR shape (built-shape): metric-f.mjs rows, metric_f_car_top.py profile (the
      scoring sweeps that ground.json carShape.sweeps.scoring lists, nothing else) and score, under metric F protocol v4
-     (pinned in metricProtocols.F). No --box-rows-from: a held-out scene has no metric F v2 rows to reproduce.
+     (pinned in metricProtocols.F). No --box-rows-from: a held-out scene has no metric F v2 rows to reproduce. When metric
+     F scored, the approach-half split check (report only, metrics.FApproachSplit, the shape-v2 split addendum):
+     car_shape.py approach-split (held-out: --held-out-run with the lock sha256) writes an evaluation-only shape from the
+     far half of the scene's kept sweeps, then metric-f.mjs --eval-shape rows, profile on the near half and score with
+     --app-results (the metric F results above), in approach-split/. A failed step here leaves only FApproachSplit not
+     scored.
   3. metric_k.py (the scene sweep; on a built-shape site also the scoring sweeps)
   4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after the D/E
      code folder is checked against the addendum (common.de_code), with --site, --baseline, --metric-f-results (those
@@ -33,7 +38,8 @@ error tails have the banned vehicle-status word masked (p*rk) before they are wr
 list must exist before this first scoring run (statistics.lostSiteRule; the receipt records its sha256 and the label
 manifest's), and a run marker allows one evaluation per site. Before that marker, --site must be the folder the build
 marker names and --paint the folder the paint marker names, holding one paint record made from this site record (a paint
-run that ended without one is first recorded with paint_heldout.py --record-interrupted).
+run that ended without one is first recorded with paint_heldout.py --record-interrupted), and both records must be the
+ones the committed runs list names (score.py runs-list, pushed after every held-out build and paint run).
 
 --record-stopped (held-out): a marked evaluation that has ended (its process is gone) without a score, because its score
 step failed or it left no receipt, is recorded once in its folder (evaluate-stopped.json: the reason and the receipt's
@@ -190,6 +196,9 @@ def main():
                          'a paint run that ended without one with paint_heldout.py --record-interrupted')
         if made_from != sha_file(record_path):
             parser.error('the paint record was made from another site record')
+        runs, _ = common.runs_list()  # statistics.oneRunRule: pushed after every build and paint, before any evaluation
+        if runs.get(f'{log[:8]}/{crossing}') != (sha_file(record_path), sha_file(score.paint_record(paint))):
+            parser.error('the site record or paint record is not the one the committed runs list names (score.py runs-list)')
     # Labels: everything is checked before the output folder is made.
     addendum_sha = common.labels_addendum(not args.rehearse, score.LABELS_ADDENDUM)
     if not args.rehearse and record.get('labelsAddendumSha256', 'missing') != addendum_sha:
@@ -254,18 +263,34 @@ def main():
         data = site / 'data' / log
         sweeps = site / 'shape' / f'shape-v2-{log}'
         name = f'{log[:8]}-{crossing}-{VARIANT}'
+        ann, poses = data / 'annotations.feather', data / 'city_SE3_egovehicle.feather'
+        profile = py + ['scripts/evaluation/metric_f_car_top.py', 'profile', *F_PROTOCOL,
+                        '--ground', str(grounded / 'ground.json'), '--suggestions', str(grounded / 'suggestions.json'),
+                        '--scene', name, '--annotations', str(ann), '--poses', str(poses),
+                        '--calibration', str(data / 'calibration/egovehicle_SE3_sensor.feather'),
+                        '--log-id', log, '--sweep-dir', str(sweeps / 'sweeps'), '--receipt', str(sweeps / 'receipt.json')]
         if shape and run('metric-f-rows', ['node', 'scripts/evaluation/metric-f.mjs', '--assembled', f'{assembled}/', '--grounded', f'{grounded}/',
                                            *F_PROTOCOL, '--scene', name, '--out', str(out / 'rows.json')]) \
-                and run('metric-f-profile', py + ['scripts/evaluation/metric_f_car_top.py', 'profile', *F_PROTOCOL,
-                                                  '--ground', str(grounded / 'ground.json'), '--suggestions', str(grounded / 'suggestions.json'),
-                                                  '--scene', name, '--annotations', str(data / 'annotations.feather'),
-                                                  '--poses', str(data / 'city_SE3_egovehicle.feather'),
-                                                  '--calibration', str(data / 'calibration/egovehicle_SE3_sensor.feather'),
-                                                  '--log-id', log, '--sweep-dir', str(sweeps / 'sweeps'), '--receipt', str(sweeps / 'receipt.json'),
-                                                  '--scoring-sweeps-from', str(grounded / 'ground.json'), '--out', str(out / 'profile.json')]) \
+                and run('metric-f-profile', profile + ['--scoring-sweeps-from', str(grounded / 'ground.json'), '--out', str(out / 'profile.json')]) \
                 and run('metric-f-score', py + ['scripts/evaluation/metric_f_car_top.py', 'score', *F_PROTOCOL, '--profile', str(out / 'profile.json'),
                                                 '--rows', str(out / 'rows.json'), '--scene', name, '--out', str(out / 'results.json')]):
             inputs['metric-f-results'] = out / 'results.json'
+            # Report only (metrics.FApproachSplit, the shape-v2 split addendum): a far-half shape scored on the near half,
+            # with the app shape result of each row next to it. A failed step here leaves only FApproachSplit not scored.
+            split, held = out / 'approach-split', [] if args.rehearse else ['--held-out-run', '--protocol-lock-sha256', args.protocol_lock_sha256]
+            split.mkdir()
+            shas = {f: sha_file(f) if f.is_file() else 'missing' for f in (grounded / 'ground.json', ann, poses)}  # missing: the step fails
+            if run('approach-split', py + ['scripts/california/car_shape.py', 'approach-split', '--ground', str(grounded / 'ground.json'),
+                                           '--ground-sha256', shas[grounded / 'ground.json'], '--annotations', str(ann), '--annotations-sha256', shas[ann],
+                                           '--poses', str(poses), '--poses-sha256', shas[poses], '--name', name,
+                                           '--output-dir', str(split), '--out-root', str(site / 'shape'), *held]) \
+                    and run('approach-rows', ['node', 'scripts/evaluation/metric-f.mjs', '--assembled', f'{assembled}/', '--grounded', f'{grounded}/',
+                                              *F_PROTOCOL, '--scene', name, '--eval-shape', str(split / f'{name}.json'), '--out', str(split / 'rows.json')]) \
+                    and run('approach-profile', profile + ['--scoring-sweeps-from', str(split / f'{name}.json'), '--out', str(split / 'profile.json')]) \
+                    and run('approach-score', py + ['scripts/evaluation/metric_f_car_top.py', 'score', *F_PROTOCOL, '--profile', str(split / 'profile.json'),
+                                                    '--rows', str(split / 'rows.json'), '--scene', name, '--app-results', str(out / 'results.json'),
+                                                    '--out', str(split / 'results.json')]):
+                inputs['approach-split-results'] = split / 'results.json'
         k_sweeps = ['--sweep-dir', str(sweeps / 'sweeps'), '--receipt', str(sweeps / 'receipt.json')] if shape else []
         if run('metric-k', py + ['scripts/evaluation/metric_k.py', '--grounded', str(grounded), '--assembled', str(assembled),
                                  '--prepared', str(prepared), '--out', str(out / 'metric-k.json'), *k_sweeps]):

@@ -13,6 +13,7 @@ import importlib
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -280,7 +281,7 @@ class MetricHWithE(unittest.TestCase):
 
 def site_score(name, e='not scored', d='not scored', mode='rehearsal (development site)', role='development', **extra):
     log, crossing = name.split('/')
-    metrics = {m: {'outcome': 'not scored', 'reason': 'test'} for m in ('A', 'B', 'C', 'F', 'F0', 'H', 'I', 'J', 'K')}
+    metrics = {m: {'outcome': 'not scored', 'reason': 'test'} for m in ('A', 'B', 'C', 'F', 'F0', 'FApproachSplit', 'H', 'I', 'J', 'K')}
     metrics['D'] = {'outcome': d, **({'errors': [{'feature': 'L', 'errorPx': 2.0}]} if d != 'not scored' else {})}
     metrics['E'] = {'outcome': e}
     doc = {'mode': mode, 'site': {'logId': log + '-0000', 'crossingId': crossing, 'role': role}, 'protocolLockSha256': None,
@@ -330,22 +331,26 @@ HELD = 'held-out'
 class HeldOutSummary(Tmp):
     """Held-out completeness: paint record for every site; with an anchored addendum, D/E as the label manifest lists."""
 
-    def run_summary(self, docs, manifest=None, addendum=ADDENDUM_SHA, lost=(set(), '00' * 32), runs=None):
+    def run_summary(self, docs, manifest=None, addendum=ADDENDUM_SHA, lost=(set(), '00' * 32), runs=None, listed=None):
         split = [{'logId': d['site']['logId'], 'crossingId': d['site']['crossingId'], 'role': 'held-out-blocked-test'} for d in docs]
+        if listed is None:  # the committed runs list names each score's own site record and paint record
+            listed = {f"{d['site']['logId'][:8]}/{d['site']['crossingId']}": ('22' * 32, '00' * 32) for d in docs}
         with mock.patch.object(common, 'preflight', return_value={}), \
                 mock.patch.object(common, 'lost_sites', return_value=lost), \
                 mock.patch.object(common, 'split_sites', return_value=split), \
                 mock.patch.object(common, 'labels_addendum', return_value=addendum), \
                 mock.patch.object(common, 'labels_manifest', return_value=(manifest or {}, '99' * 32)), \
+                mock.patch.object(common, 'runs_list', return_value=(listed, 'aa' * 32)), \
                 mock.patch.object(score, 'one_run', side_effect=runs or (lambda path, doc: [])):
             return score.summarize(argparse.Namespace(scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
 
     def doc(self, name, labels=None, failed=(), paint=True, anchors=None):
-        inputs = {'failedSteps': list(failed), **({'paint': {'file': 'p', 'sha256': '00' * 32}} if paint else {}),
+        inputs = {'failedSteps': list(failed), 'siteRecord': {'file': 's', 'sha256': '22' * 32},
+                  **({'paint': {'file': 'p', 'sha256': '00' * 32}} if paint else {}),
                   **({'labelsDE': {'labelsSha256': labels}} if labels else {})}
         return site_score(name, mode=HELD, role='held-out-blocked-test', labelsAddendumSha256=ADDENDUM_SHA, inputs=inputs,
                           scorer={'sha256': PINNED['sha256']},
-                          anchors=anchors or {'lostSiteList': '00' * 32, 'labelsManifest': '99' * 32})
+                          anchors=anchors or {'lostSiteList': '00' * 32, 'labelsManifest': '99' * 32, 'runs': 'aa' * 32})
 
     def test_complete_inputs_pass(self):
         got = self.run_summary([self.doc('aaaaaaaa/1', LABELS), self.doc('bbbbbbbb/2'), self.doc('cccccccc/3', failed=['labels-de'])],
@@ -382,15 +387,23 @@ class HeldOutSummary(Tmp):
             self.run_summary([self.doc('aaaaaaaa/1')], addendum=None)
         self.assertIn('labels addendum', str(stop.exception))
 
-    def test_a_manifest_or_lost_list_changed_after_scoring_is_refused(self):
+    def test_a_manifest_lost_list_or_runs_list_changed_after_scoring_is_refused(self):
         # The reviewer's probe: a D fail removed by editing the manifest, a miss removed by adding it to the lost list.
-        for name, anchors in (('manifest', {'lostSiteList': '00' * 32, 'labelsManifest': '98' * 32}),
-                              ('lost list', {'lostSiteList': '01' * 32, 'labelsManifest': '99' * 32}), ('none recorded', None)):
+        for name, anchors in (('manifest', {'lostSiteList': '00' * 32, 'labelsManifest': '98' * 32, 'runs': 'aa' * 32}),
+                              ('lost list', {'lostSiteList': '01' * 32, 'labelsManifest': '99' * 32, 'runs': 'aa' * 32}),
+                              ('runs list', {'lostSiteList': '00' * 32, 'labelsManifest': '99' * 32, 'runs': 'ab' * 32}),
+                              ('no runs list', {'lostSiteList': '00' * 32, 'labelsManifest': '99' * 32}), ('none recorded', None)):
             docs = [self.doc('aaaaaaaa/1')]
             docs[0]['anchors'] = anchors
             with self.subTest(name), self.assertRaises(SystemExit) as stop:
                 self.run_summary(docs, {'aaaaaaaa/1': None})
-            self.assertIn('lost-site list or label manifest', str(stop.exception))
+            self.assertIn('lost-site list, label manifest or runs list', str(stop.exception))
+
+    def test_a_score_of_another_site_or_paint_record_than_the_runs_list_is_refused(self):
+        for name, listed in (('site record', ('23' * 32, '00' * 32)), ('paint record', ('22' * 32, '01' * 32)), ('not listed', None)):
+            with self.subTest(name), self.assertRaises(SystemExit) as stop:
+                self.run_summary([self.doc('aaaaaaaa/1')], {'aaaaaaaa/1': None}, listed={'aaaaaaaa/1': listed} if listed else {})
+            self.assertIn('than the committed runs list names', str(stop.exception))
 
     def test_a_score_from_another_score_py_is_refused(self):
         docs = [self.doc('aaaaaaaa/1')]
@@ -648,21 +661,31 @@ class HeldOutSiteScore(Tmp):
         (site / 'site-stopped.json').write_text(json.dumps({'mode': HELD, 'site': SITE, 'outcome': 'stopped', 'labelsAddendumSha256': None,
                                                             'lostSiteList': LOST, 'stopped': {'step': 'download', 'reason': 'test'}}))
         args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
-                                  metric_k=None, paint=None, evaluation_stopped=None)
+                                  metric_k=None, paint=None, evaluation_stopped=None, approach_split_results=None)
+        listed = {NAME: (common.sha_file(site / 'site-stopped.json'), '00' * 32)}
         with mock.patch.object(common, 'preflight', return_value={}), \
-                mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)):
+                mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)), \
+                mock.patch.object(common, 'runs_list', return_value=(listed, 'aa' * 32)):
             with mock.patch.object(common, 'labels_addendum', return_value=ADDENDUM_SHA), self.assertRaises(SystemExit):
                 score.score_site(args)
             with mock.patch.object(common, 'labels_addendum', return_value=None):
                 got = score.score_site(args)
             self.assertEqual((got['labelsAddendumSha256'], got['metrics']['D']['outcome']), (None, 'not scored'))
-            self.assertEqual(got['anchors'], {'lostSiteList': '00' * 32, 'labelsManifest': None})
+            self.assertEqual(got['anchors'], {'lostSiteList': '00' * 32, 'labelsManifest': None, 'runs': 'aa' * 32})
+        for other in ({NAME: ('11' * 32, '00' * 32)}, {}):  # the runs list names another site record, or not this site
+            with self.subTest(other=other), mock.patch.object(common, 'preflight', return_value={}), \
+                    mock.patch.object(common, 'labels_addendum', return_value=None), \
+                    mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)), \
+                    mock.patch.object(common, 'runs_list', return_value=(other, 'aa' * 32)), self.assertRaises(SystemExit) as stop:
+                score.score_site(args)
+            self.assertIn('committed runs list names', str(stop.exception))
         with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'labels_addendum', return_value=None), \
                 mock.patch.object(common, 'lost_sites', return_value=({'aaaaaaaa/1'}, '00' * 32)), self.assertRaises(SystemExit) as stop:
             score.score_site(args)
         self.assertIn('lost-site list', str(stop.exception))
         with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'labels_addendum', return_value=None), \
-                mock.patch.object(common, 'lost_sites', return_value=(set(), '11' * 32)), self.assertRaises(SystemExit) as stop:
+                mock.patch.object(common, 'lost_sites', return_value=(set(), '11' * 32)), \
+                mock.patch.object(common, 'runs_list', return_value=(listed, 'aa' * 32)), self.assertRaises(SystemExit) as stop:
             score.score_site(args)
         self.assertIn('built under another lost-site list', str(stop.exception))
 
@@ -690,9 +713,12 @@ class StoppedSiteScore(Tmp):
 
     def score(self, addendum=None, **over):
         args = argparse.Namespace(**{**dict(site=str(self.site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
-                                            metric_k=None, paint=None, evaluation_stopped=str(self.stop)), **over})
+                                            metric_k=None, paint=None, evaluation_stopped=str(self.stop), approach_split_results=None), **over})
+        listed = (common.sha_file(self.site / 'build-receipt.json'),
+                  common.sha_file(score.paint_record(Path(args.paint))) if args.paint else '00' * 32)
         with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'labels_addendum', return_value=addendum), \
                 mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)), \
+                mock.patch.object(common, 'runs_list', return_value=({NAME: listed}, 'aa' * 32)), \
                 mock.patch.object(common, 'labels_manifest', return_value=({NAME: LABELS}, '99' * 32)), \
                 mock.patch.object(score, 'LABELS_ADDENDUM', self.addendum):
             return score.score_site(args)
@@ -705,7 +731,8 @@ class StoppedSiteScore(Tmp):
                 metrics = got['metrics']
                 self.assertEqual({k: v['outcome'] for k, v in metrics.items()},
                                  {'A': 'not scored', 'B': 'fail', 'C': 'not scored', 'D': 'not scored', 'E': 'not scored', 'F': 'not scored',
-                                  'F0': 'not scored', 'H': 'fail', 'I': 'not scored', 'J': 'not scored', 'K': 'not scored'})
+                                  'F0': 'not scored', 'FApproachSplit': 'not scored', 'H': 'fail', 'I': 'not scored', 'J': 'not scored',
+                                  'K': 'not scored'})
                 self.assertIn('the evaluation stopped: the score step failed', metrics['H']['reason'])
                 self.assertEqual(metrics['D']['reason'], de_reason)
                 self.assertEqual(got['inputs']['evaluationStopped']['sha256'], common.sha_file(self.stop))
@@ -725,7 +752,8 @@ class StoppedSiteScore(Tmp):
 
     def test_other_inputs_rehearsal_or_another_site_record_are_refused(self):
         self.make()
-        for over in ({'failed_step': ['baseline']}, {'baseline': 'x'}, {'metric_f_results': 'x'}, {'metric_k': 'x'}, {'labels_de': 'x'}):
+        for over in ({'failed_step': ['baseline']}, {'baseline': 'x'}, {'metric_f_results': 'x'}, {'metric_k': 'x'}, {'labels_de': 'x'},
+                     {'approach_split_results': 'x'}):
             with self.subTest(over=over), self.assertRaises(SystemExit):
                 self.score(**over)
         self.make(mode='rehearsal (development site)')
@@ -756,12 +784,17 @@ class HeldOutDriver(Tmp):
                    mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)),
                    mock.patch.object(common, 'de_code', return_value={'file': 'de-scorer.py', 'sha256': '00' * 32}),
                    mock.patch.object(common, 'wait_for_origin', return_value=True),  # no network in tests
+                   mock.patch.object(common, 'runs_list', side_effect=lambda: self.listed()),
                    mock.patch.object(score, 'LABELS_ADDENDUM', self.addendum),
                    mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(self.coord)})]
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
         common.run_marker('build', SITE['logId'], SITE['crossingId'], self.site)
+
+    def listed(self):
+        """The committed runs list: this site's record and the marked paint record."""
+        return {NAME: (common.sha_file(self.record), common.sha_file(score.paint_record(self.paint)))}, 'aa' * 32
 
     def built(self):
         self.site.mkdir()
@@ -823,6 +856,15 @@ class EvaluateHeldOut(HeldOutDriver):
         self.refused('made from another site record')
         stopped.unlink()
         self.refused('no single paint record')
+
+    def test_a_record_the_runs_list_does_not_name_is_refused(self):
+        site, paint = common.sha_file(self.record), common.sha_file(score.paint_record(self.paint))
+        for listed in ({NAME: ('00' * 32, paint)}, {NAME: (site, '00' * 32)}, {}):
+            with self.subTest(listed=listed), mock.patch.object(self, 'listed', return_value=(listed, 'aa' * 32)):
+                self.refused('not the one the committed runs list names')
+        with mock.patch.object(self, 'listed', side_effect=SystemExit('the held-out runs list is not committed')):
+            self.assertIn('not committed', self.evaluate()[1])  # a runs list that is missing or wrong stops before the marker
+        self.assertFalse(common.marker_path('evaluate', SITE['logId'], SITE['crossingId']).exists())
 
     def test_labels_outside_the_coordinator_only_folder_are_refused(self):
         self.refused('must lie inside the coordinator-only folder', labels=self.write('labels.json', {'labels': 1}))  # same sha256
@@ -970,6 +1012,45 @@ class EvaluateHeldOut(HeldOutDriver):
         self.assertFalse(self.out.exists())
 
 
+    def test_the_approach_split_runs_after_metric_f_and_fails_only_itself(self):
+        (self.site / 'grounded').mkdir()
+        (self.site / 'grounded/ground.json').write_text('{}')
+        for fail in (None, 'scripts/california/car_shape.py'):
+            calls = []
+
+            def run(argv, **_):
+                calls.append(argv)
+                if '--labels' in argv:
+                    Path(argv[argv.index('--out') + 1]).write_text(json.dumps(de_doc(kind='other')))
+                return subprocess.CompletedProcess(argv, 1 if fail in argv else 0, '', 'refused' if fail in argv else '')
+            for marker in common.RUN_MARKERS.glob('evaluate-*'):
+                marker.unlink()
+            with self.subTest(fail=fail), mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+                out = self.out = self.dir / '.local' / f'eval-{bool(fail)}'
+                code, err = self.evaluate()
+                self.assertEqual(code, 0, err)
+                receipt = json.loads((out / 'evaluate-receipt.json').read_bytes())
+                split = next(a for a in calls if 'scripts/california/car_shape.py' in a)
+                self.assertEqual(split[split.index('--protocol-lock-sha256') + 1], LOCK)
+                self.assertIn('--held-out-run', split)
+                self.assertEqual(split[split.index('--out-root') + 1], str(self.site / 'shape'))
+                self.assertEqual(split[split.index('--annotations-sha256') + 1], 'missing')  # no data file: the step fails, never the run
+                pairs = list(zip(calls[-1], calls[-1][1:]))
+                if fail:
+                    self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['approach-split', 'labels-de'])
+                    self.assertIn(('--failed-step', 'approach-split'), pairs)
+                    self.assertNotIn('--approach-split-results', calls[-1])
+                    self.assertFalse([a for a in calls if '--eval-shape' in a])
+                else:
+                    self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['labels-de'])
+                    names = [x['step'] for x in receipt['steps']]
+                    self.assertEqual(names[names.index('metric-f-score') + 1:names.index('metric-k')],
+                                     ['approach-split', 'approach-rows', 'approach-profile', 'approach-score'])
+                    self.assertIn(('--approach-split-results', str(out / 'approach-split/results.json')), pairs)
+                    scored = next(a for a in calls if '--app-results' in a)
+                    self.assertEqual(scored[scored.index('--app-results') + 1], str(out / 'results.json'))
+
+
 class RecordInterrupted(HeldOutDriver):
     """paint_heldout.py and run_heldout.py --record-interrupted: a marked run that ended without its record."""
 
@@ -1090,6 +1171,238 @@ class StopsAndDownloads(Tmp):
         with mock.patch('subprocess.run', self.fake_curl(headers, body)):
             _, receipt = common.fetch('https://example.invalid/obj', self.dir / 'object', 'o.bin', 1000, {'bytes': 6, 'etag': md5})
         self.assertEqual((receipt['bytes'], receipt['md5Check']), (6, 'single-part: MD5 == ETag'))
+
+
+class ApproachSplitScore(Tmp):
+    """metrics.FApproachSplit: report only, checked against this site's ground.json and the metric F results given."""
+
+    def setUp(self):
+        super().setUp()
+        (self.dir / 'site/grounded').mkdir(parents=True)
+        (self.dir / 'f/approach-split').mkdir(parents=True)
+        self.protocol = self.write('protocol.json', {'p': 4})
+        ground = self.write('site/grounded/ground.json', {'g': 1})
+        self.ground = common.sha_file(ground)
+        self.write('site/build-receipt.json', {'mode': 'rehearsal (development site)', 'site': {**SITE, 'role': 'development'},
+                                               'outcome': 'built-shape', 'outputs': {common.rel(ground): self.ground}})
+        rows = self.write('f/rows.json', {'groundSha256': self.ground})
+        self.results = self.write('f/results.json', {'protocolSha256': common.sha_file(self.protocol), 'shapeV1': {},
+                                                     'inputs': {'rows': {'file': 'rows.json', 'sha256': common.sha_file(rows)}},
+                                                     'heights': {'child': {'error': 'test'}, 'adult': {'error': 'test'}}})
+
+    def split(self, ground=None, app=None, protocol=None, drop=()):
+        rows = self.write('f/approach-split/rows.json', {'groundSha256': ground or self.ground})
+        child = {'shapeV1': {'counts': {'rows': 3, 'boxBlocked': 3, 'shapeBlocked': 2},
+                             'shapeBlockedClasses': {'supported': 2, 'likelyFalse': 0},
+                             'lostSupported': {'count': 1, 'boxBlockedSupported': 2}},
+                 'rows': [{'state': 'blocked', 'appShape': {'state': 'blocked'}},
+                          {'state': 'unknown', 'reason': 'height-not-proven', 'appShape': {'state': 'blocked'}},
+                          {'state': 'blocked', 'appShape': {'state': 'unknown', 'reason': 'height-not-proven'}}]}
+        doc = {'protocolSha256': protocol or common.sha_file(self.protocol),
+               'inputs': {'rows': {'file': 'rows.json', 'sha256': common.sha_file(rows)}},
+               'approachSplit': {'K': 30, 'h': 15, 'farRangeM': [17.0, 29.0], 'nearRangeM': [5.0, 16.0], 'droppedNearHalf': [], 'refusal': None},
+               'appResults': {'file': 'results.json', 'sha256': app or common.sha_file(self.results)},
+               'shapeV1': {'forcedUnresolved': None}, 'heights': {'child': child, 'adult': {'error': 'no rows'}}}
+        for key in drop:
+            doc.pop(key)
+        return self.write('f/approach-split/results.json', doc)
+
+    def score(self, **over):
+        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, baseline=None,
+                                            metric_f_results=str(self.results), metric_k=None, paint=None, evaluation_stopped=None,
+                                            approach_split_results=None), **over})
+        with mock.patch.object(common, 'labels_addendum', return_value=None), mock.patch.object(score, 'F_PROTOCOL', self.protocol):
+            return score.score_site(args)
+
+    def test_reported_never_pass_or_fail_and_other_targets_unchanged(self):
+        plain = self.score()
+        got = self.score(approach_split_results=str(self.split()))
+        f = got['metrics']['FApproachSplit']
+        self.assertEqual((f['outcome'], f['K'], f['h'], f['refusal']), ('reported', 30, 15, None))
+        self.assertEqual(f['heights']['adult'], {'error': 'no rows'})
+        child = f['heights']['child']
+        self.assertEqual((child['shapeBlocked'], child['lostSupported'], child['boxBlockedSupported']), (2, 1, 2))
+        self.assertEqual((child['appBlockedApproachHeightNotProven'], child['approachBlockedAppNotBlocked']), (1, 1))
+        self.assertEqual({k: v for k, v in got['metrics'].items() if k != 'FApproachSplit'},
+                         {k: v for k, v in plain['metrics'].items() if k != 'FApproachSplit'})
+        self.assertEqual(plain['metrics']['FApproachSplit'], {'outcome': 'not scored', 'reason': 'no approach-split results'})
+
+    def test_a_failed_step_is_named_and_leaves_only_this_not_scored(self):
+        got = self.score(failed_step=['approach-score'])
+        self.assertEqual(got['metrics']['FApproachSplit']['reason'], 'approach-split step failed: approach-score')
+        self.assertEqual(got['inputs']['failedSteps'], ['approach-score'])
+        self.assertEqual(got['metrics']['F'], self.score()['metrics']['F'])
+        self.assertIn('no metric F results', self.score(metric_f_results=None)['metrics']['FApproachSplit']['reason'])
+
+    def test_results_for_another_scene_protocol_or_app_results_are_refused(self):
+        for over, why in (({'ground': '00' * 32}, "not this site's"), ({'app': '00' * 32}, 'next to other metric F results'),
+                          ({'protocol': '00' * 32}, 'not an approach-split result'), ({'drop': ('approachSplit',)}, 'not an approach-split result')):
+            with self.subTest(over=over), self.assertRaises(SystemExit) as stop:
+                self.score(approach_split_results=str(self.split(**over)))
+            self.assertIn(why, str(stop.exception))
+        with self.assertRaises(SystemExit) as stop:
+            self.score(metric_f_results=None, approach_split_results=str(self.split()))
+        self.assertIn('needs the metric F results', str(stop.exception))
+
+    def test_the_summary_lists_it_apart_from_the_targets(self):
+        reported = {'outcome': 'reported', 'reason': 'report only', 'K': 30}
+        got = score.summarize(argparse.Namespace(scores=[
+            self.write('s1.json', site_score('aaaaaaaa/1')),
+            self.write('s2.json', {**site_score('bbbbbbbb/2'), 'metrics': {**site_score('bbbbbbbb/2')['metrics'], 'FApproachSplit': reported}})]))
+        self.assertEqual(got['outcomes']['FApproachSplit'], {'aaaaaaaa/1': 'not scored', 'bbbbbbbb/2': 'reported'})
+        self.assertEqual(got['FApproachSplit']['sites'], {'bbbbbbbb/2': reported})
+        self.assertEqual(got['reasons']['FApproachSplit'], {'aaaaaaaa/1': 'test'})
+
+
+class Preflight(Tmp):
+    """The approved lock is the candidate Sean was shown, its record names it, and the lock anchor is written once."""
+
+    class Reached(Exception):
+        pass
+
+    def setUp(self):
+        super().setUp()
+        self.lock_path, self.record_path = self.dir / 'protocol-lock.json', self.dir / 'protocol-lock.record.json'
+        shown = {'status': common.CANDIDATE_STATUS, 'pipeline': {'commit': 'c' * 40}, 'approval': None, 'x': 1.5}
+        self.candidate = common.sha((json.dumps(shown, indent=1, ensure_ascii=False) + '\n').encode())
+        self.lock = {**shown, 'status': 'LOCKED', 'approval': {'by': 'Sean', 'utc': 't', 'how': 'chat', 'candidateSha256': self.candidate,
+                                                               'recordedUtc': 't'}}
+        for patcher in (mock.patch.object(common, 'LOCK_PATH', self.lock_path), mock.patch.object(common, 'LOCK_RECORD', self.record_path)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_preflight(self, lock=None, record=True, record_sha=None):
+        raw = (json.dumps(lock or self.lock, indent=1, ensure_ascii=False) + '\n').encode()
+        self.lock_path.write_bytes(raw)
+        self.record_path.unlink(missing_ok=True)
+        if record:
+            self.write(self.record_path.name, {'file': common.rel(self.lock_path), 'sha256': record_sha or common.sha(raw),
+                                               'candidateSha256': self.candidate})
+        with mock.patch.object(common, 'git', side_effect=self.Reached):  # the git checks come after the lock checks
+            return common.preflight(common.sha(raw))
+
+    def test_only_the_shown_candidate_with_its_record_passes_the_lock_checks(self):
+        self.assertRaises(self.Reached, self.run_preflight)
+        for lock, why in (({**self.lock, 'x': 2.5}, 'differs from the candidate its approval names'),
+                          ({**self.lock, 'approval': {**self.lock['approval'], 'how': ''}}, 'has no approval'),
+                          ({**self.lock, 'approval': {**self.lock['approval'], 'candidateSha256': '00' * 32}}, 'differs from the candidate')):
+            with self.subTest(why=why), self.assertRaises(SystemExit) as stop:
+                self.run_preflight(lock)
+            self.assertIn(why, str(stop.exception))
+        for over in ({'record': False}, {'record_sha': '00' * 32}):
+            with self.subTest(over=over), self.assertRaises(SystemExit) as stop:
+                self.run_preflight(**over)
+            self.assertIn('is missing or names another lock', str(stop.exception))
+
+    def test_the_lock_anchor_is_read_as_a_written_once_anchor(self):
+        raw = (json.dumps(self.lock, indent=1, ensure_ascii=False) + '\n').encode()
+        self.lock_path.write_bytes(raw)
+        self.write(self.record_path.name, {'file': common.rel(self.lock_path), 'sha256': common.sha(raw), 'candidateSha256': self.candidate})
+        with mock.patch.object(common, 'git', return_value=''), mock.patch.object(common, 'fetch_origin'), \
+                mock.patch.object(common.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                mock.patch.object(common, 'committed', return_value=({'protocolLockSha256': '00' * 32}, '11' * 32)) as anchor, \
+                self.assertRaises(SystemExit) as stop:
+            common.preflight(common.sha(raw))
+        self.assertIn('names another lock', str(stop.exception))
+        self.assertEqual(anchor.call_args[0][0], common.ANCHOR_REL)
+
+    def test_the_labels_addendum_must_be_the_one_the_lock_pins(self):
+        def preflight(labels, addendum):
+            shown = {'status': common.CANDIDATE_STATUS, 'approval': None, 'labels': labels, 'sceneBuilder': {'code': {}},
+                     'pipeline': {'commit': 'c' * 40, 'scoringCode': {}, 'm7Code': {}}}
+            self.candidate = common.sha((json.dumps(shown, indent=1, ensure_ascii=False) + '\n').encode())
+            lock = {**shown, 'status': 'LOCKED', 'approval': {**self.lock['approval'], 'candidateSha256': self.candidate}}
+            raw = (json.dumps(lock, indent=1, ensure_ascii=False) + '\n').encode()
+            self.lock_path.write_bytes(raw)
+            self.record_path.unlink(missing_ok=True)
+            self.write(self.record_path.name, {'file': common.rel(self.lock_path), 'sha256': common.sha(raw), 'candidateSha256': self.candidate})
+            with mock.patch.object(common, 'git', return_value=''), mock.patch.object(common, 'fetch_origin'), \
+                    mock.patch.object(common.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                    mock.patch.object(common, 'committed', return_value=({'protocolLockSha256': common.sha(raw)}, '11' * 32)), \
+                    mock.patch.object(common, 'labels_addendum', return_value=addendum):
+                return common.preflight(common.sha(raw))
+        pinned = {'addendum': {'path': '$PAO_LABELS_COORDINATOR_DIR/x', 'sha256': ADDENDUM_SHA}}  # '$': not re-hashed here
+        self.assertEqual(preflight(pinned, ADDENDUM_SHA)['labels'], pinned)
+        self.assertEqual(preflight({'addendum': None, 'noAddendum': 'Sean, in chat: run M7 without D and E'}, None)['labels']['addendum'], None)
+        for labels, addendum in ((pinned, None), (pinned, '44' * 32), ({'addendum': None, 'noAddendum': ' '}, None),
+                                 ({'addendum': None}, None), ({}, None), ({'addendum': None, 'noAddendum': 'yes'}, ADDENDUM_SHA)):
+            with self.subTest(labels=labels, addendum=addendum), self.assertRaises(SystemExit) as stop:
+                preflight(labels, addendum)
+            self.assertIn('the one the lock pins', str(stop.exception))
+
+
+class RunsList(Tmp):
+    """statistics.oneRunRule: the committed runs list (common.runs_list) and how score.py runs-list makes it."""
+
+    OTHER = {'logId': 'bbbbbbbb-0000-0000-0000-000000000000', 'crossingId': '2', 'role': 'held-out-control'}
+
+    def entry(self, site=SITE, **over):
+        return {'logId': site['logId'], 'crossingId': site['crossingId'], 'siteRecordSha256': '11' * 32, 'paintRecordSha256': '22' * 32, **over}
+
+    def committed(self, runs, lost=frozenset()):
+        with mock.patch.object(common, 'committed', return_value=({'runs': runs}, 'cc' * 32)), \
+                mock.patch.object(common, 'split_sites', return_value=[SITE, self.OTHER, {**SITE, 'logId': 'cccccccc', 'role': 'development'}]), \
+                mock.patch.object(common, 'lost_sites', return_value=(set(lost), '00' * 32)):
+            return common.runs_list()
+
+    def test_a_runs_list_naming_each_held_out_site_once_is_read(self):
+        got = self.committed([self.entry(), self.entry(self.OTHER)])
+        self.assertEqual(got, ({NAME: ('11' * 32, '22' * 32), 'bbbbbbbb/2': ('11' * 32, '22' * 32)}, 'cc' * 32))
+        self.assertEqual(self.committed([self.entry()], lost={'bbbbbbbb/2'})[0], {NAME: ('11' * 32, '22' * 32)})  # a lost site is left out
+
+    def test_a_wrong_entry_is_refused(self):
+        cases = {'extra key': [self.entry(note='x'), self.entry(self.OTHER)],
+                 'missing key': [{k: v for k, v in self.entry().items() if k != 'paintRecordSha256'}, self.entry(self.OTHER)],
+                 'not a sha256': [self.entry(siteRecordSha256='xyz'), self.entry(self.OTHER)],
+                 'a number': [self.entry(crossingId=1), self.entry(self.OTHER)],
+                 'twice': [self.entry(), self.entry(), self.entry(self.OTHER)], 'not a list': {'x': 1}}
+        for name, runs in cases.items():
+            with self.subTest(name), self.assertRaises(SystemExit) as stop:
+                self.committed(runs)
+            self.assertIn('names a site once', str(stop.exception))
+
+    def test_a_missing_extra_lost_or_other_log_site_is_refused(self):
+        cases = {'missing': ([self.entry()], ()), 'lost': ([self.entry(), self.entry(self.OTHER)], {'bbbbbbbb/2'}),
+                 'development': ([self.entry(), self.entry(self.OTHER), self.entry({**SITE, 'logId': 'cccccccc'})], ()),
+                 'other log, same prefix': ([self.entry({**SITE, 'logId': 'aaaaaaaa-1111'}), self.entry(self.OTHER)], ())}
+        for name, (runs, lost) in cases.items():
+            with self.subTest(name), self.assertRaises(SystemExit) as stop:
+                self.committed(runs, lost)
+            self.assertIn('every held-out site minus the lost-site list once', str(stop.exception))
+
+    def make(self, build=('build-receipt.json',), paint=('paint-receipt.json',), made_from=None):
+        with mock.patch.object(common, 'RUN_MARKERS', self.dir / 'markers'):
+            for step, files in (('build', build), ('paint', paint)):
+                if files is None:
+                    continue
+                folder = self.dir / step
+                common.run_marker(step, SITE['logId'], SITE['crossingId'], folder)
+                folder.mkdir()
+                for f in files:
+                    self.write(f'{step}/{f}', {'step': step, 'siteRecord': {'sha256': made_from or 'x'}})
+            if made_from is None and paint and build:  # made from the one site record
+                record = next((self.dir / 'build').iterdir())
+                self.write(f'paint/{paint[0]}', {'siteRecord': {'sha256': common.sha_file(record)}})
+            with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'held_out_names', return_value={NAME: SITE}):
+                return score.runs_list(LOCK)
+
+    def test_score_py_lists_the_marked_records(self):
+        got = self.make(build=('site-stopped.json',), paint=('paint-stopped.json',))
+        self.assertEqual(got, {'runs': [{'logId': SITE['logId'], 'crossingId': SITE['crossingId'],
+                                         'siteRecordSha256': common.sha_file(self.dir / 'build/site-stopped.json'),
+                                         'paintRecordSha256': common.sha_file(self.dir / 'paint/paint-stopped.json')}]})
+
+    def test_score_py_refuses_missing_doubled_or_mismatched_records(self):
+        for name, kw in {'no runs': dict(build=None, paint=None), 'no paint run': dict(paint=None), 'no paint record': dict(paint=()),
+                         'two site records': dict(build=('build-receipt.json', 'site-stopped.json'))}.items():
+            with self.subTest(name), self.assertRaises(SystemExit) as stop:
+                self.make(**kw)
+            self.assertIn(f'without one marked site record and one marked paint record (run or record them first): [{NAME!r}]', str(stop.exception))
+            shutil.rmtree(self.dir)
+            self.dir.mkdir()
+        with self.assertRaises(SystemExit) as stop:
+            self.make(made_from='00' * 32)
+        self.assertIn('made from another site record', str(stop.exception))
 
 
 class OutCannotEscapeLocal(unittest.TestCase):

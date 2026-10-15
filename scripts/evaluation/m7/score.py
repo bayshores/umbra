@@ -3,28 +3,37 @@
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py site --site <run_heldout.py folder> --out <new file> \
       [--baseline <pao-baseline.mjs --scene output>] [--metric-f-results <metric_f_car_top.py score output>] \
       [--metric-k <metric_k.py output>] [--paint <paint_heldout.py folder>] [--failed-step <evaluate_site.py step> ...] \
-      [--labels-de <the labels-addendum-pinned D/E scorer's output>]
+      [--labels-de <the labels-addendum-pinned D/E scorer's output>] [--approach-split-results <its score output>]
   ... score.py site --site <folder> --paint <folder> --evaluation-stopped <evaluate-stopped.json> --out <new file>
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py summary --scores <site score> ... --out <new file>
+  nice -n 10 python3 -I -B scripts/evaluation/m7/score.py runs-list --protocol-lock-sha256 <sha256>   (held-out, once)
 
 Every target is written as pass, fail or not scored (with its reason), using the locked rules (protocol-lock.json
 metrics, referenceBlocked and statistics). Each input is checked against the site: its ground.json sha256 (baseline,
 metric F rows, metric K; ground.json against the build receipt) or its site record sha256 (paint). A failed or missing
 step is handled like a site with no feasible frame for its targets: B cannot pass, H is a miss at a Blocked-test site,
-the rest are not scored; it never counts as a pass. D and E are scored only from the D/E file of the scorer that the labels
+the rest are not scored; it never counts as a pass. FApproachSplit (the approach-half split check) is report only: "reported" or
+"not scored", never a pass or a fail, and no other target reads it; its results must name this site's ground.json (through
+their rows) and the metric F results given here as their app results. D and E are scored only from the D/E file of the scorer that the labels
 addendum pins (protocol-lock labels.scoringCondition); without the addendum they are "not scored". A held-out site must
 have been built under the committed labels addendum anchor. A held-out summary must hold exactly the held-out sites minus
 the committed lost-site list, each with its paint record and, when the addendum is anchored, a D/E file for every site
 the committed label manifest lists with labels (unless its labels-de step failed or it has no built scene). Held-out,
 both steps run preflight (the approved lock, this score.py pinned in it); each site score records the sha256 of the
-lost-site list and label manifest it was made under (its build receipt and paint record must name the same lost-site
-list) and the summary refuses any other; and the summary takes each site's failed steps from the receipt of the one
+lost-site list, label manifest and runs list it was made under (its build receipt and paint record must name the same
+lost-site list, and both records must be the ones the runs list names) and the summary refuses any other or a site
+score of another site record or paint record; and the summary takes each site's failed steps from the receipt of the one
 evaluate_site.py run its marker names, on the site and paint folders their markers name (one run each). A marked evaluation that ended without a score (its score step failed, or it left no
 receipt) is scored by evaluate_site.py --record-stopped with --evaluation-stopped: handled like a site with no feasible
 frame (B cannot pass, H a miss at a Blocked-test site, D/E and the rest not scored), with A from its paint record; the
 summary checks it against that folder's evaluate-stopped.json. The summary lists by name every held-out site the label
 manifest lists with labels whose D or E is not scored, and every crossing whose paint run stopped after paint v4 wrote
 result.json (A not scored there; A is fail-only).
+
+runs-list (held-out, once, after every build and paint run has its record and before any evaluate_site.py run) writes the
+tracked anchor scripts/evaluation/m7/anchors/runs.json: each held-out site minus the lost-site list with the sha256 of the
+one site record and one paint record in the folders its build and paint markers name. Committed and pushed, it is
+written once like the other anchors, so a site run again after a marker was removed cannot be scored.
 
 The D/E file (labels.scoringCondition) is one JSON object with exactly the keys kind ("pao-m7-labels-de"), site
 ({logId, crossingId}: strings, and nothing else), groundSha256, labelsAddendumSha256, labels ({sha256} only: never a path),
@@ -60,6 +69,7 @@ BUILT = ('built-shape', 'built-box')
 LABELS_ADDENDUM = common.LABELS_ADDENDUM
 F_PROTOCOL = ROOT / '.local/evaluation/pao-accuracy/metric-f-shape-v2/protocol-v4.json'  # metricProtocols.F
 F_STEPS = ('metric-f-rows', 'metric-f-profile', 'metric-f-score')  # evaluate_site.py step names
+APPROACH_STEPS = ('approach-split', 'approach-rows', 'approach-profile', 'approach-score')  # metrics.FApproachSplit (report only)
 I_SAMPLES = 3000  # pao-baseline.mjs default placement samples (honesty counters)
 NOT_SCORED_DE = 'not scored: reference not precise enough (no labels addendum; labels.scoringCondition not met)'
 DE_KIND = 'pao-m7-labels-de'  # the addendum-pinned D/E scorer's output (labels.scoringCondition)
@@ -276,6 +286,28 @@ def metric_f0(results):
                    violations={k: v['violations'] for k, v in heights.items()}, fullObjectsChecked=full.get('resultsChecked'))
 
 
+def metric_f_approach(split):
+    """metrics.FApproachSplit, report only (the shape-v2 split addendum): an evaluation-only shape from the far half of
+    the approach, scored on the near half, each row next to the app shape result of the same row. Never a pass or a fail,
+    and no other target reads it."""
+    heights = {}
+    for k, h in split['heights'].items():
+        if 'error' in h:
+            heights[k] = {'error': h['error']}
+            continue
+        rep, rows = h['shapeV1'], h['rows']
+        heights[k] = {'rows': rep['counts']['rows'], 'boxBlocked': rep['counts']['boxBlocked'], 'shapeBlocked': rep['counts']['shapeBlocked'],
+                      'shapeBlockedClasses': rep['shapeBlockedClasses'],
+                      'boxBlockedSupported': rep['lostSupported']['boxBlockedSupported'], 'lostSupported': rep['lostSupported']['count'],
+                      'appBlockedApproachHeightNotProven': sum(r['appShape']['state'] == 'blocked' and r['state'] == 'unknown'
+                                                               and r.get('reason') == 'height-not-proven' for r in rows),
+                      'approachBlockedAppNotBlocked': sum(r['state'] == 'blocked' and r['appShape']['state'] != 'blocked' for r in rows)}
+    a = split['approachSplit']
+    return outcome('reported', 'report only: never a pass or a fail, and no other target reads it',
+                   **{k: a.get(k) for k in ('K', 'h', 'farRangeM', 'nearRangeM', 'droppedNearHalf', 'refusal')},
+                   forcedUnresolved=split['shapeV1'].get('forcedUnresolved'), heights=heights)
+
+
 def e_overrides(results, e_rows):
     """{(height, setbackM): E state} from the D/E file's E rows; each must be one of metric F's rows (the D/E scorer copies
     the setbacks from the same results file)."""
@@ -448,7 +480,8 @@ def score_site(args):
     name = f"{record['site']['logId'][:8]}/{record['site']['crossingId']}"
     if args.evaluation_stopped and not held_out:
         raise SystemExit('--evaluation-stopped is for held-out sites (evaluate_site.py --record-stopped)')
-    if args.evaluation_stopped and (failed or args.baseline or args.metric_f_results or args.metric_k or args.labels_de):
+    if args.evaluation_stopped and (failed or args.baseline or args.metric_f_results or args.metric_k or args.labels_de
+                                    or args.approach_split_results):
         raise SystemExit('--evaluation-stopped takes only --site, --paint and --out: the stopped evaluation\'s outputs are not used')
     stopped = evaluation_stopped(args.evaluation_stopped, record, record_path) if args.evaluation_stopped else None
     if held_out:
@@ -466,9 +499,13 @@ def score_site(args):
         if name in lost:
             raise SystemExit(f'{name} is on the committed lost-site list: it is not scored')
         entries, manifest_sha = common.labels_manifest(addendum_sha) if addendum_sha else ({}, None)
-        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha}  # the summary refuses any other
+        runs, runs_sha = common.runs_list()
+        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha, 'runs': runs_sha}  # the summary refuses any other
         if record.get('lostSiteList') != {'file': common.LOST_SITES_REL, 'sha256': lost_sha}:
             raise SystemExit('the site was built under another lost-site list than the committed one')
+        listed = runs.get(name, (None, None))
+        if listed[0] != sha_file(record_path) or args.paint and listed[1] != sha_file(paint_record(Path(args.paint).resolve())):
+            raise SystemExit('the site record or paint record is not the one the committed runs list names (one run per site)')
         if args.labels_de:
             labels_sha = entries[name]
             if labels_sha is None:
@@ -478,7 +515,8 @@ def score_site(args):
     if built and record.get('outputs', {}).get(rel(ground_path)) != ground_sha:
         raise SystemExit(f'{rel(ground_path)} differs from the sha256 its build receipt names')
     inputs = {'siteRecord': {'file': rel(record_path), 'sha256': sha_file(record_path)}, 'failedSteps': failed}
-    for name, value in (('baseline', args.baseline), ('metricFResults', args.metric_f_results), ('metricK', args.metric_k)):
+    for name, value in (('baseline', args.baseline), ('metricFResults', args.metric_f_results), ('metricK', args.metric_k),
+                        ('approachSplitResults', args.approach_split_results)):
         if value:
             inputs[name] = {'file': rel(value), 'sha256': sha_file(value)}
     de = None
@@ -503,7 +541,7 @@ def score_site(args):
     results = None
     if not built or stopped:  # handled like a site with no feasible frame
         metrics['B'] = outcome('fail', reason + '; B cannot pass')
-        for k in ('C', 'F', 'F0', 'I', 'J', 'K'):
+        for k in ('C', 'F', 'F0', 'FApproachSplit', 'I', 'J', 'K'):
             metrics[k] = not_scored(reason)
         metrics['H'] = outcome('fail', reason + '; a miss') if test_site else not_scored('not a Blocked-test site')
     else:
@@ -532,6 +570,19 @@ def score_site(args):
             else 'no recorded-vehicle LiDAR shape (built-box)'
         for name, rule in (('F', metric_f), ('F0', metric_f0)):
             metrics[name] = rule(results) if results else not_scored(f_missing)
+        if args.approach_split_results and not results:
+            raise SystemExit('--approach-split-results needs the metric F results it was scored next to')
+        if args.approach_split_results:
+            split = checked_input(args.approach_split_results, ground_sha, f_rows_sha, 'approach-split results')
+            if split.get('protocolSha256') != sha_file(F_PROTOCOL) or 'approachSplit' not in split:
+                raise SystemExit(f'{args.approach_split_results} is not an approach-split result under {rel(F_PROTOCOL)}')
+            if (split.get('appResults') or {}).get('sha256') != sha_file(args.metric_f_results):
+                raise SystemExit(f'{args.approach_split_results} was scored next to other metric F results')
+            metrics['FApproachSplit'] = metric_f_approach(split)
+        else:
+            a_failed = [x for x in failed if x in APPROACH_STEPS]
+            metrics['FApproachSplit'] = not_scored(f"approach-split step failed: {', '.join(a_failed)}" if a_failed
+                                                   else 'no approach-split results' if results else f_missing)
         if not test_site:
             metrics['H'] = not_scored('not a Blocked-test site')
         elif results and 'error' not in results['heights']['child']:
@@ -677,17 +728,22 @@ def summarize(args):
                                              and any(d['metrics'][m]['outcome'] == 'not scored' for m in ('D', 'E'))},
                            'note': 'listed by name: a site the label manifest lists with labels whose D or E is not scored'}
         # The anchor files a site score was made under must be the committed ones now (each is written once).
-        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha if addendum_sha else None}
+        listed, runs_sha = common.runs_list()
+        anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha if addendum_sha else None, 'runs': runs_sha}
         stale = [n for n, (_, d) in zip(names, scores) if d.get('anchors') != anchors]
         if stale:
-            raise SystemExit(f'held-out sites scored under another lost-site list or label manifest than the committed ones: {stale}')
+            raise SystemExit(f'held-out sites scored under another lost-site list, label manifest or runs list than the committed ones: {stale}')
+        unlisted = [n for n, (_, d) in zip(names, scores) if listed.get(n) != tuple(d['inputs'].get(k, {}).get('sha256') for k in ('siteRecord', 'paint'))]
+        if unlisted:
+            raise SystemExit(f'held-out site scores of another site record or paint record than the committed runs list names: {unlisted}')
         # One run of each step per site, and the failed steps taken from that run's receipt (never a bare claim).
         runs = {n: problems for n, (p, d) in zip(names, scores) if (problems := one_run(p, d))}
         if runs:
             raise SystemExit(f'held-out site scores that are not the one recorded run of each step: {runs}')
     by_metric = {m: {n: d['metrics'][m]['outcome'] for n, (_, d) in zip(names, scores)}
-                 for m in ('A', 'B', 'C', 'D', 'E', 'F', 'F0', 'H', 'I', 'J', 'K')}
-    reasons = {m: {n: d['metrics'][m].get('reason') for n, (_, d) in zip(names, scores) if d['metrics'][m].get('reason')}
+                 for m in ('A', 'B', 'C', 'D', 'E', 'F', 'F0', 'FApproachSplit', 'H', 'I', 'J', 'K')}
+    reasons = {m: {n: d['metrics'][m].get('reason') for n, (_, d) in zip(names, scores)
+                   if d['metrics'][m].get('reason') and d['metrics'][m]['outcome'] != 'reported'}
                for m in by_metric}
     # B pooled over the sites with a built scene.
     pooled = [pt for _, d in scores for pt in d['metrics']['B'].get('points', [])]
@@ -739,10 +795,36 @@ def summarize(args):
                           'very likely at least about 0.20 m, or a look-alike line fooled both estimators (counted against the app); '
                           'stoppedAfterMeasuringSites: the paint run stopped after paint v4 wrote result.json, so A is not scored there'},
             'labels': labels_info,
+            'FApproachSplit': {'note': 'report only (the shape-v2 split addendum): never a pass or a fail, and no other target reads it',
+                               'sites': {n: d['metrics']['FApproachSplit'] for n, (_, d) in zip(names, scores)
+                                         if d['metrics']['FApproachSplit']['outcome'] == 'reported'}},
             'statistics': {'unit': 'one intersection', 'miss': miss,
                            'falseBlocked': false_blocked},
             'gate': 'incomplete (the visibility gate is never recorded as passed)',
             'scorer': {'file': 'scripts/evaluation/m7/score.py', 'sha256': sha_file(__file__)}, 'finishedUtc': now()}
+
+
+def runs_list(lock_sha256):
+    """Held-out, once, after every build and paint run has its record and before any evaluate_site.py run: the runs
+    list (statistics.oneRunRule) of each held-out site minus the lost-site list, with the sha256 of the one site record
+    in the folder its build marker names and the one paint record in the folder its paint marker names (made from that
+    site record). Written to the tracked anchor path; commit and push it before any evaluation."""
+    common.preflight(lock_sha256)
+    runs, missing = [], []
+    for name, x in sorted(common.held_out_names().items()):
+        build, paint = (common.marked_folder(step, x['logId'], x['crossingId']) for step in ('build', 'paint'))
+        records = [build and [p for p in (ROOT / build / 'build-receipt.json', ROOT / build / 'site-stopped.json') if p.is_file()],
+                   paint and [p for p in (ROOT / paint / 'paint-receipt.json', ROOT / paint / 'paint-stopped.json') if p.is_file()]]
+        if not all(r and len(r) == 1 for r in records):
+            missing.append(name)
+            continue
+        site_sha, paint_sha = sha_file(records[0][0]), sha_file(records[1][0])
+        if load(records[1][0]).get('siteRecord', {}).get('sha256') != site_sha:
+            raise SystemExit(f'{name}: the paint record was made from another site record')
+        runs.append({'logId': x['logId'], 'crossingId': str(x['crossingId']), 'siteRecordSha256': site_sha, 'paintRecordSha256': paint_sha})
+    if missing:
+        raise SystemExit(f'held-out sites without one marked site record and one marked paint record (run or record them first): {missing}')
+    return {'runs': runs}
 
 
 def main():
@@ -753,6 +835,7 @@ def main():
     s.add_argument('--baseline')
     s.add_argument('--metric-f-results')
     s.add_argument('--metric-k')
+    s.add_argument('--approach-split-results', help='report only: metric_f_car_top.py score output of the approach split')
     s.add_argument('--paint')
     s.add_argument('--failed-step', action='append', help='an evaluate_site.py step that failed (repeatable)')
     s.add_argument('--labels-de', help='the D/E file of the scorer the labels addendum pins')
@@ -761,7 +844,13 @@ def main():
     m = sub.add_parser('summary')
     m.add_argument('--scores', nargs='+', required=True)
     m.add_argument('--out', required=True)
+    r = sub.add_parser('runs-list', help=f'held-out: write {common.RUNS_REL} (then commit and push it)')
+    r.add_argument('--protocol-lock-sha256', required=True)
     args = parser.parse_args()
+    if args.command == 'runs-list':
+        digest = write_new(ROOT / common.RUNS_REL, runs_list(args.protocol_lock_sha256), mode=0o644)
+        print(json.dumps({'out': common.RUNS_REL, 'sha256': digest, 'next': 'commit and push it before any evaluate_site.py run'}))
+        return
     out = Path(args.out).resolve()
     if not out.is_relative_to(ROOT / '.local') or os.path.lexists(out):
         parser.error('--out must be a new file under .local/')
