@@ -124,6 +124,18 @@ def de_problem(made, record, site, addendum_sha, labels_sha, results, hidden):
     return None
 
 
+def split_problem(made, ground, results, hidden):
+    """Why score.py would refuse the approach-split results (None: it accepts them), checked before they are passed on,
+    so a bad file fails only the approach-score step (FApproachSplit not scored, report only), never the score step."""
+    try:
+        score.approach_split(made, sha_file(ground), results)
+    except SystemExit as error:
+        return common.masked(f'score.py refuses the approach-split results: {error}', hidden)[-400:]
+    except Exception as error:  # noqa: BLE001 - any unreadable approach-split output fails only its own step
+        return f'score.py cannot read the approach-split results ({type(error).__name__})'
+    return None
+
+
 def record_stopped(parser, args):
     """--record-stopped: see the module docstring."""
     site = Path(args.site).resolve()
@@ -290,7 +302,11 @@ def main():
                     and run('approach-score', py + ['scripts/evaluation/metric_f_car_top.py', 'score', *F_PROTOCOL, '--profile', str(split / 'profile.json'),
                                                     '--rows', str(split / 'rows.json'), '--scene', name, '--app-results', str(out / 'results.json'),
                                                     '--out', str(split / 'results.json')]):
-                inputs['approach-split-results'] = split / 'results.json'
+                why = split_problem(split / 'results.json', grounded / 'ground.json', out / 'results.json', hidden)
+                if why is None:
+                    inputs['approach-split-results'] = split / 'results.json'
+                else:
+                    refuse(why)
         k_sweeps = ['--sweep-dir', str(sweeps / 'sweeps'), '--receipt', str(sweeps / 'receipt.json')] if shape else []
         if run('metric-k', py + ['scripts/evaluation/metric_k.py', '--grounded', str(grounded), '--assembled', str(assembled),
                                  '--prepared', str(prepared), '--out', str(out / 'metric-k.json'), *k_sweeps]):

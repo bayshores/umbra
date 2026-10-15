@@ -540,9 +540,12 @@ def preflight(lock_sha256):
             if sha_file(ROOT / path) != value:
                 raise SystemExit(f'{path} differs from its sha256 in the lock')
     # The labels addendum Sean approved inside the lock (labels.addendum), or none only with his recorded answer.
-    pinned, addendum = lock.get('labels', {}).get('addendum'), labels_addendum(True)
-    if (pinned or {}).get('sha256') != addendum or pinned is None and not str(lock['labels'].get('noAddendum') or '').strip():
-        raise SystemExit('the labels addendum differs from the one the lock pins (labels.addendum, or labels.noAddendum)')
+    labels = lock.get('labels') or {}
+    pinned, answer, addendum = labels.get('addendum'), labels.get('noAddendum'), labels_addendum(True)
+    if not (addendum is None and pinned is None and isinstance(answer, str) and answer.strip()
+            or addendum is not None and pinned == {'path': rel(LABELS_ADDENDUM), 'sha256': addendum} and answer is None):
+        raise SystemExit('the labels addendum differs from the one the lock pins (labels.addendum {path, sha256}, or null '
+                         'with the answer in labels.noAddendum)')
     return lock
 
 

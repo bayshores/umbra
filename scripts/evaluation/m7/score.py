@@ -308,6 +308,18 @@ def metric_f_approach(split):
                    forcedUnresolved=split['shapeV1'].get('forcedUnresolved'), heights=heights)
 
 
+def approach_split(path, ground_sha, metric_f_results):
+    """metrics.FApproachSplit from approach-split results scored next to metric_f_results; refused (SystemExit) when
+    they are for another scene, protocol or metric F results. evaluate_site.py runs this same check before it passes the
+    file on, so a refused file fails only its approach-score step (FApproachSplit not scored), never the score step."""
+    split = checked_input(path, ground_sha, f_rows_sha, 'approach-split results')
+    if split.get('protocolSha256') != sha_file(F_PROTOCOL) or 'approachSplit' not in split:
+        raise SystemExit(f'{path} is not an approach-split result under {rel(F_PROTOCOL)}')
+    if (split.get('appResults') or {}).get('sha256') != sha_file(metric_f_results):
+        raise SystemExit(f'{path} was scored next to other metric F results')
+    return metric_f_approach(split)
+
+
 def e_overrides(results, e_rows):
     """{(height, setbackM): E state} from the D/E file's E rows; each must be one of metric F's rows (the D/E scorer copies
     the setbacks from the same results file)."""
@@ -573,12 +585,7 @@ def score_site(args):
         if args.approach_split_results and not results:
             raise SystemExit('--approach-split-results needs the metric F results it was scored next to')
         if args.approach_split_results:
-            split = checked_input(args.approach_split_results, ground_sha, f_rows_sha, 'approach-split results')
-            if split.get('protocolSha256') != sha_file(F_PROTOCOL) or 'approachSplit' not in split:
-                raise SystemExit(f'{args.approach_split_results} is not an approach-split result under {rel(F_PROTOCOL)}')
-            if (split.get('appResults') or {}).get('sha256') != sha_file(args.metric_f_results):
-                raise SystemExit(f'{args.approach_split_results} was scored next to other metric F results')
-            metrics['FApproachSplit'] = metric_f_approach(split)
+            metrics['FApproachSplit'] = approach_split(args.approach_split_results, ground_sha, args.metric_f_results)
         else:
             a_failed = [x for x in failed if x in APPROACH_STEPS]
             metrics['FApproachSplit'] = not_scored(f"approach-split step failed: {', '.join(a_failed)}" if a_failed

@@ -902,7 +902,8 @@ class EvaluateHeldOut(HeldOutDriver):
             if '--labels' in argv:
                 Path(argv[argv.index('--out') + 1]).write_text(json.dumps(de_doc(kind='other')))
             return subprocess.CompletedProcess(argv, 0, '', '')
-        with mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+        with mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
+                mock.patch.object(self.ev, 'split_problem', return_value=None):  # these fake steps write no approach split
             code, err = self.evaluate()
         self.assertEqual(code, 0, err)
         receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
@@ -929,7 +930,8 @@ class EvaluateHeldOut(HeldOutDriver):
                 return subprocess.CompletedProcess(argv, 0, '', '')
             for marker in common.RUN_MARKERS.glob('evaluate-*'):
                 marker.unlink()
-            with self.subTest(why=why), mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+            with self.subTest(why=why), mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
+                    mock.patch.object(self.ev, 'split_problem', return_value=None):
                 out = self.out = self.dir / '.local' / f'eval-{len(why)}'
                 code, err = self.evaluate()
                 self.assertEqual(code, 0, err)
@@ -1015,7 +1017,7 @@ class EvaluateHeldOut(HeldOutDriver):
     def test_the_approach_split_runs_after_metric_f_and_fails_only_itself(self):
         (self.site / 'grounded').mkdir()
         (self.site / 'grounded/ground.json').write_text('{}')
-        for fail in (None, 'scripts/california/car_shape.py'):
+        for fail, problem in ((None, None), ('scripts/california/car_shape.py', None), (None, 'score.py refuses the approach-split results: x')):
             calls = []
 
             def run(argv, **_):
@@ -1025,8 +1027,9 @@ class EvaluateHeldOut(HeldOutDriver):
                 return subprocess.CompletedProcess(argv, 1 if fail in argv else 0, '', 'refused' if fail in argv else '')
             for marker in common.RUN_MARKERS.glob('evaluate-*'):
                 marker.unlink()
-            with self.subTest(fail=fail), mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
-                out = self.out = self.dir / '.local' / f'eval-{bool(fail)}'
+            with self.subTest(fail=fail, problem=problem), mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
+                    mock.patch.object(self.ev, 'split_problem', return_value=problem) as checked:
+                out = self.out = self.dir / '.local' / f'eval-{bool(fail)}-{bool(problem)}'
                 code, err = self.evaluate()
                 self.assertEqual(code, 0, err)
                 receipt = json.loads((out / 'evaluate-receipt.json').read_bytes())
@@ -1041,7 +1044,16 @@ class EvaluateHeldOut(HeldOutDriver):
                     self.assertIn(('--failed-step', 'approach-split'), pairs)
                     self.assertNotIn('--approach-split-results', calls[-1])
                     self.assertFalse([a for a in calls if '--eval-shape' in a])
+                    checked.assert_not_called()
+                elif problem:  # score.py would refuse the file: only approach-score fails, the score step still runs
+                    self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['approach-score', 'labels-de'])
+                    self.assertEqual(next(s for s in receipt['steps'] if s['step'] == 'approach-score')['refused'], problem)
+                    self.assertIn(('--failed-step', 'approach-score'), pairs)
+                    self.assertNotIn('--approach-split-results', calls[-1])
+                    self.assertIn('scripts/evaluation/m7/score.py', calls[-1])
                 else:
+                    self.assertEqual(checked.call_args.args[:3], (out / 'approach-split/results.json', self.site / 'grounded/ground.json',
+                                                                  out / 'results.json'))
                     self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['labels-de'])
                     names = [x['step'] for x in receipt['steps']]
                     self.assertEqual(names[names.index('metric-f-score') + 1:names.index('metric-k')],
@@ -1244,6 +1256,19 @@ class ApproachSplitScore(Tmp):
             self.score(metric_f_results=None, approach_split_results=str(self.split()))
         self.assertIn('needs the metric F results', str(stop.exception))
 
+    def test_evaluate_site_checks_the_file_with_the_same_rules_before_passing_it_on(self):
+        ev, ground = load_driver('evaluate_site'), self.dir / 'site/grounded/ground.json'
+        with mock.patch.object(score, 'F_PROTOCOL', self.protocol):
+            self.assertIsNone(ev.split_problem(self.split(), ground, self.results, []))
+            for over, why in (({'ground': '00' * 32}, "not this site's"), ({'app': '00' * 32}, 'next to other metric F results'),
+                              ({'protocol': '00' * 32}, 'not an approach-split result')):
+                with self.subTest(over=over):
+                    self.assertIn(why, ev.split_problem(self.split(**over), ground, self.results, []))
+            bad = self.split()
+            bad.write_text(json.dumps({**json.loads(bad.read_bytes()), 'heights': {'child': {'rows': []}}}))  # no shapeV1
+            self.assertEqual(ev.split_problem(bad, ground, self.results, []), 'score.py cannot read the approach-split results (KeyError)')
+            self.assertIn('cannot read', ev.split_problem(self.dir / 'missing.json', ground, self.results, []))
+
     def test_the_summary_lists_it_apart_from_the_targets(self):
         reported = {'outcome': 'reported', 'reason': 'report only', 'K': 30}
         got = score.summarize(argparse.Namespace(scores=[
@@ -1321,14 +1346,19 @@ class Preflight(Tmp):
                     mock.patch.object(common, 'committed', return_value=({'protocolLockSha256': common.sha(raw)}, '11' * 32)), \
                     mock.patch.object(common, 'labels_addendum', return_value=addendum):
                 return common.preflight(common.sha(raw))
-        pinned = {'addendum': {'path': '$PAO_LABELS_COORDINATOR_DIR/x', 'sha256': ADDENDUM_SHA}}  # '$': not re-hashed here
-        self.assertEqual(preflight(pinned, ADDENDUM_SHA)['labels'], pinned)
-        self.assertEqual(preflight({'addendum': None, 'noAddendum': 'Sean, in chat: run M7 without D and E'}, None)['labels']['addendum'], None)
-        for labels, addendum in ((pinned, None), (pinned, '44' * 32), ({'addendum': None, 'noAddendum': ' '}, None),
-                                 ({'addendum': None}, None), ({}, None), ({'addendum': None, 'noAddendum': 'yes'}, ADDENDUM_SHA)):
-            with self.subTest(labels=labels, addendum=addendum), self.assertRaises(SystemExit) as stop:
-                preflight(labels, addendum)
-            self.assertIn('the one the lock pins', str(stop.exception))
+        pinned = {'addendum': {'path': common.rel(common.LABELS_ADDENDUM), 'sha256': ADDENDUM_SHA}, 'noAddendum': None}
+        with mock.patch.object(common, 'pinned_files', return_value=[]):  # the addendum file itself is checked by labels_addendum
+            self.assertEqual(preflight(pinned, ADDENDUM_SHA)['labels'], pinned)
+            self.assertEqual(preflight({'addendum': None, 'noAddendum': 'Sean, in chat: run M7 without D and E'}, None)['labels']['addendum'], None)
+            malformed = [{'addendum': x} for x in ({}, {'path': common.rel(common.LABELS_ADDENDUM)}, {'sha256': None}, '', False)]
+            for labels, addendum in ((pinned, None), (pinned, '44' * 32), ({'addendum': None, 'noAddendum': ' '}, None),
+                                     ({'addendum': None}, None), ({}, None), ({'addendum': None, 'noAddendum': 'yes'}, ADDENDUM_SHA),
+                                     ({'addendum': None, 'noAddendum': True}, None), ({**pinned, 'noAddendum': 'yes'}, ADDENDUM_SHA),
+                                     ({'addendum': {**pinned['addendum'], 'path': 'other.json'}}, ADDENDUM_SHA),
+                                     *((x, None) for x in malformed)):
+                with self.subTest(labels=labels, addendum=addendum), self.assertRaises(SystemExit) as stop:
+                    preflight(labels, addendum)
+                self.assertIn('the one the lock pins', str(stop.exception))
 
 
 class RunsList(Tmp):
