@@ -17,13 +17,14 @@ have been built under the committed labels addendum anchor. A held-out summary m
 the committed lost-site list, each with its paint record and, when the addendum is anchored, a D/E file for every site
 the committed label manifest lists with labels (unless its labels-de step failed or it has no built scene). Held-out,
 both steps run preflight (the approved lock, this score.py pinned in it); each site score records the sha256 of the
-lost-site list and label manifest it was made under and the summary refuses any other; and the summary takes each site's
-failed steps from the receipt of the one evaluate_site.py run its marker names, on the site and paint folders their
-markers name (one run each). A marked evaluation that ended without a score (its score step failed, or it left no
+lost-site list and label manifest it was made under (its build receipt and paint record must name the same lost-site
+list) and the summary refuses any other; and the summary takes each site's failed steps from the receipt of the one
+evaluate_site.py run its marker names, on the site and paint folders their markers name (one run each). A marked evaluation that ended without a score (its score step failed, or it left no
 receipt) is scored by evaluate_site.py --record-stopped with --evaluation-stopped: handled like a site with no feasible
 frame (B cannot pass, H a miss at a Blocked-test site, D/E and the rest not scored), with A from its paint record; the
 summary checks it against that folder's evaluate-stopped.json. The summary lists by name every held-out site the label
-manifest lists with labels whose D or E is not scored.
+manifest lists with labels whose D or E is not scored, and every crossing whose paint run stopped after paint v4 wrote
+result.json (A not scored there; A is fail-only).
 
 The D/E file (labels.scoringCondition) is one JSON object with exactly the keys kind ("pao-m7-labels-de"), site
 ({logId, crossingId}: strings, and nothing else), groundSha256, labelsAddendumSha256, labels ({sha256} only: never a path),
@@ -141,7 +142,9 @@ def metric_a(paint_dir, record_sha):
     if receipt['siteRecord']['sha256'] != record_sha:
         raise SystemExit(f'{record} was made from another site record')
     if receipt['outcome'] != 'measured':
-        return not_scored(f"paint step {receipt['stopped']['step']} stopped: {receipt['stopped']['reason']}", paintRecord=rel(record))
+        # A is fail-only: a stop after paint v4 wrote result.json is flagged so the summary lists it by name.
+        after = {'stoppedAfterMeasuring': True} if (paint_dir / 'result.json').exists() else {}
+        return not_scored(f"paint step {receipt['stopped']['step']} stopped: {receipt['stopped']['reason']}", paintRecord=rel(record), **after)
     result = paint_dir / 'result.json'
     if sha_file(result) != receipt['outputs']['result.json']:
         raise SystemExit(f'{result} differs from its paint receipt')
@@ -410,7 +413,9 @@ def metric_e(doc, results):
         return not_scored(e.get('reason') or 'no labelled recorded vehicle')
     if results is None:
         return not_scored('no metric F rows to check E rows against (E uses the recorded vehicle\'s measured-shape rows)')
-    rows = e['rows']
+    rows = e.get('rows')
+    if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)) or not str(e.get('assumption') or '').strip():
+        raise SystemExit('E needs a rows list of objects and its assumption text')
     bad = [r for r in rows if r.get('e') not in E_STATES or r.get('height') not in ('child', 'adult')]
     if bad:
         raise SystemExit(f'E rows with an unknown height or state: {bad[:3]}')
@@ -461,6 +466,8 @@ def score_site(args):
             raise SystemExit(f'{name} is on the committed lost-site list: it is not scored')
         entries, manifest_sha = common.labels_manifest(addendum_sha) if addendum_sha else ({}, None)
         anchors = {'lostSiteList': lost_sha, 'labelsManifest': manifest_sha}  # the summary refuses any other
+        if record.get('lostSiteList') != {'file': common.LOST_SITES_REL, 'sha256': lost_sha}:
+            raise SystemExit('the site was built under another lost-site list than the committed one')
         if args.labels_de:
             labels_sha = entries[name]
             if labels_sha is None:
@@ -489,6 +496,8 @@ def score_site(args):
     paint = Path(args.paint).resolve() if args.paint else None
     if paint:
         inputs['paint'] = {'file': rel(paint_record(paint)), 'sha256': sha_file(paint_record(paint))}
+        if held_out and load(paint_record(paint)).get('lostSiteList') != {'file': common.LOST_SITES_REL, 'sha256': anchors['lostSiteList']}:
+            raise SystemExit('the paint run was made under another lost-site list than the committed one')
     metrics['A'] = metric_a(paint, inputs['siteRecord']['sha256'])
     results = None
     if not built or stopped:  # handled like a site with no feasible frame
@@ -724,8 +733,10 @@ def summarize(args):
             'A': {'scoredSites': sum(v != 'not scored' for v in by_metric['A'].values()), 'sites': len(names),
                   'failedSites': [n for n, v in by_metric['A'].items() if v == 'fail'],
                   'estimatorsDisagreeSites': a_flag('estimatorsDisagree'), 'notConfirmedByPaintV4Sites': a_flag('notConfirmedByPaintV4'),
+                  'stoppedAfterMeasuringSites': a_flag('stoppedAfterMeasuring'),
                   'note': 'fail-only: "not scored" says nothing about the map, and A never passes; a fail means the true offset is '
-                          'very likely at least about 0.20 m, or a look-alike line fooled both estimators (counted against the app)'},
+                          'very likely at least about 0.20 m, or a look-alike line fooled both estimators (counted against the app); '
+                          'stoppedAfterMeasuringSites: the paint run stopped after paint v4 wrote result.json, so A is not scored there'},
             'labels': labels_info,
             'statistics': {'unit': 'one intersection', 'miss': miss,
                            'falseBlocked': false_blocked},

@@ -11,13 +11,16 @@ record is recorded once as stopped by its driver (ended_run), so every site stil
 (development logs) skips the lock, anchor and marker checks and nothing else.
 """
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -35,6 +38,7 @@ RUN_MARKERS = ROOT / '.local/evaluation/pao-accuracy/m7/run-markers'  # held-out
 COORDINATOR_ENV = 'PAO_LABELS_COORDINATOR_DIR'  # the coordinator-only labels folder: never written into any file
 DE_CODE = ROOT / '.local/evaluation/pao-accuracy/lock/de-code'  # ignored: the D/E code, every file pinned by the labels addendum
 FETCH_TRIES = 3  # preflight's git fetch of origin/main: a dropped connection is tried again, at most 3 times in all
+FETCH_SECONDS = 120  # each git fetch try is stopped after this long (git has no network time limit of its own)
 DEVELOPMENT_ROLES = ('development', 'development-optional')
 HELD_OUT_ROLES = ('held-out-blocked-test', 'held-out-left-side-case', 'held-out-control', 'held-out-control-declared-only')
 BUCKET = 'https://argoverse.s3.amazonaws.com/'
@@ -60,13 +64,63 @@ def coordinator_folders():
     return list(dict.fromkeys([value, str(Path(value).resolve())])) if len(value) > 1 else []
 
 
+def folder_forms(folders=()):
+    """The coordinator-only folder and any folder given, each as given, resolved and (when inside the repository)
+    relative to the repository, longest first."""
+    forms = set()
+    for folder in [*coordinator_folders(), *folders]:
+        for form in (str(folder).rstrip('/'), str(Path(folder).resolve())):
+            if len(form) > 1:
+                forms.add(form)
+                inside = Path(form).relative_to(ROOT) if Path(form).is_relative_to(ROOT) else None
+                if inside is not None and len(str(inside)) > 1:
+                    forms.add(str(inside))
+    return sorted(forms, key=len, reverse=True)
+
+
+def fold(text):
+    """text for a folder comparison: Unicode NFC and case-folded (macOS folder names ignore case)."""
+    return unicodedata.normalize('NFC', text).casefold()
+
+
+def json_strings(node):
+    """Every string (keys included) inside a decoded JSON value."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from json_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from json_strings(value)
+
+
+def names_folder(data, folders=()):
+    """True when data (bytes) names the coordinator-only folder or a folder given, in any form folder_forms lists, as
+    plain text or inside a JSON string (escapes such as \\u00e9 or \\/ decoded), ignoring case and Unicode normalization."""
+    texts = [data.decode('utf-8', 'replace')]
+    try:
+        texts += list(json_strings(json.loads(data)))
+    except (ValueError, RecursionError):
+        pass
+    forms = [fold(f) for f in folder_forms(folders)]
+    return any(form in fold(text) for text in texts for form in forms)
+
+
 def masked(text, folders=()):
-    """text with the banned vehicle-status word masked (p*rk) and the coordinator-only folder (and any folder given)
-    replaced by a placeholder: tool output can quote either."""
-    for folder in sorted({str(f).rstrip('/') for f in [*coordinator_folders(), *folders]}, key=len, reverse=True):
-        if len(folder) > 1:
-            text = text.replace(folder, '<coordinator-only folder>')
+    """text with the banned vehicle-status word masked (p*rk) and the coordinator-only folder (and any folder given, in
+    every form folder_forms lists, any case) replaced by a placeholder: tool output can quote either."""
+    text = unicodedata.normalize('NFC', text)
+    for form in folder_forms(folders):
+        text = re.sub(re.escape(unicodedata.normalize('NFC', form)), '<coordinator-only folder>', text, flags=re.IGNORECASE)
     return re.sub('park', 'p*rk', text, flags=re.IGNORECASE)
+
+
+def child_env(**extra):
+    """The environment of a tool step (a child process): this one without the coordinator-only folder's variable, plus
+    extra. No tool is told where that folder is; the D/E scorer gets only its --labels file."""
+    return {**{k: v for k, v in os.environ.items() if k != COORDINATOR_ENV}, **extra}
 
 
 def now():
@@ -91,17 +145,40 @@ def dump(obj):
 
 
 def write_new(path, data, mode=0o444):
-    """New files only (O_EXCL); JSON objects are dumped; the banned vehicle-status word and the coordinator-only folder
-    are refused."""
+    """New files only; JSON objects are dumped; the banned vehicle-status word and the coordinator-only folder (any form,
+    names_folder) are refused. The bytes go to a temporary file in the same folder, flushed to the disk, which is then
+    linked to the new name (a link fails if the name exists): after a crash or a power loss the file is whole or absent,
+    never empty or cut short."""
     data = dump(data) if isinstance(data, (dict, list)) else data
     if b'park' in data.lower():
         raise ValueError(f'{path}: banned vehicle-status word')
-    if any(folder.encode() in data for folder in coordinator_folders()):
+    if names_folder(data):
         raise ValueError(f'{path}: names the coordinator-only folder')
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(fd, 'wb') as handle:
-        handle.write(data)
+    path = Path(path)
+    fd, temp = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.', suffix='.part')
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(data)
+            handle.flush()
+            durable(handle.fileno())
+        os.chmod(temp, mode)
+        os.link(temp, path)
+    finally:
+        os.unlink(temp)
+    folder = os.open(path.parent, os.O_RDONLY)
+    try:
+        durable(folder)  # the new name itself
+    finally:
+        os.close(folder)
     return sha(data)
+
+
+def durable(fd):
+    """Flush fd to the disk itself (macOS F_FULLFSYNC, which a power loss survives; fsync where that is missing)."""
+    try:
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+    except (AttributeError, OSError):
+        os.fsync(fd)
 
 
 def site(log, crossing):
@@ -294,14 +371,32 @@ def pinned_files(node, out=None):
 
 
 def fetch_origin():
-    """git fetch origin main, tried again after a failure (FETCH_TRIES in all, 10 s apart): a dropped connection should
-    not stop a site."""
+    """git fetch origin main, tried again after a failure (FETCH_TRIES in all, 10 s apart, each stopped after
+    FETCH_SECONDS): a dropped connection should not stop a site."""
     for attempt in range(FETCH_TRIES):
-        if subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT).returncode == 0:
-            return
+        try:
+            if subprocess.run(['git', 'fetch', '--quiet', 'origin', 'main'], cwd=ROOT, timeout=FETCH_SECONDS).returncode == 0:
+                return
+        except subprocess.TimeoutExpired:
+            pass
         if attempt + 1 < FETCH_TRIES:
             time.sleep(10)
     raise SystemExit(f'git fetch origin main failed {FETCH_TRIES} times')
+
+
+def wait_for_origin(limit=3600, pause=60):
+    """Held-out evaluate_site.py, just before its score step (nothing scored yet, so this is no rerun): wait up to limit
+    seconds, trying every pause seconds, until git fetch origin main works, so a network outage does not fail the score
+    step. Returns whether it works."""
+    end = time.time() + limit
+    while True:
+        try:
+            fetch_origin()
+            return True
+        except SystemExit:
+            if time.time() + pause > end:
+                return False
+            time.sleep(pause)
 
 
 def preflight(lock_sha256):
@@ -361,7 +456,7 @@ def guard(log, crossing, rehearse, lock_sha256):
 # ------------------------------------------------------------------ public downloads
 def curl(url, target, headers, max_bytes):
     subprocess.run(['curl', '--fail', '--silent', '--show-error', '--proto', '=https', '--max-time', str(CURL_SECONDS),
-                    '--max-filesize', str(max_bytes), '--dump-header', str(headers), '--output', str(target), url], check=True)
+                    '--max-filesize', str(max_bytes), '--dump-header', str(headers), '--output', str(target), url], check=True, env=child_env())
     text = headers.read_text(errors='replace').lower().splitlines()
     head = {line.split(':', 1)[0].strip(): line.split(':', 1)[1].strip() for line in text if ':' in line}
     if 'content-length' not in head and head.get('transfer-encoding') == 'chunked':

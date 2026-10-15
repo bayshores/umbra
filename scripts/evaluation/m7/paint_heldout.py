@@ -11,10 +11,13 @@ Steps: config.json (the dev config format: sources with paths relative to the co
 == Content-Length == listing Size, MD5 == ETag == listing ETag; at most 3 retries, 4,000,000-byte ceiling) ->
 receipts.json -> code-v4 measure. Paint v4's parameters (sweep count 15, thresholds, agreement and precision rules) are
 the locked ones: this file passes none. A failed paint step leaves metric A "not scored" at this crossing (paint-stopped.json);
-it never stops the scene build. Nothing here prints a measurement. Held-out: --site must be the folder the build marker
-names, the committed lost-site list must exist and not name the site, and a run marker allows one paint run per crossing.
+it never stops the scene build. Nothing here prints a measurement; step logs have the banned vehicle-status word and the
+coordinator-only folder masked, and every step runs without that folder's environment variable. Held-out: --site must be
+the folder the build marker names, the committed lost-site list must exist and not name the site (the paint record keeps
+its sha256), and a run marker allows one paint run per crossing.
 --record-interrupted (held-out): a marked paint run that ended (its process is gone) without a paint record is recorded
-once as stopped (paint-stopped.json in its folder, step "interrupted"): metric A is "not scored" at this crossing.
+once as stopped (paint-stopped.json in its folder, step "interrupted"): metric A is "not scored" at this crossing. When
+the folder already holds paint v4's result.json, the summary lists the crossing by name (stopped after measuring).
 """
 import argparse
 from importlib.metadata import version
@@ -51,11 +54,11 @@ def site_record(site):
     return json.loads(found[0].read_bytes()), found[0]
 
 
-def paint_doc(args, site, record_path, out, outcome, stop, steps, downloads, packages):
+def paint_doc(args, site, record_path, out, outcome, stop, steps, downloads, packages, lost=None):
     """The paint record (paint-receipt.json, or paint-stopped.json when stop is set)."""
     return {'kind': 'pao-m7-paint', 'mode': 'rehearsal (development site)' if args.rehearse else 'held-out',
             'site': site, 'siteRecord': {'file': rel(record_path), 'sha256': sha_file(record_path)},
-            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256,
+            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256, 'lostSiteList': lost,
             'paint': {'protocol': {'file': PROTOCOL, 'sha256': PROTOCOL_SHA}, 'code': {'file': CODE, 'sha256': CODE_SHA}},
             'outcome': outcome, 'stopped': None if stop is None else {'step': stop.step, 'reason': stop.reason,
                                                                       'rule': 'metric A is "not scored" at this crossing; the scene is unaffected'},
@@ -91,18 +94,21 @@ def main():
         parser.error('the site folder was built under another lock')
     entry, _ = common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256)  # before any network access
     site = {'logId': log, 'crossingId': str(crossing), 'role': entry['role']}
+    lost = None
     if not args.rehearse:
         if common.marked_folder('build', log, crossing) != rel(site_dir):
             parser.error('--site must be the folder the build marker names')
-        if f'{log[:8]}/{crossing}' in common.lost_sites()[0]:  # statistics.lostSiteRule: committed before any held-out build
+        names, lost_sha = common.lost_sites()
+        if f'{log[:8]}/{crossing}' in names:  # statistics.lostSiteRule: committed before any held-out build
             parser.error('this site is on the committed lost-site list')
+        lost = {'file': common.LOST_SITES_REL, 'sha256': lost_sha}
     if args.record_interrupted:
         folder = common.ended_run('paint', log, crossing)
         if any((folder / n).is_file() for n in ('paint-receipt.json', 'paint-stopped.json')):
             parser.error('the marked paint run has its paint record: there is nothing to record')
         folder.mkdir(parents=True, exist_ok=True)
         stop = SiteStop('interrupted', 'the marked paint run ended without a paint record (recorded afterwards with --record-interrupted)')
-        digest = write_new(folder / 'paint-stopped.json', paint_doc(args, site, record_path, folder, 'not-scored', stop, [], [], {}))
+        digest = write_new(folder / 'paint-stopped.json', paint_doc(args, site, record_path, folder, 'not-scored', stop, [], [], {}, lost))
         print(json.dumps({'site': f'{log[:8]}/{crossing}', 'paint': 'not-scored', 'record': rel(folder / 'paint-stopped.json'), 'sha256': digest}))
         sys.exit(3)
     if not args.rehearse:
@@ -112,11 +118,9 @@ def main():
 
     def run(step, argv):
         start = time.time()
-        result = subprocess.run(NICE + [sys.executable, '-I', '-B', *argv], cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(NICE + [sys.executable, '-I', '-B', *argv], cwd=ROOT, capture_output=True, text=True, env=common.child_env())
         for kind, text in (('stdout', result.stdout), ('stderr', result.stderr)):
-            fd = os.open(out / f'{step}-{kind}.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
-            with os.fdopen(fd, 'wb') as handle:
-                handle.write(text.encode())
+            write_new(out / f'{step}-{kind}.txt', common.masked(text).encode())
         steps.append({'step': step, 'exit': result.returncode, 'seconds': round(time.time() - start, 2)})
         if result.returncode != 0:
             raise SiteStop(step, (result.stderr.strip() or result.stdout.strip())[-400:])
@@ -189,7 +193,7 @@ def main():
         outcome, stop = 'not-scored', error
     except Exception as error:  # anything unexpected still leaves a stop record; its message is not kept (it could hold a value)
         outcome, stop = 'not-scored', SiteStop('unexpected', type(error).__name__)
-    doc = paint_doc(args, site, record_path, out, outcome, stop, steps, downloads, packages)
+    doc = paint_doc(args, site, record_path, out, outcome, stop, steps, downloads, packages, lost)
     name = 'paint-receipt.json' if stop is None else 'paint-stopped.json'
     digest = write_new(out / name, doc)
     print(json.dumps({'site': f'{log[:8]}/{crossing}', 'paint': outcome, 'record': rel(out / name), 'sha256': digest}))

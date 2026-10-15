@@ -16,10 +16,13 @@ Rules (protocol-lock dataAccess): every download is receipted (size, ETag, MD5 f
 retries, each into a new empty folder. A builder status other than plan-written is the site's recorded outcome (the
 builder's own rules). A calibration refusal by the builder is "not scored: calibration". Any other failure stops the
 site with the step named (site-stopped.json); it is never rerun. Nothing here prints an app result: the step logs hold
-the tools' own output, and the coordinator does not open grounded/ before the held-out label hashes are committed.
+the tools' own output (the banned vehicle-status word and the coordinator-only folder masked), and the coordinator does not
+open grounded/ before the held-out label hashes are committed. Every tool step runs without the coordinator-only folder's
+environment variable.
 The receipt records the labels addendum sha256 the run works under (held-out: its committed anchor; null when D and E
 are not scored); score.py refuses a held-out site built under another value. Held-out: the committed lost-site list must
-exist and not name the site (statistics.lostSiteRule), and a run marker allows one build per site. --record-interrupted
+exist and not name the site (statistics.lostSiteRule; the receipt records its sha256 and score.py refuses another), and a
+run marker allows one build per site. --record-interrupted
 (held-out): a marked build that ended (its process is gone) without a site record is recorded once as stopped
 (site-stopped.json in its folder, step "interrupted"), so the site is still scored like a site with no feasible frame.
 The shape sweeps follow the frozen shape-v2 attempt rule inside car_shape.py (4 attempts; a sweep that never matches is
@@ -80,6 +83,7 @@ class Build:
         self.log, self.crossing = args.log, str(args.crossing)
         self.out = Path(args.out).resolve()
         self.addendum = common.labels_addendum(not args.rehearse)  # held-out: equal to its committed anchor (checked in preflight)
+        self.lost = None if args.rehearse else {'file': common.LOST_SITES_REL, 'sha256': common.lost_sites()[1]}  # read before any folder
         self.data = self.out / 'data' / self.log  # publisher layout; the builder needs the folder named by the log id
         self.logs = self.out / 'logs'
         self.held = [] if args.rehearse else ['--held-out-run', '--protocol-lock-sha256', args.protocol_lock_sha256]
@@ -89,14 +93,11 @@ class Build:
     # ---------------------------------------------------------------- helpers
     def run(self, step, argv, env=None):
         start = time.time()
-        result = subprocess.run(NICE + argv, cwd=ROOT, capture_output=True, text=True, env=env)
+        result = subprocess.run(NICE + argv, cwd=ROOT, capture_output=True, text=True, env=env or common.child_env())
         files = {}
         for kind, text in (('stdout', result.stdout), ('stderr', result.stderr)):
             path = self.logs / f'{step}-{kind}.txt'
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)  # the tools' own output, kept as written
-            with os.fdopen(fd, 'wb') as handle:
-                handle.write(text.encode())
-            files[kind] = {'file': rel(path), 'sha256': sha(text.encode())}
+            files[kind] = {'file': rel(path), 'sha256': write_new(path, common.masked(text).encode())}  # the tools' own output, masked
         record = {'step': step, 'command': [rel(a) if os.path.isabs(str(a)) else str(a) for a in argv], 'exit': result.returncode,
                   'seconds': round(time.time() - start, 2), 'logs': files}
         self.steps.append(record)
@@ -272,7 +273,7 @@ class Build:
                                    '--output', str(self.out / folder), *shape_args])
         if not suggest:
             return
-        env = {**os.environ, 'SOURCE_DATE_EPOCH': SOURCE_DATE_EPOCH}
+        env = common.child_env(SOURCE_DATE_EPOCH=SOURCE_DATE_EPOCH)
         self.must(step.replace('ground', 'suggest'),
                   self.py + ['scripts/california/suggest_av2_placements.py', '--grounded', str(self.out / folder),
                              '--metadata-sha256', sha_file(self.out / folder / 'scene.json'), '--buffers', str(self.out / 'assembled'),
@@ -346,7 +347,7 @@ class Build:
         doc = {'kind': 'pao-m7-site-build', 'mode': 'rehearsal (development site)' if self.args.rehearse else 'held-out',
                'site': {'logId': self.log, 'crossingId': self.crossing, 'role': self.entry['role']},
                'protocolLockSha256': None if self.args.rehearse else self.args.protocol_lock_sha256,
-               'labelsAddendumSha256': self.addendum,
+               'labelsAddendumSha256': self.addendum, 'lostSiteList': self.lost,
                'variant': VARIANT, 'fixedBand': (not self.args.rehearse) or self.args.fixed_band, 'outcome': outcome,
                'stopped': None if stop is None else {'step': stop.step, 'reason': stop.reason,
                                                      'rule': 'protocol-lock dataAccess: the site stops, is not rerun, and counts like '

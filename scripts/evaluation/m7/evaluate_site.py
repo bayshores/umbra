@@ -14,12 +14,16 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
   4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after the D/E
      code folder is checked against the addendum (common.de_code), with --site, --baseline, --metric-f-results (those
      that exist), --labels and --out <a new file in a temporary folder outside the repository>; that file is copied to
-     labels-de.json only if it names neither the coordinator-only folder nor the labels folder (and holds no banned
-     word), otherwise the step is recorded as refused (a failed step). Held-out: --labels is required exactly for the
-     sites the committed label manifest lists with labels, must have that sha256 and must lie inside the coordinator-only
-     folder named by PAO_LABELS_COORDINATOR_DIR (checked before the output folder is made); the receipt records its file
-     name and sha256. Step logs and error tails replace both folders with a placeholder.
-  5. score.py site with the inputs that exist and the failed steps named (--failed-step)
+     labels-de.json only if score.py's D/E checks accept it (labels_de, metric_d, metric_e) and it names neither the
+     coordinator-only folder nor the labels folder in any form (common.names_folder: as given, resolved or relative to
+     the repository, any case, JSON escapes decoded) and holds no banned word; otherwise the step is recorded as refused
+     (a failed step: only D and E are not scored). Held-out: --labels is required exactly for the sites the committed
+     label manifest lists with labels, must have that sha256 and must lie inside the coordinator-only folder named by
+     PAO_LABELS_COORDINATOR_DIR, which must lie outside the repository, as must the temporary folder (checked before the
+     output folder is made); the receipt records its file name and sha256. Step logs and error tails replace both
+     folders with a placeholder, and no step is given that environment variable.
+  5. score.py site with the inputs that exist and the failed steps named (--failed-step). Held-out, its preflight
+     fetches origin/main: before it starts, this driver waits (up to an hour) until git fetch works.
 A failed step's output is left out of score.py, which handles it like a site with no feasible frame for its targets
 (B cannot pass, H is a miss at a Blocked-test site, the rest not scored); it is listed in the receipt and the other
 steps still run. A site without a built scene goes straight to score.py. Nothing is downloaded here. Step logs and
@@ -72,18 +76,37 @@ def site_record(parser, args, site):
     return record, found[0], log, crossing
 
 
-def copy_de(made, target, hidden):
-    """The D/E scorer's output, copied to target unless it names the coordinator-only folder or a hidden folder (or holds
-    the banned word). Returns None, or why it was refused."""
+def copy_de(made, target, hidden, problem):
+    """The D/E scorer's output, copied to target unless it names the coordinator-only folder or a hidden folder in any
+    form (common.names_folder), score.py would refuse it (problem(): de_problem), or it holds the banned word. Returns
+    None, or why it was refused."""
     if not made.is_file():
         return 'the D/E scorer wrote no output'
     data = made.read_bytes()
-    if any(str(f).rstrip('/').encode() in data for f in [*common.coordinator_folders(), *hidden] if len(str(f).rstrip('/')) > 1):
-        return 'the D/E output names the coordinator-only folder'
+    if common.names_folder(data, hidden):
+        return 'the D/E output names the coordinator-only folder or the labels folder'
+    why = problem()
+    if why:
+        return why
     try:
         write_new(target, data)
     except ValueError as error:
         return common.masked(str(error), hidden)
+    return None
+
+
+def de_problem(made, record, site, addendum_sha, labels_sha, results, hidden):
+    """Why score.py would refuse the D/E scorer's output (None: it accepts it), checked before the output is kept, so a
+    bad D/E file fails only the labels-de step (D and E not scored), never the whole score step."""
+    try:
+        doc = score.labels_de(made, score.load(score.LABELS_ADDENDUM), addendum_sha, sha_file(site / 'grounded/ground.json'),
+                              record['site'], labels_sha)
+        score.metric_d(doc)
+        score.metric_e(doc, score.load(results) if results else None)
+    except SystemExit as error:
+        return common.masked(f'score.py refuses the D/E output: {error}', [*hidden, made.parent])[-400:]
+    except Exception as error:  # noqa: BLE001 - any unreadable D/E output fails only its own step
+        return f'score.py cannot read the D/E output ({type(error).__name__})'
     return None
 
 
@@ -121,7 +144,7 @@ def record_stopped(parser, args):
         write_new(stop_path, {**stop, 'finishedUtc': now()})
     result = subprocess.run(NICE + [sys.executable, '-I', '-B', 'scripts/evaluation/m7/score.py', 'site', '--site', str(site),
                                     '--paint', str(ROOT / paint), '--evaluation-stopped', str(stop_path), '--out', str(score_path)],
-                            cwd=ROOT, capture_output=True, text=True)
+                            cwd=ROOT, capture_output=True, text=True, env=common.child_env())
     print(common.masked(result.stdout.strip() or result.stderr.strip()[-400:]))
     sys.exit(result.returncode)
 
@@ -166,7 +189,7 @@ def main():
     if args.labels and addendum_sha is None:
         parser.error('--labels needs the labels addendum (protocol-lock labels.scoringCondition)')
     labels = {'name': Path(args.labels).name, 'sha256': sha_file(args.labels)} if args.labels else None  # never the folder
-    manifest = None
+    manifest, wanted = None, None
     if not args.rehearse and addendum_sha:
         entries, manifest_sha = common.labels_manifest(addendum_sha)
         wanted = entries[f'{log[:8]}/{crossing}']
@@ -182,6 +205,8 @@ def main():
     labels_path = Path(args.labels).resolve() if args.labels else None
     if labels_path and not args.rehearse and not any(labels_path.is_relative_to(Path(f).resolve()) for f in common.coordinator_folders()):
         parser.error(f'held-out --labels must lie inside the coordinator-only folder named by {common.COORDINATOR_ENV}')
+    if labels_path and not args.rehearse and any(Path(f).resolve().is_relative_to(ROOT) for f in common.coordinator_folders()):
+        parser.error(f'the coordinator-only folder named by {common.COORDINATOR_ENV} must lie outside the repository')
     hidden = [labels_path.parent] if labels_path else []  # never written into a log, an output or the receipt
     pinned = None
     if labels and record['outcome'] in BUILT:
@@ -189,6 +214,8 @@ def main():
             pinned = common.de_code(json.loads(score.LABELS_ADDENDUM.read_bytes()))
         except SystemExit as error:
             parser.error(str(error))
+        if Path(tempfile.gettempdir()).resolve().is_relative_to(ROOT):
+            parser.error('the temporary folder (TMPDIR) lies inside the repository: the D/E output must be written outside it')
     if not args.rehearse:
         common.run_marker('evaluate', log, crossing, out)  # one evaluation per held-out site
     out.mkdir(parents=True)
@@ -196,11 +223,9 @@ def main():
 
     def run(step, argv):
         start = time.time()
-        result = subprocess.run(NICE + argv, cwd=ROOT, capture_output=True, text=True)
+        result = subprocess.run(NICE + argv, cwd=ROOT, capture_output=True, text=True, env=common.child_env())
         for kind, text in (('stdout', result.stdout), ('stderr', result.stderr)):
-            fd = os.open(out / f'{step}-{kind}.txt', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
-            with os.fdopen(fd, 'wb') as handle:
-                handle.write(common.masked(text, hidden).encode())
+            write_new(out / f'{step}-{kind}.txt', common.masked(text, hidden).encode())
         steps.append({'step': step, 'exit': result.returncode, 'seconds': round(time.time() - start, 2),
                       **({'error': common.masked((result.stderr.strip() or result.stdout.strip())[-400:], hidden)} if result.returncode else {})})
         return result.returncode == 0
@@ -243,7 +268,8 @@ def main():
             try:
                 made = temp / 'labels-de.json'
                 if run('labels-de', py + [pinned['file'], '--site', str(site), *given, '--labels', str(labels_path), '--out', str(made)]):
-                    why = copy_de(made, out / 'labels-de.json', hidden)
+                    why = copy_de(made, out / 'labels-de.json', hidden,
+                                  lambda: de_problem(made, record, site, addendum_sha, wanted, inputs.get('metric-f-results'), hidden))
                     if why is None:
                         inputs['labels-de'] = out / 'labels-de.json'
                     else:
@@ -253,13 +279,17 @@ def main():
     if args.paint:
         inputs['paint'] = Path(args.paint).resolve()
     failed = [x for s in steps if score.failed_step(s) for x in ('--failed-step', s['step'])]
+    origin = None
+    if not args.rehearse:  # the score step's preflight fetches origin/main: a network outage is waited out first
+        start = time.time()
+        origin = {'gitFetchWorks': common.wait_for_origin(), 'waitedSeconds': round(time.time() - start, 2)}
     scored = run('score', py + ['scripts/evaluation/m7/score.py', 'site', '--site', str(site), '--out', str(out / 'score.json'),
                                 *[x for k, v in inputs.items() for x in (f'--{k}', str(v))], *failed])
     doc = {'kind': 'pao-m7-site-evaluation', 'mode': record['mode'], 'site': record['site'],
            'siteRecord': {'file': rel(found[0]), 'sha256': sha_file(found[0])},
            'protocolLockSha256': None if args.rehearse else args.protocol_lock_sha256, 'buildOutcome': record['outcome'],
            'labelsAddendumSha256': addendum_sha, 'labels': labels, 'labelsManifest': manifest, 'lostSiteList': lost,
-           'paint': rel(inputs['paint']) if 'paint' in inputs else None,
+           'paint': rel(inputs['paint']) if 'paint' in inputs else None, 'originWait': origin,
            'steps': steps, 'notScoredBecauseAStepFailed': [s['step'] for s in steps if score.failed_step(s)],
            'outputs': {rel(p): sha_file(p) for p in sorted(out.rglob('*.json'))},
            'driver': {'file': 'scripts/evaluation/m7/evaluate_site.py', 'sha256': sha_file(__file__)},

@@ -59,6 +59,7 @@ SITE = {'logId': 'aaaaaaaa-0000-0000-0000-000000000000', 'crossingId': '1', 'rol
 GROUND = '11' * 32
 ADDENDUM_SHA = '22' * 32
 LABELS = '33' * 32
+LOST = {'file': common.LOST_SITES_REL, 'sha256': '00' * 32}  # the lost-site list every held-out test record names
 PINNED = {'file': 'scripts/evaluation/m7/score.py', 'sha256': hashlib.sha256((M7_DIR / 'score.py').read_bytes()).hexdigest()}
 ADDENDUM = {'deCode': {'scorer': PINNED}}
 
@@ -246,6 +247,13 @@ class MetricE(unittest.TestCase):
             with self.subTest(name), self.assertRaises(SystemExit):
                 score.metric_e(de_doc(e_rows=bad), self.results)
 
+    def test_missing_rows_or_assumption_is_refused_not_a_crash(self):
+        rows = self.rows('blocked', 'blocked', 'blocked')
+        for e in ({'labelledVehicle': True, 'assumption': 'x'}, {'labelledVehicle': True, 'rows': rows},
+                  {'labelledVehicle': True, 'rows': {'a': 1}, 'assumption': 'x'}, {'labelledVehicle': True, 'rows': [1], 'assumption': 'x'}):
+            with self.subTest(e=e), self.assertRaises(SystemExit):
+                score.metric_e(de_doc(E=e), self.results)
+
 
 class MetricHWithE(unittest.TestCase):
     def test_e_overrides_f_and_unresolved_e_leaves_f(self):
@@ -291,6 +299,21 @@ class Summary(Tmp):
         for extra in ({'scorer': {'sha256': 'cd' * 32}}, {'labelsAddendumSha256': ADDENDUM_SHA}):
             with self.subTest(extra=extra), self.assertRaises(SystemExit):
                 self.summarize(site_score('aaaaaaaa/1'), site_score('bbbbbbbb/2', **extra))
+
+    def test_a_paint_stop_after_paint_v4_wrote_its_result_is_flagged_and_listed(self):
+        paint = self.dir / 'paint'
+        paint.mkdir()
+        self.write('paint/paint-stopped.json', {'siteRecord': {'sha256': '00' * 32}, 'outcome': 'not-scored',
+                                                'stopped': {'step': 'interrupted', 'reason': 'test'}})
+        got = score.metric_a(paint, '00' * 32)
+        self.assertEqual(got['outcome'], 'not scored')
+        self.assertNotIn('stoppedAfterMeasuring', got)
+        self.write('paint/result.json', {})
+        flagged = score.metric_a(paint, '00' * 32)
+        self.assertTrue(flagged['stoppedAfterMeasuring'])
+        stopped = site_score('bbbbbbbb/2')
+        stopped['metrics']['A'] = flagged
+        self.assertEqual(self.summarize(site_score('aaaaaaaa/1'), stopped)['A']['stoppedAfterMeasuringSites'], ['bbbbbbbb/2'])
 
 
 HELD = 'held-out'
@@ -575,13 +598,29 @@ class FetchOrigin(unittest.TestCase):
             common.fetch_origin()
         self.assertEqual((run.call_count, sleep.call_count), (common.FETCH_TRIES, common.FETCH_TRIES - 1))
 
+    def test_a_hung_fetch_is_stopped_and_counts_as_a_failed_try(self):
+        with mock.patch.object(common.subprocess, 'run', side_effect=subprocess.TimeoutExpired('git', 1)) as run, \
+                mock.patch.object(common.time, 'sleep'), self.assertRaises(SystemExit):
+            common.fetch_origin()
+        self.assertEqual((run.call_count, run.call_args.kwargs['timeout']), (common.FETCH_TRIES, common.FETCH_SECONDS))
+
+    def test_the_score_step_waits_for_the_network(self):
+        with mock.patch.object(common, 'fetch_origin', side_effect=[SystemExit('down'), SystemExit('down'), None]) as fetch, \
+                mock.patch.object(common.time, 'sleep') as sleep:
+            self.assertTrue(common.wait_for_origin())
+        self.assertEqual((fetch.call_count, sleep.call_count), (3, 2))
+        with mock.patch.object(common, 'fetch_origin', side_effect=SystemExit('down')) as fetch, \
+                mock.patch.object(common.time, 'sleep'), mock.patch.object(common.time, 'time', side_effect=[0, 0, 30, 61]):
+            self.assertFalse(common.wait_for_origin(limit=60, pause=30))
+        self.assertEqual(fetch.call_count, 3)
+
 
 class HeldOutSiteScore(Tmp):
     def test_a_site_built_under_another_addendum_is_refused(self):
         site = self.dir / 'site'
         site.mkdir()
         (site / 'site-stopped.json').write_text(json.dumps({'mode': HELD, 'site': SITE, 'outcome': 'stopped', 'labelsAddendumSha256': None,
-                                                            'stopped': {'step': 'download', 'reason': 'test'}}))
+                                                            'lostSiteList': LOST, 'stopped': {'step': 'download', 'reason': 'test'}}))
         args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
                                   metric_k=None, paint=None, evaluation_stopped=None)
         with mock.patch.object(common, 'preflight', return_value={}), \
@@ -596,6 +635,10 @@ class HeldOutSiteScore(Tmp):
                 mock.patch.object(common, 'lost_sites', return_value=({'aaaaaaaa/1'}, '00' * 32)), self.assertRaises(SystemExit) as stop:
             score.score_site(args)
         self.assertIn('lost-site list', str(stop.exception))
+        with mock.patch.object(common, 'preflight', return_value={}), mock.patch.object(common, 'labels_addendum', return_value=None), \
+                mock.patch.object(common, 'lost_sites', return_value=(set(), '11' * 32)), self.assertRaises(SystemExit) as stop:
+            score.score_site(args)
+        self.assertIn('built under another lost-site list', str(stop.exception))
 
 
 LOCK = 'ab' * 32
@@ -614,7 +657,7 @@ class StoppedSiteScore(Tmp):
 
     def make(self, mode=HELD, addendum=None):
         record = self.write('site/build-receipt.json', {'mode': mode, 'site': SITE, 'outcome': 'built-shape', 'protocolLockSha256': LOCK,
-                                                        'labelsAddendumSha256': addendum,
+                                                        'labelsAddendumSha256': addendum, 'lostSiteList': LOST,
                                                         'outputs': {common.rel(self.ground): common.sha_file(self.ground)}})
         self.stop = self.write('stop.json', {'kind': score.STOPPED_KIND, 'site': SITE, 'reason': 'the score step failed',
                                              'siteRecord': {'file': common.rel(record), 'sha256': common.sha_file(record)}})
@@ -641,6 +684,19 @@ class StoppedSiteScore(Tmp):
                 self.assertEqual(metrics['D']['reason'], de_reason)
                 self.assertEqual(got['inputs']['evaluationStopped']['sha256'], common.sha_file(self.stop))
 
+    def test_a_paint_record_under_another_lost_site_list_is_refused(self):
+        self.make()
+        paint = self.dir / 'paint'
+        paint.mkdir()
+        doc = {'siteRecord': {'sha256': common.sha_file(self.site / 'build-receipt.json')}, 'outcome': 'not-scored',
+               'stopped': {'step': 'interrupted', 'reason': 'test'}}
+        self.write('paint/paint-stopped.json', {**doc, 'lostSiteList': LOST})
+        self.assertEqual(self.score(paint=str(paint))['metrics']['A']['outcome'], 'not scored')
+        (paint / 'paint-stopped.json').write_text(json.dumps({**doc, 'lostSiteList': {**LOST, 'sha256': '11' * 32}}))
+        with self.assertRaises(SystemExit) as stop:
+            self.score(paint=str(paint))
+        self.assertIn('another lost-site list', str(stop.exception))
+
     def test_other_inputs_rehearsal_or_another_site_record_are_refused(self):
         self.make()
         for over in ({'failed_step': ['baseline']}, {'baseline': 'x'}, {'metric_f_results': 'x'}, {'metric_k': 'x'}, {'labels_de': 'x'}):
@@ -659,9 +715,12 @@ class HeldOutDriver(Tmp):
     def setUp(self):
         super().setUp()
         self.dir = self.dir.resolve()
-        self.coord = self.dir / 'coordinator'
+        outside = tempfile.TemporaryDirectory()  # the coordinator-only folder lies outside the (test) repository
+        self.addCleanup(outside.cleanup)
+        self.coord = Path(outside.name).resolve() / 'coordinator'
         self.coord.mkdir()
-        self.labels = self.write('coordinator/labels.json', {'labels': 1})
+        self.labels = self.coord / 'labels.json'
+        self.labels.write_text(json.dumps({'labels': 1}))
         self.addendum = self.write('addendum.json', {'deCode': {}})
         self.site, self.paint, self.out = self.dir / 'site', self.dir / 'paint', self.dir / '.local' / 'eval'
         patches = [mock.patch.object(common, 'RUN_MARKERS', self.dir / 'markers'),
@@ -670,6 +729,7 @@ class HeldOutDriver(Tmp):
                    mock.patch.object(common, 'labels_manifest', return_value=({NAME: common.sha_file(self.labels)}, '99' * 32)),
                    mock.patch.object(common, 'lost_sites', return_value=(set(), '00' * 32)),
                    mock.patch.object(common, 'de_code', return_value={'file': 'de-scorer.py', 'sha256': '00' * 32}),
+                   mock.patch.object(common, 'wait_for_origin', return_value=True),  # no network in tests
                    mock.patch.object(score, 'LABELS_ADDENDUM', self.addendum),
                    mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(self.coord)})]
         for patcher in patches:
@@ -755,13 +815,45 @@ class EvaluateHeldOut(HeldOutDriver):
         self.assertEqual(code, 3, err)
         receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
         steps = {s['step']: s for s in receipt['steps']}
-        self.assertEqual(steps['labels-de']['refused'], 'the D/E output names the coordinator-only folder')
+        self.assertEqual(steps['labels-de']['refused'], 'the D/E output names the coordinator-only folder or the labels folder')
         self.assertIn('labels-de', receipt['notScoredBecauseAStepFailed'])
         self.assertFalse((self.out / 'labels-de.json').exists())
         self.assertIn(('--failed-step', 'labels-de'), list(zip(calls[-1], calls[-1][1:])))
         self.assertEqual(steps['baseline']['error'], 'cannot open <coordinator-only folder>/labels.json')
         for path in self.written():
             self.assertNotIn(str(self.coord), path.read_text(), path)
+
+    def test_a_d_e_output_score_py_refuses_fails_only_its_step(self):
+        (self.site / 'grounded').mkdir()
+        (self.site / 'grounded/ground.json').write_text('{}')
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            self.assertNotIn(common.COORDINATOR_ENV, kw['env'])  # no step is told where the coordinator-only folder is
+            if '--labels' in argv:
+                Path(argv[argv.index('--out') + 1]).write_text(json.dumps(de_doc(kind='other')))
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        with mock.patch.object(self.ev.subprocess, 'run', side_effect=run):
+            code, err = self.evaluate()
+        self.assertEqual(code, 0, err)
+        receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
+        steps = {s['step']: s for s in receipt['steps']}
+        self.assertTrue(steps['labels-de']['refused'].startswith('score.py refuses the D/E output: D/E file'), steps['labels-de'])
+        self.assertNotIn('pao-m7-de-', steps['labels-de']['refused'])  # the temporary folder is masked too
+        self.assertEqual((receipt['notScoredBecauseAStepFailed'], receipt['originWait']['gitFetchWorks']), (['labels-de'], True))
+        self.assertFalse((self.out / 'labels-de.json').exists())
+        self.assertIn(('--failed-step', 'labels-de'), list(zip(calls[-1], calls[-1][1:])))
+
+    def test_a_coordinator_or_temporary_folder_inside_the_repository_is_refused(self):
+        inside = self.dir / 'coordinator'
+        inside.mkdir()
+        labels = inside / 'labels.json'
+        labels.write_bytes(self.labels.read_bytes())
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(inside)}):
+            self.refused('must lie outside the repository', labels=labels)
+        with mock.patch.object(self.ev.tempfile, 'gettempdir', return_value=str(self.dir / 'tmp')):
+            self.refused('the temporary folder (TMPDIR) lies inside the repository')
 
     def stopped(self):
         calls = []
@@ -821,7 +913,7 @@ class RecordInterrupted(HeldOutDriver):
         code, err = self.recorded(paint, ['--site', self.site])
         doc = json.loads((self.paint / 'paint-stopped.json').read_bytes())
         self.assertEqual((code, doc['outcome'], doc['stopped']['step']), (3, 'not-scored', 'interrupted'))
-        self.assertEqual(doc['siteRecord']['sha256'], common.sha_file(self.record))
+        self.assertEqual((doc['siteRecord']['sha256'], doc['lostSiteList']), (common.sha_file(self.record), LOST))
         self.assertIn('has its paint record', self.recorded(paint, ['--site', self.site])[1])
 
     def test_a_build_that_ended_without_a_record(self):
@@ -830,7 +922,7 @@ class RecordInterrupted(HeldOutDriver):
         code, err = self.recorded(build, argv)
         doc = json.loads((self.site / 'site-stopped.json').read_bytes())
         self.assertEqual((code, doc['mode'], doc['outcome'], doc['stopped']['step']), (3, HELD, 'stopped', 'interrupted'))
-        self.assertEqual(doc['labelsAddendumSha256'], ADDENDUM_SHA)
+        self.assertEqual((doc['labelsAddendumSha256'], doc['lostSiteList']), (ADDENDUM_SHA, LOST))
         self.assertIn('has its site record', self.recorded(build, argv)[1])
         with mock.patch.object(common, 'lost_sites', return_value=({NAME}, '00' * 32)):
             self.assertIn('lost-site list', self.recorded(build, argv)[1])
@@ -850,6 +942,33 @@ class StopsAndDownloads(Tmp):
             with self.assertRaises(ValueError):
                 common.write_new(self.dir / 'out.json', {'error': f'{folder}/labels.json'})
         self.assertFalse((self.dir / 'out.json').exists())
+
+    def test_a_write_is_whole_or_absent(self):
+        target = self.dir / 'r.json'
+        with mock.patch.object(common, 'durable', side_effect=OSError('disk')), self.assertRaises(OSError):
+            common.write_new(target, {'a': 1})
+        self.assertEqual(list(self.dir.iterdir()), [])  # neither the file nor its temporary copy
+        common.write_new(target, {'a': 1})
+        self.assertEqual((json.loads(target.read_bytes()), target.stat().st_mode & 0o777), ({'a': 1}, 0o444))
+        with self.assertRaises(FileExistsError):
+            common.write_new(target, {'a': 2})
+        self.assertEqual([p.name for p in self.dir.iterdir()], ['r.json'])
+
+    def test_other_spellings_of_the_folder_are_caught(self):
+        folder = self.dir / 'Coordinator-\u00e9'
+        with mock.patch.dict('os.environ', {common.COORDINATOR_ENV: str(folder)}):
+            plain = json.dumps({'x': f'{folder}/labels.json'}, ensure_ascii=False)
+            for text in (json.dumps({'x': f'{folder}/labels.json'}), plain.replace('/', '\\/'), plain.upper()):
+                with self.subTest(text=text):
+                    self.assertTrue(common.names_folder(text.encode()))
+                    with self.assertRaises(ValueError):
+                        common.write_new(self.dir / 'out.json', text.encode())
+            self.assertFalse(common.names_folder(b'{"x": "/somewhere/else"}'))
+            self.assertEqual(common.masked(f'open {str(folder).upper()}/a'), 'open <coordinator-only folder>/a')
+            env = common.child_env(A='1')
+            self.assertEqual((common.COORDINATOR_ENV in env, env['A']), (False, '1'))
+        self.assertTrue(common.names_folder(b'{"x": "some/labels/a.json"}', [common.ROOT / 'some' / 'labels']))  # relative to the repository
+        self.assertEqual(list(self.dir.iterdir()), [])
 
     def test_the_resolved_coordinator_folder_is_masked_and_refused_too(self):
         real = self.dir / 'real'
