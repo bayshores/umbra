@@ -327,7 +327,8 @@ class Lock2(unittest.TestCase):
             writer.gather()
 
     def test_adapter_preserves_builder_rule_and_code_checks(self):
-        # A separate interpreter preserves the builder's module-origin checks, without importing either generic common here.
+        # Lock 2 is finished: builder v4.3 runs only from its committed files (d71294d), so the edited checkout must refuse
+        # the lock-2 protocol by its code hashes. A separate interpreter preserves the builder's module-origin checks.
         code = '''import importlib.util, json
 from pathlib import Path
 root = Path.cwd()
@@ -337,17 +338,25 @@ spec.loader.exec_module(adapter)
 tool = adapter.load_builder()
 assert tool.LOCK_PATH_V4 == root / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.json'
 protocol = json.loads((root / '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json').read_bytes())
-assert tool.check_frozen_protocol(protocol, protocol['split']['sha256'], protocol['placementProtocol']['sha256'], 'v4-18.5')[0] == 4.3
-protocol['code']['scripts/california/car_shape.py'] = '0' * 64
-try:
-    tool.check_frozen_protocol(protocol, protocol['split']['sha256'], protocol['placementProtocol']['sha256'], 'v4-18.5')
-except ValueError as error:
-    assert 'Frozen code hash mismatch' in str(error)
-else:
+def refusal():
+    try:
+        tool.check_frozen_protocol(protocol, protocol['split']['sha256'], protocol['placementProtocol']['sha256'], 'v4-18.5')
+    except ValueError as error:
+        return str(error)
     raise AssertionError('changed code accepted')
+assert 'Frozen code hash mismatch' in refusal() and 'scripts/california/build_av2_scene.py' in refusal()
+protocol['code']['scripts/california/car_shape.py'] = '0' * 64
+assert 'scripts/california/car_shape.py' in refusal()
 '''
         result = subprocess.run([sys.executable, '-I', '-B', '-c', code], cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+        protocol = json.loads((ROOT / '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json').read_bytes())
+        try:  # the lock still names exactly the committed lock-2 files
+            committed = {name: hashlib.sha256(subprocess.run(['git', '-C', str(ROOT), 'show', f'd71294d:{name}'], check=True,
+                                                             capture_output=True).stdout).hexdigest() for name in protocol['code']}
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest('lock-2 committed files unavailable')
+        self.assertEqual(protocol['code'], committed)
 
 
 if __name__ == '__main__':

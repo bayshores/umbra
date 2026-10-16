@@ -73,6 +73,63 @@ const intPair=v=>Array.isArray(v)&&v.length===2&&v.every(Number.isSafeInteger);
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const inCrop=(v,c)=>finiteList(v,2)&&v[0]>=0&&v[0]<=c.width-1&&v[1]>=0&&v[1]<=c.height-1;
 const anchorOf=uv=>[Math.floor(uv[0]+.5),Math.floor(uv[1]+.5)];
+const dot2=(a,b)=>a[0]*b[0]+a[1]*b[1];
+const xz=p=>[p[0],p[2]];
+function crossingSourcePoint(scene,s) {
+  const g=scene.ground,e=s.crossing,p=e.mappedPoint,travel=mappedTravel(scene),a=xz(travel),v=s.vehicle;
+  if(g.sceneId!==scene.id||g.crossing.id!==scene.measurements.provenance.crossingId||!finiteList(p,3))
+    fail('crossing source identity does not match the loaded mapped crossing');
+  const edges=['edge1','edge2'].map(name=>{
+    const edge=g.crossing[name],p0=xz(edge[0]),p1=xz(edge.at(-1)),d=[p1[0]-p0[0],p1[1]-p0[1]],length=Math.hypot(...d);
+    if(!(length>1e-9))fail('crossing source needs finite nondegenerate mapped edges');
+    return {name,p0,p1,d,u:d.map(n=>n/length),length,forward:dot2(p0.map((n,i)=>(n+p1[i])/2),a)};
+  });
+  const edge=edges[edges[1].forward<edges[0].forward?1:0],{p0,u}=edge,point=xz(p),delta=point.map((n,i)=>n-p0[i]);
+  // Unnormalized bounds: a point exactly on a vertex compares equal instead of 1e-16 m past it.
+  const onSegment=q=>{const along=dot2(q.map((n,i)=>n-p0[i]),edge.d);return along>=0&&along<=dot2(edge.d,edge.d);};
+  // Same applicability as placement protocol v3.2+: zero endpoint allowance, both edges ahead, skew <=45 degrees.
+  const skew=90-Math.acos(Math.min(1,Math.abs(dot2(u,a))))*180/Math.PI;
+  if(edges.some(e=>e.forward<=0)||e.nearEdge!==edge.name||!onSegment(point)||Math.abs(delta[0]*u[1]-delta[1]*u[0])>1e-6||
+    dot2(point,a)<=0||skew>45)
+    fail('crossing source is outside its applicable finite mapped near edge');
+  const lane=g.egoLane,left=lane.leftBoundary,right=lane.rightBoundary,m0=[(left[0][0]+right[0][0])/2,(left[0][2]+right[0][2])/2],
+    den=a[0]*u[1]-a[1]*u[0],d=p0.map((n,i)=>n-m0[i]);
+  if(Math.abs(den)<1e-9)fail('crossing source edge is parallel to the mapped lane');
+  const t=(d[0]*u[1]-d[1]*u[0])/den,start=m0.map((n,i)=>n+t*a[i]);
+  if(!onSegment(start)||dot2(start,a)<=0)fail('crossing source does not cross the finite ego-lane chord ahead');
+  const front=['annotated','declared-default'].includes(v?.status)?v.mappedPoint:null,heading=v?.status==='annotated'?v.headingWorld:travel;
+  if(front) {
+    if(!finiteList(front,3)||!finiteList(heading,3))fail('crossing source needs its vehicle line');
+    const d=point.map((n,i)=>n-front[i===0?0:2]),h=xz(heading);
+    if(Math.abs(d[0]*h[1]-d[1]*h[0])>1e-6||!(0<dot2(xz(front),a)&&dot2(xz(front),a)<dot2(point,a)))
+      fail('crossing source does not meet its vehicle line ahead of the front');
+  }
+  const inside=g.drivableAreas.some(({outline})=>{
+    let inside=false;
+    for(let i=0,j=outline.length-1;i<outline.length;j=i++) {
+      const [xi,zi]=outline[i],[xj,zj]=outline[j];
+      if((zi>p[2])!==(zj>p[2])&&p[0]<(xj-xi)*(p[2]-zi)/(zj-zi)+xi)inside=!inside;
+    }
+    return inside;
+  });
+  const y=mappedGroundHeight(scene,p[0],p[2]),c=scene.camera,M=scene.transform.worldFromCamera,
+    camera=[0,1,2].map(k=>p.reduce((sum,n,i)=>sum+n*M[i][k],0));
+  if(!inside||y===null||Math.abs(y-p[1])>1e-9||Math.hypot(p[0],p[2])>g.placementRangeLimitMeters)
+    fail('crossing source has no supported mapped drivable ground point');
+  if(!(camera[2]>0)||!inCrop(e.pixelUV,c)||Math.abs(c.fx*camera[0]/camera[2]+c.cx-e.pixelUV[0])>1e-6||
+    Math.abs(c.fy*camera[1]/camera[2]+c.cy-e.pixelUV[1])>1e-6)
+    fail('crossing source does not project to its stored pixelUV');
+  return [...p];
+}
+
+// Null means this pixel does not name the untouched mapped crossing. The caller must compute evidence at this source
+// point (not at its earlier terrain-ray hit); retaining the source is coordinate consistency, not physical accuracy.
+export function mappedCrossingSource(scene,key,current) {
+  const s=scene.suggestions,e=s?.crossing;
+  if(!isMappedGround(scene)||key!=='crossing'||s?.schemaVersion!==3||s.sceneId!==scene.id||s.sourceClass!=='mappedGround'||
+    e?.status!=='mapped'||!intPair(current)||!same(current,e.pixel))return null;
+  return crossingSourcePoint(scene,s);
+}
 // The runtime rule's result as the file stores it: within 1e-6 m for points, ranges and the uncertainty, the rest equal.
 function sameHit(hit,v) {
   return !hit.point.some((n,i)=>Math.abs(n-v.groundPoint[i])>1e-6)&&hit.supportClass===v.supportClass&&hit.hidden===v.hidden&&hit.hitKind===v.hitKind&&
@@ -145,6 +202,7 @@ function validateMapped(raw,scene) {
     const ok=e.status==='measured'?finiteNumber(e.plusMinusM)&&e.plusMinusM>=0&&e.plusMinusM<=5&&e.label===`±${e.plusMinusM.toFixed(2)} m`&&evidence(e.evidence)
       :Object.hasOwn(CROSSING_ERROR_LABELS,e.status)&&e.label===CROSSING_ERROR_LABELS[e.status]&&e.plusMinusM===null&&(e.status==='unresolved'?evidence(e.evidence):e.evidence===null);
     if(!ok)fail('crossing.crossingError must be a measured offset with its evidence, or a named status');
+    crossingSourcePoint(scene,raw);
   });
   mappedElement(raw.vehicle,scene,'vehicle',v=>{
     if(!name(v.label))fail('vehicle.label must be a plain name');

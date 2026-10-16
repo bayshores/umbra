@@ -150,7 +150,11 @@ class Fixture:
         self.split = self.root / 'split.json'; self.split.write_text(json.dumps(split))
         self.lock = self.root / 'split.lock.json'; self.lock.write_text(json.dumps({'sha256': sha(self.split.read_bytes())}))
         self.placement = self.root / 'placement-protocol.json'
-        self.placement.write_text(json.dumps(PLACEMENT_V34 if version >= 4.3 else PLACEMENT))  # v4.3 pins placement protocol v3.4
+        placement = PLACEMENT_V34 if version >= 4.3 else PLACEMENT
+        if version >= 5:
+            placement = {**placement, 'crossingApplicability': {'parameters': tool.suggest_tool.APPLICABILITY_PARAMETERS,
+                         'refusalCodes': list(tool.suggest_tool.REFUSAL_CODES)}}
+        self.placement.write_text(json.dumps(placement))  # v4.3 pins placement protocol v3.4
         self.protocol = self.root / 'builder-protocol.json'; self.write_protocol()
 
     def write_protocol(self, **changes):
@@ -160,7 +164,7 @@ class Fixture:
         if self.version == 3:
             doc = {'builderVersion': 3, 'parameters': tool.PARAMETERS_V3, 'code': tool.runtime_code_hashes(3)}
         else:
-            make = {4: tool.v4_parameters, 4.1: tool.v41_parameters, 4.3: tool.v43_parameters}[self.version]
+            make = {4: tool.v4_parameters, 4.1: tool.v41_parameters, 4.3: tool.v43_parameters, 5: tool.v5_parameters}[self.version]
             doc = {'builderVersion': self.version, 'parametersByVariant': {n: make(t) for n, t in self.variants.items()},
                    'code': tool.runtime_code_hashes(self.version)}
         doc.update({'split': {'sha256': sha(self.split.read_bytes())}, 'placementProtocol': {'sha256': sha(self.placement.read_bytes())}})
@@ -970,6 +974,121 @@ class V43RuleTests(unittest.TestCase):
         self.assertEqual(selection['builder']['version'], 4.3)
 
 
+class V5RuleTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.root = Path(self.temp.name)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def fixture(self, name='v5', **options):
+        return Fixture(self.root / name, version=5, variants={'v4-18.5': tool.V4_VARIANTS['v4-18.5']}, **options)
+
+    def test_v5_refuses_an_anchor_beyond_the_finite_edge_endpoint(self):
+        fx = self.fixture(); m = json.loads(fx.map_path.read_bytes())
+        for edge in ('edge1', 'edge2'):
+            m['pedestrian_crossings'][CROSSING][edge][-1]['y'] = -3.0
+        fx.map_path.write_text(json.dumps(m))
+        result = tool.build(fx.args())
+        self.assertIsNone(result['chosen'])
+        checked = [f for f in result['evaluatedFrames'] if 'crossingAnchorV5' in f]
+        self.assertTrue(checked)
+        self.assertTrue(all(any(p['code'] == 'crossing-point-off-edge-segment' for p in f['crossingAnchorV5']['problems']) for f in checked))
+        self.assertTrue(all(f['crossingAnchorV5']['edgeMarginsM']['fromEnd'] < 0 for f in checked))
+
+    def test_v5_refuses_an_anchor_outside_drivable_geometry(self):
+        fx = self.fixture(); m = json.loads(fx.map_path.read_bytes())
+        m['drivable_areas']['9']['area_boundary'] = [pt(-30, -6), pt(39.5, -6), pt(39.5, -2), pt(100, -2), pt(100, 6), pt(-30, 6)]
+        fx.map_path.write_text(json.dumps(m))
+        result = tool.build(fx.args())
+        self.assertIsNone(result['chosen'])
+        checked = [f for f in result['evaluatedFrames'] if 'crossingAnchorV5' in f]
+        self.assertTrue(checked)
+        self.assertTrue(all(not f['crossingAnchorV5']['insideDrivable']['crossing'] for f in checked))
+        self.assertTrue(all(any(p['code'] == 'crossing-outside-drivable' for p in f['crossingAnchorV5']['problems']) for f in checked))
+
+    def test_v5_valid_finite_edge_anchor_keeps_the_twelve_metre_minimum_and_choice(self):
+        fx = self.fixture(); result = tool.build(fx.args())
+        chosen = result['chosen']; self.assertIsNotNone(chosen)
+        frame = next(f for f in result['evaluatedFrames'] if str(f['cameraTimestampNs']) == chosen['cameraTimestampNs'])
+        self.assertTrue(all(d >= 12 for d in frame['anchorDistancesM'].values()))
+        self.assertEqual(frame['crossingAnchorV5']['problems'], [])
+        self.assertTrue(all(frame['crossingAnchorV5']['insideDrivable'].values()))
+        self.assertTrue(frame['crossingAnchorV5']['frontBetweenCameraAndCrossing'])
+        close = [f for f in result['evaluatedFrames'] if f.get('anchorDistancesM', {}).get('vehicleFront', 12) < 12]
+        self.assertTrue(close)
+        self.assertTrue(all(not f['feasible'] and '12 m minimum' in f['reasons'][0] for f in close))
+        old = Fixture(self.root / 'v43', version=4.3, variants=fx.variants)
+        previous = tool.build(old.args())
+        self.assertEqual(previous['chosen'], chosen)
+        oldframes = copy.deepcopy(previous['evaluatedFrames']); frames = copy.deepcopy(result['evaluatedFrames'])
+        for f in frames:
+            f.pop('crossingAnchorV5', None)
+        self.assertEqual(oldframes, frames)
+
+    def test_v5_validates_actor_coordinates_and_front_order_together(self):
+        protocol = {**PLACEMENT_V34, 'crossingApplicability': {'parameters': tool.suggest_tool.APPLICABILITY_PARAMETERS,
+                    'refusalCodes': list(tool.suggest_tool.REFUSAL_CODES)}}
+        lane = {'left': [[-1., 0, 0], [-1., 0, -30]], 'right': [[1., 0, 0], [1., 0, -30]]}
+        geo = tool.FrameGeometry(lane, [np.array([[-6., 0], [6., 0], [6., -30], [-6., -30]])],
+                                 {'edge1': [[-6., 0, -20], [6., 0, -20]], 'edge2': [[-6., 0, -23], [6., 0, -23]]}, [], protocol, .01)
+        cross, front, person, center = (np.array(p) for p in ([3., -20], [3., -18], [5.7, -20], [3., -16]))
+        self.assertEqual(tool.finite_anchor_checks(geo, 'edge1', cross, front, person, center)['problems'], [])
+        for name, changes, code in (('front', {'front': [7., -18]}, 'vehicleFront-outside-drivable'),
+                                    ('centre', {'center': [7., -16]}, 'vehicleCentre-outside-drivable'),
+                                    ('person', {'person': [7., -20]}, 'person-outside-drivable'),
+                                    ('order', {'front': [3., -21]}, 'vehicle-front-not-between')):
+            with self.subTest(name=name):
+                args = {k: np.array(v) for k, v in {'crossing': cross, 'front': front, 'person': person, 'center': center, **changes}.items()}
+                check = tool.finite_anchor_checks(geo, 'edge1', **args)
+                self.assertIn(code, [p['code'] for p in check['problems']])
+
+    def test_v5_protocol_pins_the_new_rule_and_legacy_parameters_are_unchanged(self):
+        fx = self.fixture(); protocol = json.loads(fx.protocol.read_bytes())
+        self.assertEqual(tool.check_frozen_protocol(protocol, sha(fx.split.read_bytes()), sha(fx.placement.read_bytes()), fx.variant)[0], 5)
+        changed = copy.deepcopy(protocol); changed['parametersByVariant'][fx.variant]['crossingAnchor']['applicability']['segmentToleranceMeters'] = .1
+        with self.assertRaisesRegex(ValueError, 'parameters differ'):
+            tool.protocol_rules(changed, fx.variant)
+        params = tool.v5_parameters(tool.V4_VARIANTS['v4-18.5']); params.pop('crossingAnchor')
+        self.assertEqual(params, tool.v43_parameters(tool.V4_VARIANTS['v4-18.5']))
+        for minimum in (None, 11.99):
+            with self.assertRaisesRegex(ValueError, 'unchanged 12 m minimum'):
+                tool.v5_parameters({**tool.V4_VARIANTS['v4-18.5'], 'minAnchorDistanceM': minimum})
+
+    def test_v5_keeps_an_occupied_declared_default_unknown(self):
+        fx = self.fixture(car_x=31., car_y=-5., drift=.05, evidence=[], expected_blocked=False)
+        result = tool.build(fx.args())
+        occupied = [f for f in result['evaluatedFrames'] if f.get('outcome') == tool.OCCUPIED]
+        self.assertTrue(occupied)
+        self.assertIsNone(result['chosen'])
+        self.assertEqual(result['status'], tool.OCCUPIED)
+
+    def test_v43_outputs_match_committed_d71294d_for_valid_invalid_and_occupied_geometry(self):
+        tree = self.root / 'v43-committed'
+        code = committed_hashes('d71294d', tool.RUNTIME_CODE_BY_VERSION[4.3])
+        if code is None:
+            self.skipTest('v4.3 committed files unavailable')
+        for name in code:
+            data = subprocess.run(['git', '-C', str(ROOT), 'show', f'd71294d:{name}'], check=True, capture_output=True).stdout
+            path = tree / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
+        for case, options in (('valid', {}), ('off-edge', {}), ('occupied', dict(car_x=31., car_y=-5., drift=.05, evidence=[], expected_blocked=False))):
+            with self.subTest(case=case):
+                fx = Fixture(self.root / case, version=4.3, variants={'v4-18.5': tool.V4_VARIANTS['v4-18.5']}, **options)
+                if case == 'off-edge':
+                    m = json.loads(fx.map_path.read_bytes())
+                    for edge in ('edge1', 'edge2'):
+                        m['pedestrian_crossings'][CROSSING][edge][-1]['y'] = -3.
+                    fx.map_path.write_text(json.dumps(m))
+                protocol = fx.root / 'committed-protocol.json'
+                protocol.write_text(json.dumps({**json.loads(fx.protocol.read_bytes()), 'code': code}))
+                result = subprocess.run([sys.executable, '-B', str(tree / 'scripts/california/build_av2_scene.py'),
+                                        *fx.cli(output='old', protocol=str(protocol), protocol_sha256=sha(protocol.read_bytes()))], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                tool.build(fx.args(output='new'))
+                self.assertEqual(without_builder_identity((fx.root / 'old/selection.json').read_bytes()),
+                                 without_builder_identity((fx.root / 'new/selection.json').read_bytes()))
+
+
 class V3ReproducibilityTests(unittest.TestCase):
     """A builder version 3 protocol still runs the v3 rules: the same selection and plan as the frozen builder file at
     commit cb2f497 (run as its own process), apart from the fields naming the builder file and protocol file."""
@@ -1025,6 +1144,7 @@ class RealDataTests(unittest.TestCase):
     V4_COMMIT = '772fdce'  # builder v4 runs only from these committed files (v4.1 changed the builder and shared scripts)
     V41_COMMIT = '37bf84d'  # builder v4.1 runs only from these committed files (v4.2 changed the builder and shared scripts)
     V42_COMMIT = '8ec75f8'  # builder v4.2 (shape-v1) runs only from these committed files (v4.3 changed car_shape.py and the builder)
+    V43_COMMIT = 'd71294d'  # builder v4.3 / lock 2 runs from these committed files (v5 changes finite-edge applicability)
     SHAPE_V1_PINS = ('07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825', 'cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626')
     V3_RUN = BASE / 'evaluation/pao-accuracy/scene-builder/v3/runs/8c52d911-2658849'
     PROTOCOL_V3_SHA = '9c22c1f613ebbbd292fe92ead485ffedafffcbfc2f039fd12ad136dc14172393'
@@ -1042,7 +1162,9 @@ class RealDataTests(unittest.TestCase):
             self.assertEqual(protocol['builderVersion'], version)
             self.assertEqual(set(protocol['code']), set(tool.RUNTIME_CODE_BY_VERSION[version]))
             if version == 4.3:  # lock 2 changed only car_shape.py (AV2 train/val folder); every other file is the frozen v4.3 one
-                current = tool.runtime_code_hashes(4.3); shape_file = 'scripts/california/car_shape.py'
+                current = committed_hashes(self.V43_COMMIT, tool.RUNTIME_CODE_BY_VERSION[4.3]); shape_file = 'scripts/california/car_shape.py'
+                if current is None:
+                    self.skipTest('v4.3 committed files unavailable')
                 self.assertEqual({k: v for k, v in protocol['code'].items() if k != shape_file}, {k: v for k, v in current.items() if k != shape_file})
                 self.assertNotEqual(protocol['code'][shape_file], current[shape_file])
                 if self.LOCK2_V43.exists():  # the lock-2 copy differs from the source protocol only in the car_shape.py pin

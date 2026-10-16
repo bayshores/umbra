@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline, SIZE_LIMITS } from '../src/geometry.mjs';
+import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline, SIZE_LIMITS,
+  mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight } from '../src/geometry.mjs';
 import { loadScene } from '../src/scene.mjs';
 import { scene,input,fetchAsset } from './scene-input.mjs';
+import {analytic,loadAnalytic} from './mapped-fixture.mjs';
+import {suggestionConsistency} from '../scripts/evaluation/pao-baseline.mjs';
 test('measured pixels round-trip through the fitted camera transform',()=>{
   const [u,v]=input.pixels.crossing,p=measuredPoint(scene,[u,v]),R=scene.transform.worldFromCamera;
   const camera=scene.transform.cameraOriginGround.map((o,i)=>o+R.reduce((s,row,j)=>s+row[i]*p[j],0));
@@ -80,4 +83,82 @@ test('missing scene and altered buffer fail the loader',async()=>{
     if(path.endsWith('depth.bin')){const b=new Uint8Array(await response.arrayBuffer());b[0]^=1;return new Response(b);}
     return response;
   },scene.id),/checksum mismatch/);
+});
+
+function measuredGrid(ground,slope=[.01,.02]) {
+  const columns=21,rows=61,originXZ=[-5,-30],cellMeters=.5,
+    heights=Array.from({length:columns*rows},(_,i)=>-2+slope[0]*(originXZ[0]+i%columns*cellMeters)+slope[1]*(originXZ[1]+Math.floor(i/columns)*cellMeters)),
+    sweeps=['1000000000','2000000000','3000000000','4000000000'].map(timestampNs=>({timestampNs,sha256:'e'.repeat(64)}));
+  ground.schemaVersion=4;ground.support={rows:[],count:0};
+  ground.alongRayUncertainty={method:'supportSweepHoldout',heightBandMeters:null,rule:'analytic independent integer-click errors',quantile:.975,minimumCount:100,
+    bins:[{minRangeM:0,maxRangeM:30,meters:.3,count:100}]};
+  ground.measuredGround={version:'measured-ground-v1',columns,rows,originXZ,cellMeters,heights,heightBounds:[Math.min(...heights),Math.max(...heights)],
+    partition:{frameTimestampNs:'124',excludedNearNs:250000000,fit:sweeps.slice(0,3),calibration:sweeps.slice(3)}};
+}
+const projectMeasured=(s,p)=>{
+  const m=s.transform.worldFromCamera,q=[0,1,2].map(k=>p[0]*m[0][k]+p[1]*m[1][k]+p[2]*m[2][k]),c=s.camera;
+  return [c.fx*q[0]/q[2]+c.cx,c.fy*q[1]/q[2]+c.cy];
+};
+test('measured ground: sloped continuous triangles hit exactly across grid cells and diagonals',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;}}));
+  for(const [x,z] of [[0,-12],[-.27,-14.43],[.23,-16.71],[-.75,-19.25],[1,-20],[-1.21,-18.37]]) {
+    const y=-2+.01*x+.02*z,hit=mappedGroundHit(s,projectMeasured(s,[x,y,z]));
+    assert.ok(Math.hypot(hit.point[0]-x,hit.point[1]-y,hit.point[2]-z)<1e-6);
+    assert.ok(Math.abs(mappedGroundHeight(s,x,z)-y)<1e-12);
+    assert.equal(hit.hitKind,'top');assert.equal(hit.alongRayUncertaintyM,.3);
+  }
+});
+test('measured ground: an unmeasured gap returns Unknown while the reference raster remains available',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;
+    for(let row=20;row<30;row++)for(let col=8;col<=12;col++)g.measuredGround.heights[row*21+col]=null;
+  }}));
+  assert.equal(mappedGroundHeight(s,0,-18),null);
+  assert.notEqual(mappedGroundReferenceHeight(s,0,-18),null);
+  assert.throws(()=>mappedGroundHit(s,projectMeasured(s,[0,-2,-18])),/No independently measured ground support/);
+});
+test('measured ground: empty support never falls back to mapped terrain',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g);g.measuredGround.heights.fill(null);g.measuredGround.heightBounds=null;
+    g.measuredGround.partition.fit=[];g.measuredGround.partition.calibration=[];g.alongRayUncertainty.bins=[];}}));
+  assert.throws(()=>mappedGroundHit(s,[2,5]),/No independently measured ground support/);
+  assert.equal(mappedGroundHeight(s,0,-10),null);
+});
+test('measured ground: independent bands above the gate are displayed unchanged and missing calibration refuses',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.alongRayUncertainty.bins[0].meters=.91;}}));
+  assert.equal(mappedGroundHit(s,[2,6]).alongRayUncertaintyM,.91);
+  s.ground.alongRayUncertainty.bins=[];
+  assert.throws(()=>mappedGroundHit(s,[2,6]),/No independent click-error calibration/);
+});
+test('measured ground: loader refuses scoring-frame leakage, calibration overlap and false height bounds',async()=>{
+  for(const change of [
+    g=>g.measuredGround.partition.fit[0].timestampNs='124',
+    g=>g.measuredGround.partition.calibration[0].timestampNs='1000000000',
+    g=>g.measuredGround.heightBounds[0]-=1,
+    g=>{g.support={rows:[0],count:1};},
+  ])await assert.rejects(loadAnalytic(analytic({ground:g=>{measuredGrid(g);change(g);}})),/Invalid mapped ground/);
+});
+test('measured ground: legacy layer hit and reference height keep their existing exact values',async()=>{
+  const s=await loadAnalytic(analytic()),hit=mappedGroundHit(s,[2,5]);
+  assert.deepEqual(hit.point,[0,-1.4375000000000002,-9.583333333333336]);
+  assert.equal(mappedGroundHeight(s,0,-10),mappedGroundReferenceHeight(s,0,-10));
+  assert.equal(hit.hitKind,'top');assert.deepEqual(hit.terrainCell,[10,14]);
+});
+test('measured ground: moving a declared actor stops at measured holes despite a complete publisher raster',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;
+    for(let row=47;row<=53;row++)for(let column=0;column<21;column++)g.measuredGround.heights[row*21+column]=null;
+  }}));
+  const setup={pixels:{crossing:[2,4],parking:[2,6],target:[4,4]},vehicle:{width:1,height:1.5,length:2},targetHeight:1.1,proposedSetback:10,driverDistance:20};
+  const baseline=createScenario(s,setup);
+  assert.ok(baseline.limits.maximumSetback<14);
+  assert.equal(mappedGroundHeight(s,0,-5),null);
+  assert.throws(()=>createScenario(s,{...setup,proposedSetback:14}),/setback|extent|between|outside|range/i);
+});
+test('measured ground: C preserves a valid fractional hit and reports a rounded diagnostic in a hole as Unknown',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;
+    for(let column=0;column<21;column++)g.measuredGround.heights[20*21+column]=null;
+  }})),point=[0,-2,-18.7],uv=projectMeasured(s,point);
+  s.suggestions={roadAxis:{directionOfTravel:[0,0,-1]},crossing:{status:'mapped',mappedPoint:point,pixelUV:uv,pixel:uv.map(n=>Math.floor(n+.5)),pixelOffsetFromMappedM:0},
+    vehicle:{status:'unknown',reason:'analytic'},person:{status:'unknown',reason:'analytic'}};
+  const result=suggestionConsistency(s).roles.crossing;
+  assert.equal(result.metricC.pointUsedMet,true);assert.equal(result.metricC.pixelUVRayHitMet,true);
+  assert.equal(result.integerAnchorAlone.status,'unknown');assert.match(result.integerAnchorAlone.reason,/measured ground support/);
 });

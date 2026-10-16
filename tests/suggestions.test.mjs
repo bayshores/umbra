@@ -3,9 +3,10 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {loadScene} from '../src/scene.mjs';
-import {createScenario,measuredPoint} from '../src/geometry.mjs';
-import {validateSuggestions,suggestedSetup,isStillSuggested,suggestionStatus} from '../src/suggestions.mjs';
+import {createScenario,measuredPoint,mappedGroundHit} from '../src/geometry.mjs';
+import {validateSuggestions,suggestedSetup,isStillSuggested,suggestionStatus,mappedCrossingSource} from '../src/suggestions.mjs';
 import {scene,fetchAsset} from './scene-input.mjs';
+import {analytic,loadAnalytic,FLAT,COLUMNS} from './mapped-fixture.mjs';
 
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const sceneFile=name=>readFile(new URL(`../public/scenes/${scene.id}/${name}`,import.meta.url));
@@ -32,6 +33,76 @@ function findPixel(condition) {
 }
 const noDepth=findPixel(([u,v])=>scene.depth[v*scene.camera.width+u]===0);
 const offRoad=findPixel(([u,v])=>scene.depth[v*scene.camera.width+u]>0&&measuredPoint(scene,[u,v])[1]>1);
+
+async function sourceCrossingFixture() {
+  const s=await loadAnalytic(analytic({terrain:heights=>{heights[18*COLUMNS+10]=FLAT+.0625;}}));
+  s.suggestions={schemaVersion:3,sourceClass:'mappedGround',sceneId:s.id,
+    crossing:{status:'mapped',nearEdge:'edge1',pixel:[2,4],pixelUV:[2,4],mappedPoint:[0,-1.4375,-14.375]},vehicle:{status:'unknown'}};
+  return s;
+}
+
+test('mapped crossing source keeps the exact finite-edge point when an earlier terrain step intercepts its ray',async()=>{
+  const s=await sourceCrossingFixture(),source=s.suggestions.crossing.mappedPoint;
+  assert.ok(Math.abs(mappedGroundHit(s,[2,4]).point[2]-source[2])>.05);
+  assert.deepEqual(mappedCrossingSource(s,'crossing',[2,4]),source);
+  assert.notEqual(mappedCrossingSource(s,'crossing',[2,4]),source,'Return a copy of the verified source point.');
+});
+
+test('mapped crossing source refuses a moved, fractional, unknown or non-matching anchor',async()=>{
+  const s=await sourceCrossingFixture();
+  for(const pixel of [[3,4],[2,5],[2,4.000001],[2,4,0],['2',4],null])assert.equal(mappedCrossingSource(s,'crossing',pixel),null);
+  for(const key of ['parking','target','other'])assert.equal(mappedCrossingSource(s,key,[2,4]),null);
+  for(const change of [{schemaVersion:1},{sceneId:'another'},{sourceClass:'other'},
+    {crossing:{...s.suggestions.crossing,status:'unknown'}}])
+    assert.equal(mappedCrossingSource({...s,suggestions:{...s.suggestions,...change}},'crossing',[2,4]),null);
+  assert.deepEqual(mappedCrossingSource(s,'crossing',[2,4]),s.suggestions.crossing.mappedPoint,'Returning to the same anchor restores its source identity.');
+});
+
+test('mapped crossing source rejects wrong identity, endpoints, drivable support and projection mismatches',async()=>{
+  const original=await sourceCrossingFixture();
+  const cases={
+    identity:s=>{s.ground.crossing.id='another';},
+    edge:s=>{s.suggestions.crossing.nearEdge='edge2';},
+    endpoint:s=>{s.ground.crossing.edge1[1][0]=-.1;},
+    degenerate:s=>{s.ground.crossing.edge1[1]=[...s.ground.crossing.edge1[0]];},
+    behind:s=>{s.ground.crossing.edge2.forEach(p=>{p[2]=1;});},
+    skew:s=>{s.ground.crossing.edge1=[[-3,-1.4375,-8],[3,-1.4375,-20.75]];},
+    drivable:s=>{s.ground.drivableAreas[0].outline=[[-3,-15],[3,-15],[3,-30],[-3,-30]];},
+    hole:s=>{s.terrainHeights[19*COLUMNS+10]=NaN;},
+    height:s=>{s.suggestions.crossing.mappedPoint[1]+=.01;},
+    projection:s=>{s.suggestions.crossing.pixelUV=[2,4.01];},
+    line:s=>{s.suggestions.vehicle={status:'declared-default',mappedPoint:[1,-1.4375,-10]};},
+    front:s=>{s.suggestions.vehicle={status:'declared-default',mappedPoint:[0,-1.4375,-16]};},
+  };
+  for(const [name,mutate] of Object.entries(cases)) {
+    const s=structuredClone(original);mutate(s);
+    assert.throws(()=>mappedCrossingSource(s,'crossing',[2,4]),/^Error: Invalid placement suggestions: crossing source/,name);
+  }
+});
+
+test('mapped crossing source accepts finite endpoints and a matching vehicle line without moving the source',async()=>{
+  const s=await sourceCrossingFixture();
+  s.ground.crossing.edge1[0][0]=0;
+  s.suggestions.vehicle={status:'declared-default',mappedPoint:[0,-1.4375,-10]};
+  assert.deepEqual(mappedCrossingSource(s,'crossing',[2,4]),s.suggestions.crossing.mappedPoint);
+  s.suggestions.vehicle={...s.suggestions.vehicle,status:'annotated',headingWorld:[0,0,-1]};
+  assert.deepEqual(mappedCrossingSource(s,'crossing',[2,4]),s.suggestions.crossing.mappedPoint);
+});
+
+test('mapped crossing source accepts a source exactly on either vertex of oblique and reversed edges',async()=>{
+  const s=await sourceCrossingFixture(),y=-1.4375,source=s.suggestions.crossing.mappedPoint;
+  for(const edge of [[[-3,y,-14],[0,y,-14.375]],[[0,y,-14.375],[-3,y,-14]],[[3,y,-14.75],[0,y,-14.375]],[[0,y,-14.375],[3,y,-14.75]]]) {
+    s.ground.crossing.edge1=structuredClone(edge);
+    assert.deepEqual(mappedCrossingSource(s,'crossing',[2,4]),source,JSON.stringify(edge));
+  }
+});
+
+test('mapped crossing source keeps an off-centre mapped point when its vehicle remains unknown',async()=>{
+  const s=await sourceCrossingFixture();
+  s.suggestions.crossing={...s.suggestions.crossing,pixel:[3,4],pixelUV:[2+20/14.375,4],mappedPoint:[1,-1.4375,-14.375]};
+  assert.deepEqual(mappedCrossingSource(s,'crossing',[3,4]),s.suggestions.crossing.mappedPoint);
+  assert.equal(s.suggestions.vehicle.status,'unknown');
+});
 
 test('a complete suggestion validates through roadPoint and createScenario with no clicks',()=>{
   const raw=fixture();

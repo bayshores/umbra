@@ -27,7 +27,7 @@ import os from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import path from 'node:path';
 import {loadScene} from '../../src/scene.mjs';
-import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
+import {mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
   TOO_CLOSE_TO_CALL_M,SIZE_LIMITS} from '../../src/geometry.mjs';
 import {setbackSweep,actorConflicts,scenarioFacts,allowedNumbersFrom,checkAnswer} from '../../src/scenario-assistant.mjs';
 import {suggestedSetup,crossingText} from '../../src/suggestions.mjs';
@@ -158,7 +158,8 @@ export function clickToGround(scene) {
     if(m.referenceEligible[i]!==1){skipped.notCameraEligible++;continue;}
     const p=[m.referencePositions[3*i],m.referencePositions[3*i+1],m.referencePositions[3*i+2]];
     if(!p.every(Number.isFinite)){skipped.nonFinite++;continue;}
-    const h=mappedGroundHeight(scene,p[0],p[2]);
+    // Keep the frozen scoring selection on the publisher raster when runtime placement uses measured ground.
+    const h=mappedGroundReferenceHeight(scene,p[0],p[2]);
     if(h==null){skipped.noMappedHeight++;continue;}
     const dy=p[1]-h;
     if(Math.abs(dy)>GROUND_GATE_M){skipped.notGroundReturn++;continue;}
@@ -188,6 +189,7 @@ export function clickToGround(scene) {
     errorDefinition:'horizontal (world X/Z) distance from the app placed point to the return; signed along-ray > 0 means placed beyond the return',
     groundGateM:GROUND_GATE_M,skipped,
     bands:bin(BANDS,GROUND_GATE_M),fractionalClickBands:bin(BANDS,GROUND_GATE_M,'fractional'),
+    diagnosticRangeBands:bin([[12,15],[15,18],[18,20],[20,22],[22,25]],GROUND_GATE_M),
     strictGate:{groundGateM:STRICT_GROUND_GATE_M,bands:bin(BANDS,STRICT_GROUND_GATE_M)},
     laneBandsForReproduction:bin(LANE_BANDS,GROUND_GATE_M),
     metricBPoints:{band:'12-25 m',click:'integer',groundGateM:GROUND_GATE_M,
@@ -221,10 +223,11 @@ export function suggestionConsistency(scene) {
     if(e.status==='unknown'){out[name]={status:'unknown',reason:e.reason};continue;}
     const parts=p=>{const d=[p[0]-e.mappedPoint[0],p[1]-e.mappedPoint[1],p[2]-e.mappedPoint[2]];
       return {horizontalM:r(Math.hypot(d[0],d[2]),6),alongTravelM:r(d[0]*travel[0]+d[2]*travel[2],6),rightOfTravelM:r(d[0]*right[0]+d[2]*right[2],6),verticalM:r(d[1],6)};};
-    const used=anchorPoint(scene,key,e.pixel).point,hit=mappedGroundHit(scene,evaluatedPosition(scene,key,e.pixel)),anchor=mappedGroundHit(scene,e.pixel);
+    const used=anchorPoint(scene,key,e.pixel).point,hit=mappedGroundHit(scene,evaluatedPosition(scene,key,e.pixel));
+    let anchor;try{anchor=mappedGroundHit(scene,e.pixel);}catch(error){anchor={unknown:error.message};}
     const usedResidual=Math.hypot(used[0]-e.mappedPoint[0],used[2]-e.mappedPoint[2]),hitResidual=Math.hypot(hit.point[0]-e.mappedPoint[0],hit.point[2]-e.mappedPoint[2]);
     out[name]={pixel:e.pixel,pixelUV:e.pixelUV,pointUsed:{source:key==='parking'&&e.status==='annotated'?'averaged front point':'pixelUV ray hit',...parts(used)},
-      pixelUVRayHit:{...parts(hit.point),rangeM:r(hit.rangeM,3)},integerAnchorAlone:parts(anchor.point),storedResidualM:r(e.pixelOffsetFromMappedM,6),
+      pixelUVRayHit:{...parts(hit.point),rangeM:r(hit.rangeM,3)},integerAnchorAlone:anchor.unknown?{status:'unknown',reason:anchor.unknown}:parts(anchor.point),storedResidualM:r(e.pixelOffsetFromMappedM,6),
       metricC:{targetM:METRIC_C_TARGET_M,pointUsedMet:usedResidual<=METRIC_C_TARGET_M,pixelUVRayHitMet:hitResidual<=METRIC_C_TARGET_M}};
   }
   return {label:'internal consistency (the app checked against its own map and annotation inputs), not accuracy',targetM:METRIC_C_TARGET_M,roles:out};
@@ -534,7 +537,7 @@ export function firstLoad(scene,setup) {
   return {current:sc.currentVisibility.state,proposed:sc.proposedVisibility.state,currentPose:sc.baseline.pose,baselineSetbackM:r(sc.baselineSetback,6),
     clearanceM:r(clearanceM,5),closestFractionAlongSightline:r(t,4),sightlineHeightAboveMappedGroundAtClosestM:ground==null?null:r(p[1]-ground,3),
     limits:Object.fromEntries(Object.entries(sc.limits).map(([k,v])=>[k,r(v,4)])),
-    eye:{world:sc.eye.map(n=>r(n,6)),heightAboveMappedGroundM:r(sc.eye[1]-mappedGroundHeight(scene,sc.eye[0],sc.eye[2]),3)},
+    eye:{world:sc.eye.map(n=>r(n,6)),heightAboveMappedGroundM:r(sc.eyeHeightM,3)},
     targetHeightM:Number(setup.targetHeight),targetGround:sc.targetGround.map(n=>r(n,6))};
 }
 
@@ -685,7 +688,7 @@ export async function computeBaseline({coverage=true,samples=3000,timingRuns,dir
       carShape:scene.carShape?{status:scene.carShape.status,track:scene.carShape.track,along:scene.carShape.along,lateral:scene.carShape.lateral,
         allTopsAtLeastH:scene.carShape.allTopsAtLeastH,shapeProtocolSha256:scene.ground.carShape.protocol.shapeProtocolSha256}:null},
     conventions:{
-      driverEye:sc?`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`:'no suggested setup (setupUnavailable)',
+      driverEye:sc?`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${sc.eyeHeightM===null?'Unknown height above':`${r(sc.eyeHeightM,3)} m above`} the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`:'no suggested setup (setupUnavailable)',
       target:sc?`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`:'no suggested setup (setupUnavailable)',
       percentile:'nearest-rank: sorted[ceil(p n) - 1]',
       distances:'metres; horizontal means world X/Z',

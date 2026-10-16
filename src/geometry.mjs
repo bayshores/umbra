@@ -68,9 +68,66 @@ function terrainSample(scene,x,z) {
   return Number.isNaN(cityZ)?null:{cityZ,cell:[column,row]};
 }
 // Mapped ground height (world Y) under a world (x, z), or null when the raster has no value there.
-export function mappedGroundHeight(scene,x,z) {
+export function mappedGroundReferenceHeight(scene,x,z) {
   const cell=terrainSample(scene,x,z);
   return cell&&cell.cityZ-scene.ground.frame.cityOrigin[2];
+}
+export function mappedGroundHeight(scene,x,z) {
+  if(scene.ground.schemaVersion!==4)return mappedGroundReferenceHeight(scene,x,z);
+  const s=scene.ground.measuredGround,fx=(x-s.originXZ[0])/s.cellMeters,fz=(z-s.originXZ[1])/s.cellMeters,
+    column=Math.floor(fx),row=Math.floor(fz),plane=measuredTriangle(s,column,row,fz-row>fx-column);
+  return plane?plane[0]+plane[1]*x+plane[2]*z:null;
+}
+// Shared vertices make this a continuous triangulated surface. A missing vertex leaves its triangle unsupported.
+function measuredTriangle(s,column,row,upper) {
+  if(column<0||row<0||column>=s.columns-1||row>=s.rows-1)return null;
+  const k=row*s.columns+column,h=s.heights[k],diagonal=s.heights[k+s.columns+1],side=s.heights[k+(upper?s.columns:1)];
+  if(h===null||diagonal===null||side===null)return null;
+  const dx=(upper?diagonal-side:side-h)/s.cellMeters,dz=(upper?side-h:diagonal-side)/s.cellMeters;
+  return [h-dx*(s.originXZ[0]+column*s.cellMeters)-dz*(s.originXZ[1]+row*s.cellMeters),dx,dz];
+}
+// Also used offline for calibration: geometry only, before the calibrated band is available.
+export function measuredSurfaceHit(scene,position) {
+  const c=scene.camera,g=scene.ground,s=g.measuredGround;
+  if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
+  const q=[(position[0]-c.cx)/c.fx,(position[1]-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>dot(row,q)),n=Math.hypot(...raw),d=raw.map(v=>v/n);
+  if(!(d[1]<0))throw new Error('Pixel ray does not descend toward the ground.');
+  const missing=()=>new Error('No independently measured ground support along this ray.');
+  if(s.heightBounds===null)throw missing();
+  // Only skip holes while strictly above every measured height. A hole in the possible height envelope is Unknown.
+  let start=Math.max(1e-10,s.heightBounds[1]/d[1]),end=Math.min(g.maxRangeMeters,s.heightBounds[0]/d[1]+1e-8);
+  for(const [axis,component] of [[0,0],[1,2]]) {
+    const lo=s.originXZ[axis],hi=lo+((axis===0?s.columns:s.rows)-1)*s.cellMeters,v=d[component];
+    if(v===0){if(lo>0||hi<0)throw missing();continue;}
+    start=Math.max(start,Math.min(lo/v,hi/v));end=Math.min(end,Math.max(lo/v,hi/v));
+  }
+  if(!(end>start))throw missing();
+  let ta=start;
+  while(ta<end) {
+    const probe=ta+1e-9,column=Math.floor((probe*d[0]-s.originXZ[0])/s.cellMeters),row=Math.floor((probe*d[2]-s.originXZ[1])/s.cellMeters);
+    if(column<0||row<0||column>=s.columns-1||row>=s.rows-1)break;
+    const x=s.originXZ[0]+column*s.cellMeters,z=s.originXZ[1]+row*s.cellMeters;
+    let tb=end;
+    if(d[0]!==0)tb=Math.min(tb,(x+(d[0]>0?s.cellMeters:0))/d[0]);
+    if(d[2]!==0)tb=Math.min(tb,(z+(d[2]>0?s.cellMeters:0))/d[2]);
+    if(!(tb>ta))break;
+    const diagonal=d[2]===d[0]?Infinity:(z-x)/(d[2]-d[0]),cuts=diagonal>ta&&diagonal<tb?[ta,diagonal,tb]:[ta,tb];
+    for(let k=1;k<cuts.length;k++) {
+      const a=cuts[k-1],b=cuts[k],mid=(a+b)/2,plane=measuredTriangle(s,column,row,mid*d[2]-z>mid*d[0]-x);
+      if(!plane)throw missing();
+      const denominator=d[1]-plane[1]*d[0]-plane[2]*d[2];
+      if(Math.abs(denominator)<1e-15)continue;
+      const t=plane[0]/denominator;
+      if(t<a-1e-8||t>b+1e-8||t<=0)continue;
+      const point=d.map(v=>v*t),limit=g.placementRangeLimitMeters;
+      if(Math.hypot(point[0],point[2])>limit)throw new Error(`Too far to place (over ${limit} m).`);
+      if(!insideDrivable(g.drivableAreas,point[0],point[2]))throw new Error('First mapped-ground hit is outside the mapped drivable area.');
+      return {point,supportClass:'observed-nearby',supportLabel:SUPPORT_LABELS['observed-nearby'],hidden:hiddenByCuboids(g,point),
+        rangeM:t,hitKind:'top',terrainCityZ:point[1]+g.frame.cityOrigin[2],terrainCell:[column,row]};
+    }
+    ta=tb;
+  }
+  throw missing();
 }
 // Even-odd membership per outline, union over outlines (prepare_av2_ground.inside_polygons).
 function insideDrivable(areas,x,z) {
@@ -93,6 +150,17 @@ function terrainCuts(g,start,direction,limit,cuts) {
   }
   return cuts;
 }
+function measuredCuts(s,start,direction,limit,cuts) {
+  const a=start.map((n,i)=>(n-s.originXZ[i])/s.cellMeters),b=direction.map(n=>n/s.cellMeters);
+  for(const [offset,slope] of [[a[0],b[0]],[a[1],b[1]],[a[1]-a[0],b[1]-b[0]]]) {
+    if(slope===0)continue;
+    const end=offset+limit*slope;
+    for(let n=Math.floor(Math.min(offset,end))+1;n<Math.ceil(Math.max(offset,end));n++) {
+      const t=(n-offset)/slope;if(t>0&&t<limit)cuts.push(t);
+    }
+  }
+  return cuts;
+}
 // Closed segment camera origin -> point against every annotated cuboid (box-local inclusive slab test); null when the
 // annotations are unavailable (not evaluated), never false.
 function hiddenByCuboids(g,point) {
@@ -106,6 +174,10 @@ function hiddenByCuboids(g,point) {
 // Support class and hidden flag of a mapped ground point (protocol supportClasses, hidden): observed nearby when a pinned
 // support return lies within the support radius (horizontal), else mapped, not observed.
 function groundEvidence(scene,point) {
+  if(scene.ground.schemaVersion===4) {
+    const supportClass=mappedGroundHeight(scene,point[0],point[2])===null?'unknown':'observed-nearby';
+    return {supportClass,supportLabel:SUPPORT_LABELS[supportClass],hidden:hiddenByCuboids(scene.ground,point)};
+  }
   const support=scene.groundSupportXZ,radius=scene.ground.supportRadiusMeters;
   let observed=false;
   for(let k=0;k<support.length&&!observed;k+=2){const dx=support[k]-point[0],dz=support[k+1]-point[2];observed=Math.sqrt(dx*dx+dz*dz)<=radius;}
@@ -132,6 +204,12 @@ function userPixel(scene,pixel) {
 // Unknown reason. alongRayUncertaintyM = the ground layer's fitted height band / sin(depression).
 export function mappedGroundHit(scene,position) {
   const c=scene.camera,g=scene.ground;
+  if(g.schemaVersion===4) {
+    const hit=measuredSurfaceHit(scene,position),range=Math.hypot(hit.point[0],hit.point[2]),bins=g.alongRayUncertainty.bins,
+      band=bins.find((b,i)=>range>=b.minRangeM&&(range<b.maxRangeM||i===bins.length-1&&range===b.maxRangeM));
+    if(!band)throw new Error('No independent click-error calibration at this ground range.');
+    return {...hit,alongRayUncertaintyM:band.meters};
+  }
   if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
   const [u,v]=position,q=[(u-c.cx)/c.fx,(v-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>row[0]*q[0]+row[1]*q[1]+row[2]*q[2]);
   const norm=Math.sqrt(raw[0]*raw[0]+raw[1]*raw[1]+raw[2]*raw[2]),d=raw.map(n=>n/norm),max=g.maxRangeMeters;
@@ -276,7 +354,8 @@ function mappedVehicleLine(scene,crossing,parking,check=true) {
 // End of the contiguous run from s=0 along origin + s*axis (horizontal) that stays inside the mapped drivable areas
 // with a mapped ground value, up to limit. Mapped ground is the captured road extent for these scenes.
 function mappedRunEnd(scene,origin,axis,limit) {
-  const g=scene.ground,x0=origin[0],z0=origin[2],dx=axis[0],dz=axis[2],cuts=terrainCuts(g,[x0,z0],[dx,dz],limit,[0,limit]);
+  const g=scene.ground,x0=origin[0],z0=origin[2],dx=axis[0],dz=axis[2],
+    cuts=g.schemaVersion===4?measuredCuts(g.measuredGround,[x0,z0],[dx,dz],limit,[0,limit]):terrainCuts(g,[x0,z0],[dx,dz],limit,[0,limit]);
   for(const {outline} of g.drivableAreas)for(let i=0,j=outline.length-1;i<outline.length;j=i++) {
     const [px,pz]=outline[j],ex=outline[i][0]-px,ez=outline[i][1]-pz,den=dx*ez-dz*ex;
     if(Math.abs(den)<EPS)continue;
@@ -289,7 +368,7 @@ function mappedRunEnd(scene,origin,axis,limit) {
     const ta=cuts[i-1],tb=cuts[i];
     if(!(tb>ta))continue;
     const m=(ta+tb)/2,x=x0+m*dx,z=z0+m*dz;
-    if(!insideDrivable(g.drivableAreas,x,z)||!terrainSample(scene,x,z))break;
+    if(!insideDrivable(g.drivableAreas,x,z)||(g.schemaVersion===4?mappedGroundHeight(scene,x,z)===null:!terrainSample(scene,x,z)))break;
     end=tb;
   }
   return end;

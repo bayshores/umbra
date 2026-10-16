@@ -72,8 +72,10 @@ function validateGround(g,scene) {
     hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),finite=v=>typeof v==='number'&&Number.isFinite(v),
     finite3=p=>Array.isArray(p)&&p.length===3&&p.every(finite),count=v=>Number.isSafeInteger(v)&&v>=0,
     positiveInt=v=>Number.isSafeInteger(v)&&v>0,keys=(v,list)=>object(v)&&Object.keys(v).sort().join()===list;
-  need(object(g)&&g.schemaVersion===3,'schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history)');
-  need(keys(g,GROUND_KEYS.join()),'unexpected or missing top-level fields');
+  need(object(g)&&(g.schemaVersion===3||g.schemaVersion===4&&object(g.measuredGround)),
+    'schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history)');
+  const measured=g.schemaVersion===4;
+  need(keys(g,(measured?[...GROUND_KEYS,'measuredGround'].sort():GROUND_KEYS).join()),'unexpected or missing top-level fields');
   need(g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
   need(hash(g.baseSceneSha256)&&keys(g.protocol,'bytes,path,readOnlyExternal,sha256')&&hash(g.protocol.sha256)&&text(g.protocol.path)&&count(g.protocol.bytes),'protocol record');
   need(!Object.hasOwn(SUPERSEDED_PROTOCOLS,g.protocol.sha256),`${SUPERSEDED_PROTOCOLS[g.protocol.sha256]} is superseded (protocol v3.1 or later is required)`);
@@ -89,7 +91,12 @@ function validateGround(g,scene) {
   need(finite(g.placementRangeLimitMeters)&&g.placementRangeLimitMeters>0&&g.placementRangeLimitMeters<=g.maxRangeMeters,'placement range limit');
   // The app uses only heightBandMeters; the rest is provenance (a development fit, or a fixed band tested on this scene).
   const band=g.alongRayUncertainty;
-  need(object(band)&&finite(band.heightBandMeters)&&band.heightBandMeters>0&&band.heightBandMeters<=1&&text(band.rule)&&object(band.coverage)&&
+  if(measured) {
+    need(object(band)&&band.method==='supportSweepHoldout'&&band.heightBandMeters===null&&text(band.rule)&&band.quantile===.975&&
+      positiveInt(band.minimumCount)&&Array.isArray(band.bins)&&band.bins.every((b,i)=>object(b)&&finite(b.minRangeM)&&b.minRangeM>=0&&
+        finite(b.maxRangeM)&&b.maxRangeM>b.minRangeM&&finite(b.meters)&&b.meters>0&&positiveInt(b.count)&&b.count>=band.minimumCount&&
+        (i===0||b.minRangeM>=band.bins[i-1].maxRangeM)),'independent click-error calibration');
+  }else need(object(band)&&finite(band.heightBandMeters)&&band.heightBandMeters>0&&band.heightBandMeters<=1&&text(band.rule)&&object(band.coverage)&&
     (band.method==='fitThisDevelopmentScene'&&object(band.fit)&&!Object.hasOwn(band,'heldOutResiduals')||
      band.method==='fixed'&&text(band.fittedOn)&&object(band.heldOutResiduals)&&!Object.hasOwn(band,'fit')),'along-ray uncertainty band');
   const t=g.terrain,sim=t?.sim2,R=sim?.R;
@@ -126,6 +133,22 @@ function validateGround(g,scene) {
   const s=g.support,m=scene.measurements;
   need(object(s)&&Array.isArray(s.rows)&&s.count===s.rows.length&&s.rows.every((r,i)=>Number.isSafeInteger(r)&&r>=0&&r<m.count&&(i===0||r>s.rows[i-1])&&m.referenceEligible[r]===1&&
     Number.isFinite(m.referencePositions[r*3])&&Number.isFinite(m.referencePositions[r*3+2])),'support rows must be ascending camera-eligible source rows');
+  if(measured) {
+    const surface=g.measuredGround,p=surface?.partition,stamp=v=>typeof v==='string'&&/^[0-9]{1,32}$/.test(v);
+    need(object(surface)&&surface.version==='measured-ground-v1'&&finite(surface.cellMeters)&&surface.cellMeters>0&&
+      positiveInt(surface.columns)&&positiveInt(surface.rows)&&surface.columns>=2&&surface.rows>=2&&surface.columns*surface.rows<=262144&&
+      Array.isArray(surface.originXZ)&&surface.originXZ.length===2&&surface.originXZ.every(finite)&&Array.isArray(surface.heights)&&
+      surface.heights.length===surface.rows*surface.columns&&surface.heights.every(h=>h===null||finite(h)),'measured surface grid');
+    const heights=surface.heights.filter(h=>h!==null);
+    let low=Infinity,high=-Infinity;for(const height of heights){low=Math.min(low,height);high=Math.max(high,height);}
+    need(heights.length?Array.isArray(surface.heightBounds)&&surface.heightBounds.length===2&&surface.heightBounds[0]===low&&
+      surface.heightBounds[1]===high:surface.heightBounds===null,'measured height bounds');
+    need(s.rows.length===0&&object(p)&&p.frameTimestampNs===m.provenance.lidarTimestampNs&&stamp(p.frameTimestampNs)&&
+      p.excludedNearNs===250000000&&Array.isArray(p.fit)&&Array.isArray(p.calibration)&&[...p.fit,...p.calibration].every(v=>object(v)&&stamp(v.timestampNs)&&hash(v.sha256)&&
+        (BigInt(v.timestampNs)-BigInt(p.frameTimestampNs)>250000000n||BigInt(p.frameTimestampNs)-BigInt(v.timestampNs)>250000000n))&&
+      new Set([...p.fit,...p.calibration].map(v=>v.timestampNs)).size===p.fit.length+p.calibration.length&&(!heights.length||p.fit.length>=3),
+      'measured support must exclude the scoring sweep and its temporal neighbours, with disjoint calibration sweeps');
+  }
   need(keys(g.license,'attribution,changes,id,source')&&g.license.id==='CC-BY-NC-SA-4.0'&&['attribution','changes','source'].every(k=>text(g.license[k])),'license');
   need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');
   if(g.carShape!==null)validateCarShape(g.carShape,c.items,{need,object,text,hash,finite,count,positiveInt,keys});

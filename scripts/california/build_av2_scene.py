@@ -62,6 +62,11 @@ Builder version 4.3 (shape-v2; development-only candidate): identical to 4.2 exc
 which pins the frozen shape-v2 protocol (the sweep thinning step 0.25 m instead of 1.0 m; every other shape rule unchanged)
 and its approach-half split addendum. The sweep plan folder is .local/data/av2/shape-v2-<log>/. Builder v4.2 now runs only
 from its committed files (8ec75f8).
+
+Builder version 5 (development-only candidate): the vehicle centre line must meet the finite mapped near edge inside
+the drivable union. The lane chord and crossing use the placement protocol's unchanged applicability checks; the vehicle
+centre, front and person must also be drivable, with the front between camera and crossing. No anchor is clipped or moved;
+the 12 m horizontal camera-to-anchor minimum is unchanged. Builder v4.3 now runs only from its committed files (d71294d).
 """
 import argparse
 import copy
@@ -106,8 +111,9 @@ ground_tool = suggest_tool.ground_tool  # the prepare_av2_ground module instance
 #     (37bf84d), as v4 runs from 772fdce and v3 from cb2f497.
 # v4.3: shape-v2 (sweep thinning step 0.25 m). The v4.2 rules and parameters unchanged; pins placement protocol v3.4, the
 #     shape-v2 protocol and its split addendum. Builder v4.2 now runs only from its committed files (8ec75f8).
-BUILDER_VERSION = 4.3  # the newest version this file runs
-SUPPORTED_VERSIONS = (3, 4, 4.1, 4.2, 4.3)
+# v5: finite mapped crossing anchors and joint actor applicability; v4.3 rules remain selectable unchanged.
+BUILDER_VERSION = 5  # the newest version this file runs
+SUPPORTED_VERSIONS = (3, 4, 4.1, 4.2, 4.3, 5)
 MAX_FILE = 16_000_000
 S3 = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 SIDES = ('left', 'right')
@@ -123,7 +129,7 @@ RUNTIME_CODE_V3 = ('scripts/california/build_av2_scene.py', 'scripts/california/
 RUNTIME_CODE = RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',)
 # v4.2 adds car_shape.py (imported by prepare_av2_ground.py and by this file).
 RUNTIME_CODE_V42 = RUNTIME_CODE + ('scripts/california/car_shape.py',)
-RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE, 4.2: RUNTIME_CODE_V42, 4.3: RUNTIME_CODE_V42}
+RUNTIME_CODE_BY_VERSION = {3: RUNTIME_CODE_V3, 4: RUNTIME_CODE, 4.1: RUNTIME_CODE, 4.2: RUNTIME_CODE_V42, 4.3: RUNTIME_CODE_V42, 5: RUNTIME_CODE_V42}
 # v4: modules imported by name must be the hashed files (a same-named file earlier on sys.path would run unhashed code).
 MODULE_FILES = {'common': 'scripts/sponsors/common.py', 'prepare_av2': 'scripts/california/prepare_av2.py',
                 'remap_support': 'scripts/remap_support.py', 'rectified_calibration': 'scripts/rectified_calibration.py',
@@ -198,6 +204,17 @@ def v41_parameters(target):
 v42_parameters = v43_parameters = v41_parameters
 
 
+ANCHOR_RULE_V5 = {'rule': 'finiteMappedNearEdgeOnVehicleCentreLine', 'requireDrivableActors': True,
+                  'requireFrontBetweenCameraAndCrossing': True,
+                  'applicability': dict(suggest_tool.APPLICABILITY_PARAMETERS)}
+
+
+def v5_parameters(target):
+    params = v43_parameters(target); params['crossingAnchor'] = copy.deepcopy(ANCHOR_RULE_V5)
+    require(target['minAnchorDistanceM'] == 12.0, 'Builder v5 requires the unchanged 12 m minimum anchor distance')
+    return params
+
+
 def _sha(path):
     return digest(Path(path).read_bytes())
 
@@ -211,7 +228,7 @@ def runtime_code_hashes(version=BUILDER_VERSION):
 # ------------------------------------------------------------------ freeze guards
 def protocol_rules(protocol, variant):
     """(version, parameters) of the frozen builder protocol: version 3 carries exactly PARAMETERS_V3 (no variant);
-    version 4, 4.1, 4.2 and 4.3 carry named variants (parametersByVariant) and --protocol-variant picks one."""
+    version 4 and later carry named variants (parametersByVariant) and --protocol-variant picks one."""
     version = protocol.get('builderVersion')
     require(version in SUPPORTED_VERSIONS, f'Builder protocol version must be one of {SUPPORTED_VERSIONS}')
     if version == 3:
@@ -223,7 +240,7 @@ def protocol_rules(protocol, variant):
     require(isinstance(variant, str) and variant in variants,
             'Choose one of the protocol variants with --protocol-variant: ' + ', '.join(sorted(variants)))
     params = variants[variant]
-    expected = {4.3: v43_parameters, 4.2: v42_parameters, 4.1: v41_parameters}.get(version, v4_parameters)
+    expected = {5: v5_parameters, 4.3: v43_parameters, 4.2: v42_parameters, 4.1: v41_parameters}.get(version, v4_parameters)
     require(isinstance(params, dict) and params == expected((params.get('frame') or {}).get('target')),
             'Builder protocol parameters differ from this builder')
     return version, params
@@ -628,6 +645,7 @@ class FrameGeometry:
     """The attributes suggest_av2_placements.Context reads for near_edge, curb_lateral_at, annotated_vehicle and
     default_vehicle, built for one frame (world origin = left camera at the camera timestamp)."""
     near_edge = suggest_tool.Context.near_edge
+    crossing_edges = suggest_tool.Context.crossing_edges
     curb_lateral_at = suggest_tool.Context.curb_lateral_at
 
     def __init__(self, lane_world, polygons, crossing_world, cuboids, placement_protocol, epsilon):
@@ -705,6 +723,43 @@ def occupant_record(c, chosen, geo, ctx, rows_at_frame):
 def front_face(box):
     m = np.asarray(box['worldFromBox'], float); c = np.asarray(box['center'], float)
     return [c + m @ np.array([box['length'] / 2, sw * box['width'] / 2, sh * box['height'] / 2]) for sw in (-1, 1) for sh in (-1, 1)]
+
+
+def finite_anchor_checks(geo, edge_name, crossing, front, person, center):
+    """V5: restrict the centre-line intersection to the finite mapped edge; never relocate an actor or anchor."""
+    rules = suggest_tool.applicability_rules(geo.protocol)
+    require(rules is not None, 'Builder v5 needs placement protocol crossingApplicability')
+    edges = geo.crossing_edges(); edge = next(e for e in edges if e[0] == edge_name)
+    _name, _forward, p0, eu, p1 = edge
+    problems = [('crossing-edge-not-ahead', f'Crossing {name} midpoint is not ahead of the camera.')
+                for name, forward, *_ in edges if forward <= rules['minForwardMeters']]
+    skew = 90 - math.degrees(math.acos(min(1., abs(float(eu @ geo.a)))))
+    if skew > rules['maxSkewDeg']:
+        problems.append(('crossing-skew-over-limit', f'Near-edge skew {skew:.3f} deg exceeds {rules["maxSkewDeg"]:g} deg.'))
+    start, _ = suggest_tool.intersect(geo.m0, geo.a, p0, eu)
+    if start is None:
+        problems.append(('crossing-parallel-to-lane', 'The ego lane chord never meets the near-edge line (parallel).'))
+    else:
+        problems += suggest_tool.point_problems(geo, start, p0, p1, rules, 'ego lane chord')
+    problems += suggest_tool.point_problems(geo, crossing, p0, p1, rules, 'current vehicle centre line')
+    points = {'crossing': crossing, 'vehicleFront': front, 'person': person, 'vehicleCentre': center}
+    inside = {name: bool(ground_tool.inside_polygons(point, geo.polygons)[0]) for name, point in points.items()}
+    for name, ok in inside.items():
+        if not ok:
+            problems.append((f'{name}-outside-drivable', f'The {name} anchor is outside the mapped drivable area.'))
+    between = bool(0 < front @ geo.a < crossing @ geo.a)
+    if not between:
+        problems.append(('vehicle-front-not-between', 'Vehicle front is not between the camera and crossing along the lane.'))
+    seg = p1 - p0; length = float(np.linalg.norm(seg)); dot = float((crossing - p0) @ seg)
+    return {'rule': ANCHOR_RULE_V5['rule'], 'pointsXZ': {n: np.asarray(p).tolist() for n, p in points.items()},
+            'insideDrivable': inside, 'frontBetweenCameraAndCrossing': between,
+            'edgeMarginsM': {'fromStart': dot / length, 'fromEnd': float((p1 - crossing) @ seg) / length}, 'skewMarginDeg': rules['maxSkewDeg'] - skew,
+            'problems': [{'code': code, 'reason': reason} for code, reason in problems]}
+
+
+def frame_ground_hit(scene, uv, ctx, polygons):
+    """Terrain placement seam; a measured-ground implementation must preserve the (direction, hit, reason) contract."""
+    return ground_tool.pixel_ground_hit(scene, uv, ctx['terrain'], polygons, ctx['maxRange'], ctx['rangeLimit'])
 
 
 def evaluate_frame(frame, ctx, site_tracks):
@@ -846,6 +901,12 @@ def evaluate_frame(frame, ctx, site_tracks):
         if close:
             out['reasons'].append(f'Anchor closer than the {minimum:g} m minimum to the camera: ' +
                                   ', '.join(f"{n} {out['anchorDistancesM'][n]:.2f} m" for n in close)); return out
+    if ctx.get('version', 3) >= 5:
+        center = vehicle['center'] if vehicle is not None else front_xz - defaults['vehicle']['dimensions']['length'] / 2 * geo.a
+        checks = finite_anchor_checks(geo, edge_name, crossing_xz, front_xz, person_xz, center)
+        out['crossingAnchorV5'] = checks
+        if checks['problems']:
+            out['reasons'].extend(p['reason'] for p in checks['problems']); return out
     extents = {'personTop': anchors['person'] + [0, defaults['person']['heightMeters'], 0]}
     if face is None:  # declared default: front face of the default box on the lane axis
         dims = defaults['vehicle']['dimensions']; f0 = anchors['vehicleFront']; side = np.array([geo.r[0], 0, geo.r[1]])
@@ -885,7 +946,7 @@ def evaluate_frame(frame, ctx, site_tracks):
             continue
         check = ground_tool.project(scene, anchors[n])
         require(check is not None and np.allclose(check, local[i], rtol=0, atol=1e-6), 'Crop camera disagrees with the rectified projection')
-        _d, hit, reason = ground_tool.pixel_ground_hit(scene, local[i].tolist(), ctx['terrain'], polygons, ctx['maxRange'], ctx['rangeLimit'])
+        _d, hit, reason = frame_ground_hit(scene, local[i].tolist(), ctx, polygons)
         runtime[n] = {'placed': hit is not None, 'reason': reason, 'offsetFromAnchorM':
                       None if hit is None else float(math.hypot(hit['point'][0] - anchors[n][0], hit['point'][2] - anchors[n][2]))}
     out['runtimeCheck'] = runtime; out['cropCamera'] = scene
@@ -1126,10 +1187,16 @@ def build(args):
                                            'through the placement protocol checks.')
     if version >= 4.2:
         selection['carShape'] = None  # set below when a frame is chosen
-        selection['limitations'].insert(5, f'Builder v{version}: the choices are the v4.1 ones. When the chosen current vehicle is the annotated '
+        choices = 'the choices are the v4.1 ones' if version < 5 else 'v4.3 choices with finite crossing and joint actor applicability checks'
+        selection['limitations'].insert(5, f'Builder v{version}: {choices}. When the chosen current vehicle is the annotated '
                                            f'stationary vehicle, its LiDAR shape ({car_shape.SCHEMA}) is built after this step from a hashed sweep plan '
                                            'and receipted public sweeps (car_shape.py, prepare_av2_ground.py --car-shape-dir); this step '
                                            'reads metadata only and downloads nothing.')
+    if version >= 5:
+        selection['crossingAnchorV5'] = copy.deepcopy(params['crossingAnchor'])
+        selection['limitations'].append('Builder v5 admits only the finite mapped near-edge intersection on the unchanged vehicle centre '
+                                        'line, with drivable actor anchors and the front between camera and crossing. Invalid intersections '
+                                        'are refused, never clipped or relocated; the minimum camera-to-anchor distances are unchanged.')
     if cross_check['status'] == 'mismatch':
         selection['status'] = 'split-rule-mismatch'
     elif chosen is None:
