@@ -37,6 +37,12 @@ def protocol_v32(**parameters):
     return protocol
 
 
+def protocol_v34():
+    """protocol v3.2 plus protocolRevision '3.4' and the carShape section (ground.json schemaVersion 3, shape-v2)."""
+    protocol = protocol_v32(); protocol['protocolRevision'] = '3.4'; protocol['carShape'] = copy.deepcopy(fixture.PROTOCOL_V34['carShape'])
+    return protocol
+
+
 def crossing_edges(edge1, edge2):
     """edit_map: replace crossing 77's edges with world (x, z) end points on the flat mapped ground."""
     def edit(native_map):
@@ -53,12 +59,16 @@ class SuggestionTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def grounded(self, name='a', annotations=True, protocol=None, **options):
+    def grounded(self, name='a', annotations=True, protocol=None, build=None, **options):
         args = fixture.write_fixture(self.root / name, protocol=fixture.PROTOCOL_V3 if protocol is None else protocol,
                                      returns=fixture.V3_RETURNS, eligible=fixture.V3_ELIGIBLE, **options)
         if not annotations:
             args.update(annotations_path=None, annotations_sha256=None)
-        fixture.tool.build(**args)
+        fixture.tool.build(**args, **(build or {}))
+        return self.paths(args)
+
+    @staticmethod
+    def paths(args):
         out = args['output']
         return dict(grounded=out, metadata_sha256=sha((out / 'scene.json').read_bytes()), buffers_dir=args['scene_path'].parent,
                     protocol_path=args['protocol_path'], protocol_sha256=args['protocol_sha256'])
@@ -330,6 +340,32 @@ class SuggestionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'exactly the parameters and refusal codes'):
                 tool.suggest(scene, ground, terrain, positions, eligible, {**protocol, 'crossingApplicability': changed})
 
+    def test_v3_4_reads_schema_3_and_needs_a_matching_car_shape(self):
+        # The measured car shape of the annotated vehicle: the suggestions equal protocol v3.2's for the same scene.
+        args, _, _, _, _ = fixture.car_shape_layer(self.root / 'shape', protocol=protocol_v34())
+        doc = self.document(self.paths(args)); old = self.document(self.grounded('v32', protocol=protocol_v32()))
+        self.assertEqual(doc['vehicle']['status'], 'annotated')
+        for key in ('vehicle', 'crossing', 'person', 'roadAxis', 'curb', 'tolerances', 'limitations', 'schemaVersion'):
+            self.assertEqual(doc[key], old[key], key)
+        self.assertNotIn(b'park', tool.canonical(doc).lower())
+        # An annotated vehicle with carShape null (--no-car-shape) is refused; a declared default with null is accepted.
+        with self.assertRaisesRegex(ValueError, 'carShape does not match the suggested vehicle'):
+            self.document(self.grounded('null', protocol=protocol_v34(), build={'no_car_shape': True}))
+        default = self.document(self.grounded('default', protocol=protocol_v34(), annotations=False, build={'no_car_shape': True}))
+        self.assertEqual(default['vehicle']['status'], 'declared-default')
+        self.assertEqual(default['vehicle'], self.document(self.grounded('default32', protocol=protocol_v32(), annotations=False))['vehicle'])
+        # A car shape of another track is refused.
+        scene, ground, terrain, positions, eligible, protocol, inputs = tool.load(**self.paths(args))
+        ground['carShape'] = {**ground['carShape'], 'track': 'cccccccc-0000-4000-8000-000000000003'}
+        with self.assertRaisesRegex(ValueError, 'carShape does not match'):
+            tool.document(scene, ground, terrain, positions, eligible, protocol, inputs)
+        # Each protocol reads only its own ground schema.
+        with self.assertRaisesRegex(ValueError, 'schemaVersion 2'):
+            tool.suggest(scene, ground, terrain, positions, eligible, protocol_v32())
+        scene, ground, terrain, positions, eligible, _, _ = tool.load(**self.grounded('v32b', protocol=protocol_v32()))
+        with self.assertRaisesRegex(ValueError, 'schemaVersion 3'):
+            tool.suggest(scene, ground, terrain, positions, eligible, protocol_v34())
+
     def test_along_ray_limitation_names_the_band_method(self):
         fitted = tool.along_ray_limitation({'method': 'fitThisDevelopmentScene'})
         self.assertEqual(fitted, 'The along-ray uncertainty uses a height band fitted on this development scene\'s LiDAR ground returns; it '
@@ -426,7 +462,8 @@ def epoch_of(doc):
 
 @unittest.skipUnless((V31 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(), 'real 8c v3.1 files absent')
 class RealV31SuggestionTests(unittest.TestCase):
-    """grounded-v3.1 (protocol v3.1) is current; it reproduces byte for byte from the current script."""
+    """grounded-v3.1 (protocol v3.1) was the app's 8c folder until October 13, 2026 (now grounded-v3.2, same geometry); it
+    reproduces byte for byte from the current script."""
 
     def test_real_v3_1_suggestions_reproduce_and_match_expected_values(self):
         stored = (V31 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
@@ -495,6 +532,8 @@ V32 = REAL / 'grounded-v3.2'
 GUARD = ROOT / '.local/evaluation/pao-accuracy/scene-builder-v4.1/453e5558-20499018-guard-check'
 GUARD_ASSEMBLED = ROOT / '.local/evaluation/av2-453e-2026-10-12/assembled'
 GUARD_PROTOCOL = 'protocol-v3.2-453e5558-20499018-guard-check'
+# suggest_av2_placements.py and prepare_av2_ground.py of pipeline v3.2 (commit 37bf84d), which wrote the v3.2 outputs.
+V32_GENERATOR = ('376dc54efeb1e4f3ade1e28e82a4fe7f1c4400d2404c5b94775ed3295e28c112', '3b2c6a4556f5a772696f13474b6ba1aab12281b92d17eac38a8d85f64ab2819b')
 
 
 @unittest.skipUnless((V32 / 'suggestions.json').exists() and (V31 / 'suggestions.json').exists() and (REAL / 'assembled/scene.json').exists(),
@@ -504,13 +543,16 @@ class RealV32SuggestionTests(unittest.TestCase):
     measurement), the pins, the generator hashes, the road-axis reason and two limitation lines differ."""
 
     def test_real_v3_2_suggestions_reproduce_from_the_current_script(self):
+        # Written by the v3.2 scripts (commit 37bf84d); the protocol v3.3 edits change only the two generator hashes.
         stored = (V32 / 'suggestions.json').read_bytes(); doc = json.loads(stored)
         paths = real_paths('grounded-v3.2', 'protocol-v3.2-freeze.json', 'protocol-v3.2.json')
         self.assertEqual(paths['protocol_sha256'], '1cef13e625ba8d0c0c00203c0bda6e256536173c4607ac79807e3e40dd173cf7')
         self.assertEqual(sha((REAL / 'protocol-v3.2.json').read_bytes()), paths['protocol_sha256'])
+        self.assertEqual((doc['generator']['sha256'], doc['generator']['sharedSha256']), V32_GENERATOR)
         with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
-            rebuilt = tool.canonical(tool.document(*tool.load(**paths)))
-        self.assertEqual(rebuilt, stored)
+            rebuilt = tool.document(*tool.load(**paths))
+        self.assertEqual(tool.canonical({**rebuilt, 'generator': doc['generator']}), stored)
+        self.assertEqual({k: x for k, x in rebuilt['generator'].items() if not k.endswith('ha256')}, {k: x for k, x in doc['generator'].items() if not k.endswith('ha256')})
         self.assertEqual(json.loads((V32 / 'catalog-entry.json').read_bytes())['suggestions']['sha256'], sha(stored))
 
     def test_v3_2_differs_from_v3_1_only_in_the_allowed_fields(self):
@@ -551,8 +593,10 @@ class Real453eGuardCheckTests(unittest.TestCase):
         self.assertEqual(sha((GUARD / f'{GUARD_PROTOCOL}.json').read_bytes()), freeze['sha256'])
         paths = dict(grounded=GUARD / 'grounded', metadata_sha256=sha((GUARD / 'grounded/scene.json').read_bytes()), buffers_dir=GUARD_ASSEMBLED,
                      protocol_path=GUARD / f'{GUARD_PROTOCOL}.json', protocol_sha256=freeze['sha256'])
+        self.assertEqual((doc['generator']['sha256'], doc['generator']['sharedSha256']), V32_GENERATOR)
         with mock.patch.dict(os.environ, {'SOURCE_DATE_EPOCH': epoch_of(doc)}):
-            self.assertEqual(tool.canonical(tool.document(*tool.load(**paths))), stored)
+            rebuilt = tool.document(*tool.load(**paths))
+        self.assertEqual(tool.canonical({**rebuilt, 'generator': doc['generator']}), stored)  # all but the generator hashes
         crossing = doc['crossing']
         self.assertEqual((crossing['status'], crossing['supportClass']), ('unknown', 'unknown'))
         self.assertTrue(crossing['reason'].startswith('Crossing model does not apply to crossing 20499018: '))

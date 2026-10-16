@@ -6,7 +6,15 @@ stacked AV2 LiDAR sweeps, without image vision, and reports the signed offset fr
 edge. Two estimators with different detection rules must agree within the protocol tolerance;
 otherwise the crossing is unresolved. Every parameter comes from a frozen protocol file (version 4:
 estimator A only uses lasers with a road reference and needs paint brighter than that laser's road
-upper tail and a run of consecutive paint returns; precision is a leave-one-sweep-out jackknife).
+upper tail and a run of consecutive paint returns; precision is a leave-one-sweep-out jackknife.
+Version 5: estimator A takes each laser's road tail from the same lateral region as the strip's road
+reference, the strip widened by laserTailLateralMarginM on each side, instead of the whole corridor, so
+a bright lane line or curbside band elsewhere in the corridor cannot raise the bar for paint in a dark
+strip. A laser with too few reference returns there widens its own window in laserTailMarginStepM steps up
+to laserTailMaxLateralMarginM; a laser still short is not used in that strip. Precision can also use a
+grouped (delete-d) sweep jackknife, and method 'maxOfBoth' keeps, per estimator, the larger of the two sds
+and the smaller measured fraction. A protocol without `laserTailRegion` keeps the version-4 corridor-wide
+tail, and one without `uncertainty.method` keeps the version-4 leave-one-sweep-out jackknife).
 
 A and B share the returns, frame, ground band, windows and line fit, so their agreement checks the two
 detection rules only; it is not independent confirmation, and systematic terms (pose/raster
@@ -26,6 +34,7 @@ headings meet the mapped near edge. A paint offset is the paint-edge S; positive
 beyond the mapped edge.
 """
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -419,7 +428,10 @@ def laser_tails(S, I, laser, P, W):
 
     A laser's ground ring has a fixed radius, so its range and incidence angle are the same before the crossing
     and in the reference window; a laser with a high gain (or one never seen in the reference window) therefore
-    cannot pass road returns as paint."""
+    cannot pass road returns as paint.
+
+    Version 5 calls this once per strip with only the returns inside that strip's tail window (see
+    tail_window); version 4 called it once with the whole corridor."""
     A = P['estimatorA']; r_lo, r_hi = W['roadReferenceS']
     ref = (S >= r_lo) & (S < r_hi)
     tails = {}
@@ -428,6 +440,50 @@ def laser_tails(S, I, laser, P, W):
         if len(v) >= A['laserReferenceMinReturns']:
             tails[int(l)] = float(np.quantile(v, A['laserTailQuantile']))
     return tails
+
+
+def tail_window(s0, s1, corridor, margin):
+    """Lateral range [lo, hi) whose road-reference returns set a strip's laser tails (version 5): the strip
+    widened by `margin` on each side, clipped to the corridor.
+
+    The strip's own 0.15 m holds too few returns per laser for a 0.90 quantile (a laser's ring crosses it in about
+    3 sweeps with 2-4 returns each), so the window is widened; it stays local so that a lane line or bright
+    curbside band more than the margin away cannot set the tail of a dark strip (v4 review, 8c)."""
+    return max(s0 - margin, corridor[0]), min(s1 + margin, corridor[1])
+
+
+def tail_margins(A):
+    """Margins tried, narrowest first: laserTailLateralMarginM, then steps of laserTailMarginStepM up to
+    laserTailMaxLateralMarginM (when that key is absent, only the first margin). Each laser uses the narrowest
+    margin at which it has laserReferenceMinReturns reference returns; a laser short even at the widest margin is
+    not used in that strip."""
+    base = float(A['laserTailLateralMarginM'])
+    top = float(A.get('laserTailMaxLateralMarginM', base))
+    step = float(A.get('laserTailMarginStepM', 0.25))
+    require(base >= 0 and top >= base and step > 0, 'Invalid laser tail margins')
+    return [base + k * step for k in range(int(round((top - base) / step)) + 1)]
+
+
+def strip_laser_tails(S, L, I, laser, in_ref, s0, s1, corridor, margins, P, W):
+    """Per-laser road tails for one strip (version 5): for each laser, the laserTailQuantile of its reference
+    returns inside the narrowest tail window (tail_margins) holding at least laserReferenceMinReturns of them.
+    Returns (tails, margin used per laser)."""
+    A = P['estimatorA']
+    lo, hi = tail_window(s0, s1, corridor, margins[-1])
+    widest = np.nonzero(in_ref & (L >= lo) & (L < hi))[0]
+    Lw, Iw, lw = L[widest], I[widest], laser[widest]
+    tails, used = {}, {}
+    for m in margins:
+        t_lo, t_hi = tail_window(s0, s1, corridor, m)
+        inside = (Lw >= t_lo) & (Lw < t_hi)
+        for l in np.unique(lw[inside]):
+            l = int(l)
+            if l in tails:
+                continue
+            v = Iw[inside & (lw == l)]
+            if len(v) >= A['laserReferenceMinReturns']:
+                tails[l] = float(np.quantile(v, A['laserTailQuantile'])); used[l] = m
+    return tails, used
 
 
 def first_onset(ss, paint, A):
@@ -450,37 +506,70 @@ def first_onset(ss, paint, A):
 
 def estimator_a(S, L, I, laser, corridor, at, P, W, also_at=None, strip_bootstrap=True, tails=None):
     """Per narrow lateral strip, using only lasers with a road reference: a return is paint when its intensity is
-    >= ratio x the strip's road median AND above its laser's road upper tail; the onset is the first paint return
-    starting a run of consecutive paint returns that is also sustained; the strip interval runs from the last
-    non-paint return before it."""
+    >= ratio x the strip's road median AND strictly above its laser's road upper tail; the onset is the first paint
+    return starting a run of consecutive paint returns that is also sustained; the strip interval runs from the
+    last non-paint return before it.
+
+    Laser tails: with laserTailRegion 'stripLateralWindow' (version 5) each strip derives them from the road
+    reference returns inside its own tail window (tail_window; per laser the narrowest margin of tail_margins with
+    laserReferenceMinReturns returns), and a laser short of that even at the widest margin is not used in that
+    strip (its returns are dropped from the strip's road median and search window). Without that key (version 4) one corridor-wide set is used. A `tails` dict
+    overrides both with one fixed set (diagnostics). The comparison is strict (I > tail): intensities are
+    integers with many ties, so 'I > 0.90 quantile' passes at most about 10% of a laser's road returns, while
+    '>=' could pass far more (a laser whose road reads 6, 7 or 8 with probabilities 0.2, 0.4, 0.4 has a 0.90
+    quantile of 8 and '>=' would pass 40% of its road returns)."""
     A = P['estimatorA']; C = P['coverage']
-    if tails is None:
-        tails = laser_tails(S, I, laser, P, W)
-    lookup = np.full(int(laser.max()) + 1 if len(laser) else 1, np.nan)
-    for l, v in tails.items():
-        if l < len(lookup):
-            lookup[l] = v
-    tail = lookup[laser] if len(laser) else np.zeros(0)
-    use = np.isfinite(tail)
-    strips = partition(corridor[0], corridor[1], A['stripWidthM'], A['stripOffsetM'], A['minStripWidthM'])
+    override = tails is not None
+    local = tails is None and A.get('laserTailRegion', 'corridor') == 'stripLateralWindow'
+    require(local or tails is not None or A.get('laserTailRegion', 'corridor') == 'corridor',
+            f"Unknown laserTailRegion {A.get('laserTailRegion')!r}")
+    margins = tail_margins(A) if local else None
+    n_lookup = int(laser.max()) + 1 if len(laser) else 1
     w_lo, w_hi = W['searchS']; r_lo, r_hi = W['roadReferenceS']
-    out = []
+    in_ref = (S >= r_lo) & (S < r_hi)
+
+    def lookup_of(tail_dict):
+        lookup = np.full(n_lookup, np.nan)
+        for l, v in tail_dict.items():
+            if l < n_lookup:
+                lookup[l] = v
+        return lookup
+
+    if not local:
+        if tails is None:
+            tails = laser_tails(S, I, laser, P, W)
+        corridor_tail = lookup_of(tails)[laser] if len(laser) else np.zeros(0)
+    strips = partition(corridor[0], corridor[1], A['stripWidthM'], A['stripOffsetM'], A['minStripWidthM'])
+    out, lasers_seen, without = [], set(), 0
     for s0, s1 in strips:
-        m = (L >= s0) & (L < s1)
-        ref = m & use & (S >= r_lo) & (S < r_hi)
-        w = m & use & (S >= w_lo) & (S < w_hi)
+        idx = np.nonzero((L >= s0) & (L < s1))[0]
+        Ss, Is, ls = S[idx], I[idx], laser[idx]
+        if local:
+            t_lo, t_hi = tail_window(s0, s1, corridor, margins[0])
+            strip_tails, margin_used = strip_laser_tails(S, L, I, laser, in_ref, s0, s1, corridor, margins, P, W)
+            tail = lookup_of(strip_tails)[ls] if len(ls) else np.zeros(0)
+            lasers_seen.update(strip_tails)
+        else:
+            tail = corridor_tail[idx]
+        use = np.isfinite(tail)
+        without += int((~use).sum())
+        ref = use & (Ss >= r_lo) & (Ss < r_hi)
+        w = use & (Ss >= w_lo) & (Ss < w_hi)
         row = {'L': [rnd(s0, 3), rnd(s1, 3)], 'referenceReturns': int(ref.sum()), 'windowReturns': int(w.sum()),
-               'returnsWithoutLaserReference': int((m & ~use & (S >= w_lo) & (S < w_hi)).sum())}
+               'returnsWithoutLaserReference': int((~use & (Ss >= w_lo) & (Ss < w_hi)).sum())}
+        if local:
+            row.update({'tailWindowL': [rnd(t_lo, 3), rnd(t_hi, 3)], 'lasersWithTail': len(strip_tails),
+                        'lasersWidened': int(sum(m > margins[0] + 1e-12 for m in margin_used.values()))})
         if ref.sum() < A['minReferenceReturns']:
             out.append({**row, 'status': 'noRoadReference'}); continue
-        road = max(float(np.median(I[ref])), A['roadMedianFloor'])
+        road = max(float(np.median(Is[ref])), A['roadMedianFloor'])
         threshold = A['ratio'] * road
-        order = np.argsort(S[w], kind='stable')
-        ss = S[w][order]; paint = (I[w][order] >= threshold) & (I[w][order] > tail[w][order])
+        order = np.argsort(Ss[w], kind='stable')
+        ss = Ss[w][order]; paint = (Is[w][order] >= threshold) & (Is[w][order] > tail[w][order])
         row.update({'roadMedian': road, 'threshold': threshold, 'paintReturns': int(paint.sum())})
         onset = first_onset(ss, paint, A)
         if onset is None:
-            near_edge = int((m & (np.abs(S) <= C['halfWindowM'])).sum())
+            near_edge = int((np.abs(Ss) <= C['halfWindowM']).sum())
             out.append({**row, 'status': 'noEdgeReturns' if near_edge < C['minReturns'] else 'noPaint',
                         'returnsNearMappedEdge': near_edge}); continue
         before = np.nonzero(~paint[:onset])[0]
@@ -496,8 +585,15 @@ def estimator_a(S, L, I, laser, corridor, at, P, W, also_at=None, strip_bootstra
     result = fit_strips(out, at, A['minStrips'], P['uncertainty'], also_at, strip_bootstrap)
     fractions = [r['paintFractionAfterOnset'] for r in out if r['status'] == 'edge']
     result['paintFractionAfterOnsetMedian'] = float(np.median(fractions)) if fractions else None
-    result['lasersWithReference'] = len(tails)
-    result['returnsWithoutLaserReference'] = int((~use).sum())
+    result['laserTailRegion'] = 'stripLateralWindow' if local else ('fixedOverride' if override else 'corridor')
+    result['lasersWithReference'] = len(lasers_seen) if local else len(tails)
+    result['returnsWithoutLaserReference'] = without
+    if local:
+        counts = [r['lasersWithTail'] for r in out]
+        result['lasersWithTailPerStrip'] = ({'min': int(min(counts)), 'median': float(np.median(counts)), 'max': int(max(counts))}
+                                            if counts else None)
+        result['laserTailMarginsM'] = margins
+        result['stripsWithAWidenedLaser'] = int(sum(r['lasersWidened'] > 0 for r in out))
     return result
 
 
@@ -691,11 +787,30 @@ def leave_one_sweep_out(S, L, I, laser, sweep, frame, P):
     whole-sweep bootstrap with replacement was rejected before the v4 freeze: a resample keeps about 9-10 distinct
     sweeps of 15, which widens the along-road gap at the edge and changes the measurement design (synthetic
     prototype, v4-dev/prototype-uncertainty.json)."""
-    ids = [int(x) for x in np.unique(sweep)]
+    return leave_groups_out(S, L, I, laser, sweep, frame, P, [[int(x)] for x in np.unique(sweep)])
+
+
+def sweep_groups(ids, count, layout):
+    """Split sweep ids (ordered far to near) into `count` groups: 'interleaved' takes every count-th sweep
+    ({0, 5, 10}, {1, 6, 11}, ... for 15 sweeps), so each group spans the whole approach; 'consecutive' takes
+    contiguous blocks."""
+    ids = sorted(int(x) for x in ids)
+    require(1 < count <= len(ids), 'Sweep group count must be between 2 and the number of sweeps')
+    if layout == 'interleaved':
+        return [ids[b::count] for b in range(count)]
+    require(layout == 'consecutive', f'Unknown sweep group layout {layout!r}')
+    return [list(map(int, g)) for g in np.array_split(ids, count)]
+
+
+def leave_groups_out(S, L, I, laser, sweep, frame, P, groups):
+    """Runs of both estimators with each group of sweeps left out in turn, and the grouped (delete-d) jackknife
+    sd sqrt((g-1)/g * sum (v_b - mean)^2) over the g runs (g = number of groups; delete-1 when groups are single
+    sweeps)."""
     runs = []
-    for k in ids:
-        keep = sweep != k
-        runs.append({'leftOut': k, **quick_edge(S[keep], L[keep], I[keep], laser[keep], sweep[keep], frame, P)})
+    for group in groups:
+        keep = ~np.isin(sweep, group)
+        left = int(group[0]) if len(group) == 1 else [int(x) for x in group]
+        runs.append({'leftOut': left, **quick_edge(S[keep], L[keep], I[keep], laser[keep], sweep[keep], frame, P)})
     both = [r for r in runs if r['A'] is not None and r['B'] is not None]
     agreeing = [r for r in runs if r['agree']]
     measured = lambda key: sum(r[key] is not None for r in runs) / len(runs) if runs else 0.0
@@ -709,11 +824,30 @@ def leave_one_sweep_out(S, L, I, laser, sweep, frame, P):
             'rows': runs}
 
 
+def precision(loo, groups, method):
+    """The leave-out summary the resolution rule uses: 'leaveOneSweepOut' (v4), 'sweepGroups' (grouped jackknife),
+    or 'maxOfBoth' (per estimator the larger sd and the smaller measured fraction; every run of both counts for
+    the agreement label)."""
+    if method == 'leaveOneSweepOut':
+        return loo
+    require(groups is not None, f'Method {method!r} needs the sweep-group runs')
+    if method == 'sweepGroups':
+        return groups
+    require(method == 'maxOfBoth', f'Unknown uncertainty method {method!r}')
+    def worse(x, y):
+        return None if x is None or y is None else max(x, y)
+    return {'runs': loo['runs'] + groups['runs'], 'agreeing': loo['agreeing'] + groups['agreeing'],
+            **{k: {'measuredFraction': min(loo[k]['measuredFraction'], groups[k]['measuredFraction']),
+                   'jackknifeSdM': worse(loo[k]['jackknifeSdM'], groups[k]['jackknifeSdM'])} for k in ('A', 'B')},
+            'mean': {'jackknifeSdM': worse(loo['mean']['jackknifeSdM'], groups['mean']['jackknifeSdM'])}}
+
+
 def combine(a, b, loo, P):
-    """Resolution rule: both estimators measure on all sweeps; in the leave-one-sweep-out runs each estimator
-    measures in >= minLeaveOneOutMeasuredFraction of runs and has jackknife sd <= maxEstimatorSdM; |A - B| <=
-    agreementToleranceM. A resolved edge is labelled 'marginally resolved' when any leave-one-out run does not
-    measure both estimators in agreement, or the jackknife sd of (A+B)/2 exceeds maxEstimatorSdM."""
+    """Resolution rule: both estimators measure on all sweeps; in the leave-out runs (`loo`, the summary chosen by
+    precision()) each estimator measures in >= minLeaveOneOutMeasuredFraction of runs and has jackknife sd <=
+    maxEstimatorSdM; |A - B| <= agreementToleranceM. A resolved edge is labelled 'marginally resolved' when any
+    leave-out run does not measure both estimators in agreement, or the jackknife sd of (A+B)/2 exceeds
+    maxEstimatorSdM. The stated +/- is 2 x combinedM, combinedM = sqrt(sd of (A+B)/2 ^ 2 + (|A-B|/2) ^ 2)."""
     tolerance, max_sd = P['agreementToleranceM'], P['maxEstimatorSdM']
     min_fraction = P['uncertainty']['minLeaveOneOutMeasuredFraction']
     if a['status'] != 'measured' or b['status'] != 'measured':
@@ -722,8 +856,10 @@ def combine(a, b, loo, P):
     loose = [name for name in ('A', 'B') if loo[name]['jackknifeSdM'] is None or loo[name]['jackknifeSdM'] > max_sd + 1e-12
              or loo[name]['measuredFraction'] < min_fraction - 1e-12]
     if loose:
-        return {'status': 'unresolved', 'reason': f'Estimator {"/".join(loose)} leave-one-sweep-out jackknife sd exceeds {max_sd} m '
-                                                  f'or it measures in fewer than {min_fraction:.0%} of leave-one-out runs',
+        scheme = {'leaveOneSweepOut': 'leave-one-sweep-out', 'sweepGroups': 'sweep-group',
+                  'maxOfBoth': 'leave-one-sweep-out or sweep-group'}.get(P['uncertainty'].get('method', 'leaveOneSweepOut'), 'leave-out')
+        return {'status': 'unresolved', 'reason': f'Estimator {"/".join(loose)} {scheme} jackknife sd exceeds {max_sd} m '
+                                                  f'or it measures in fewer than {min_fraction:.0%} of those leave-out runs',
                 'estimatorA': a['status'], 'estimatorB': b['status']}
     diff = a['edgeSAtEval'] - b['edgeSAtEval']
     if abs(diff) > tolerance + 1e-12:
@@ -732,14 +868,17 @@ def combine(a, b, loo, P):
     edge = (a['edgeSAtEval'] + b['edgeSAtEval']) / 2
     stat = loo['mean']['jackknifeSdM'] or 0.0
     method = abs(diff) / 2
+    combined = math.sqrt(stat ** 2 + method ** 2)
     marginal = loo['agreeing'] < loo['runs'] or stat > max_sd + 1e-12
+    name = P['uncertainty'].get('method', 'leaveOneSweepOut')
     return {'status': 'resolved', 'label': 'marginally resolved' if marginal else 'resolved',
             'paintEdgeS': edge, 'differenceAminusB': diff,
-            'uncertainty': {'jackknifeSdOfMeanM': stat, 'estimatorHalfDifferenceM': method,
-                            'combinedM': math.sqrt(stat ** 2 + method ** 2),
-                            'calibration': 'Not calibrated: on synthetic known edges the 2-sigma coverage of combinedM was 0.87-1.00 '
-                                           'per case (v4-dev/prototype-uncertainty.json; validation/synthetic-validation-v4.json).',
-                            'note': 'Statistical only: leave-one-sweep-out jackknife sd of (A+B)/2 combined with |A-B|/2. '
+            'uncertainty': {'method': name, 'jackknifeSdOfMeanM': stat, 'estimatorHalfDifferenceM': method,
+                            'combinedM': combined, 'statedPlusMinusM': 2 * combined,
+                            'statedPlusMinusLabel': '+/- is 2 x combinedM (statistical only; not calibrated; systematic terms excluded)',
+                            'calibration': 'Not calibrated. Synthetic known-edge 2 x combinedM coverage per cell, with resolved counts, is in '
+                                           'validation/synthetic-validation-v5.json (v4: 0.86-1.00 per cell among resolved results only).',
+                            'note': f'Statistical only: {name} jackknife sd of (A+B)/2 combined with |A-B|/2. '
                                     'A-B agreement is not independent confirmation (shared returns, frame, windows and line fit). '
                                     'Systematic terms (beam footprint, pose/raster registration, float16 storage, '
                                     'intensity-dependent range bias, worn or partial paint) are not included.'}}
@@ -831,19 +970,28 @@ def merge_ranges(ranges):
 
 
 def measure_edge(S, L, I, laser, sweep, frame, P):
-    """Both estimators (with the strip-bootstrap diagnostic), the leave-one-sweep-out jackknife when both measure,
-    and the resolution rule. Each estimator's uncertaintyM is its leave-one-sweep-out jackknife sd."""
+    """Both estimators (with the strip-bootstrap diagnostic), the leave-one-sweep-out jackknife (and the sweep-group
+    jackknife when the protocol's uncertainty method uses it) when both measure, and the resolution rule. Each
+    estimator's uncertaintyM is its sd under the protocol's method."""
     W = P['windows']
     also = frame.get('corridorCenterL')
     a = estimator_a(S, L, I, laser, frame['corridor'], frame['evalL'], P, W, also)
     b = estimator_b(S, L, I, laser, sweep, frame['corridor'], frame['evalL'], P, W, None, also)
-    loo = None
+    U = P['uncertainty']
+    method = U.get('method', 'leaveOneSweepOut')
+    loo = groups = prec = None
     if a['status'] == 'measured' and b['status'] == 'measured':
         loo = leave_one_sweep_out(S, L, I, laser, sweep, frame, P)
-        a['uncertaintyM'] = loo['A']['jackknifeSdM']; b['uncertaintyM'] = loo['B']['jackknifeSdM']
-    final = combine(a, b, loo, P)
+        if method != 'leaveOneSweepOut':
+            groups = leave_groups_out(S, L, I, laser, sweep, frame, P,
+                                      sweep_groups(np.unique(sweep), U['sweepGroups'], U['sweepGroupLayout']))
+        prec = precision(loo, groups, method)
+        a['uncertaintyM'] = prec['A']['jackknifeSdM']; b['uncertaintyM'] = prec['B']['jackknifeSdM']
+    final = combine(a, b, prec, P)
     if loo is not None:
         final['leaveOneSweepOut'] = loo
+    if groups is not None:
+        final['sweepGroupJackknife'] = {'groups': U['sweepGroups'], 'layout': U['sweepGroupLayout'], **groups}
     return a, b, final
 
 
@@ -972,10 +1120,32 @@ def cmd_measure(args):
                                 'Diagnostic only; not a gate; no bootstrap.',
                         'estimatorA': {kk: fa_.get(kk) for kk in ('status', 'edgeSAtEval', 'slope', 'edgeStrips', 'stripStatus', 'reason')},
                         'estimatorB': {kk: fb_.get(kk) for kk in ('status', 'edgeSAtEval', 'slope', 'edgeStrips', 'stripStatus', 'reason')},
-                        'agreement': fq}},
+                        'agreement': fq},
+            'estimatorAVariants': estimator_a_variants(S, L, I, laser, frame, P)},
         'limits': protocol.get('limits', []),
     }
     write_new(args.output, json.loads(json.dumps(result, allow_nan=False, default=_json_default)))
+
+
+def estimator_a_variants(S, L, I, laser, frame, P):
+    """Estimator A on all sweeps under changed rules, at the same evaluation point (diagnostics that explain a
+    version change; never gates; no bootstrap)."""
+    W = P['windows']; A = P['estimatorA']
+    tail_keys = ('laserTailRegion', 'laserTailLateralMarginM', 'laserTailMaxLateralMarginM', 'laserTailMarginStepM')
+    def run(drop=(), **changes):
+        Q = copy.deepcopy(P)
+        for key in drop:
+            Q['estimatorA'].pop(key, None)
+        Q['estimatorA'].update(changes)
+        r = estimator_a(S, L, I, laser, frame['corridor'], frame['evalL'], Q, W, strip_bootstrap=False)
+        return {k: r.get(k) for k in ('status', 'edgeSAtEval', 'slope', 'edgeStrips', 'stripStatus', 'reason', 'laserTailRegion')}
+    out = {'note': 'Estimator A only, all sweeps, same evaluation point; diagnostics, never gates.',
+           'corridorWideTailsV4': run(drop=tail_keys),
+           'noRunRule': run(onsetLookaheadReturns=1, onsetMinPaintInLookahead=1),
+           'laserTailAtMinimum': run(laserTailQuantile=0.0, laserReferenceMinReturns=1)}
+    if A.get('laserTailRegion') == 'stripLateralWindow' and 'laserTailMaxLateralMarginM' in A:
+        out['fixedWindowNoWidening'] = run(drop=('laserTailMaxLateralMarginM', 'laserTailMarginStepM'))
+    return out
 
 
 def _json_default(value):

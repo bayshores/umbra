@@ -188,7 +188,10 @@ function annotatedBox(scene,v) {
   // The front face is the end the heading points to, so the heading must follow the direction of travel (within the
   // preparation script's 15 degrees); a reversed annotation would make the camera-side end the front.
   if(-(axis[0]*travel[0]+axis[2]*travel[2])<Math.cos(15*Math.PI/180))throw new Error('The annotated vehicle does not face the direction of travel.');
-  return {track:box.track,center:[...box.center],axis,dimensions:{width:box.width,height:box.height,length:box.length}};
+  // car shape: the box carries the recorded vehicle's prepared LiDAR shape (scene.mjs prepareCarShape); never a box fallback.
+  const shape=scene.carShape;
+  if(!shape||shape.track!==v.track)throw new Error('The measured car shape is missing for the annotated vehicle.');
+  return {track:box.track,center:[...box.center],axis,dimensions:{width:box.width,height:box.height,length:box.length},shape};
 }
 // The annotated stationary vehicle of a mapped-ground scene. While the vehicle front pixel stays within
 // ANNOTATED_FRONT_NUDGE_PX of the suggestion and the three size fields still hold it, the current vehicle is its averaged
@@ -235,7 +238,7 @@ function annotatedSetback(crossing,axis,pose) {
 // the setback change, so at its own setback it is the annotated box exactly. Declared: the box on the lane axis through
 // its origin with the retained front height.
 export function whatIfBox(w,setback) {
-  if(w.pose==='annotated')return {center:add(w.center,mul(w.axis,setback-w.setback)),axis:w.boxAxis,vehicle:w.vehicle,pose:'annotated'};
+  if(w.pose==='annotated')return {center:add(w.center,mul(w.axis,setback-w.setback)),axis:w.boxAxis,vehicle:w.vehicle,pose:'annotated',shape:w.shape};
   return {center:vehicleCenter(w.origin,w.axis,setback,w.vehicle,w.groundHeight),axis:w.axis,vehicle:w.vehicle,pose:'declared'};
 }
 // Starting comparison values: the what-if starts on the current vehicle (createScenario's baselineSetback) and the driver
@@ -495,7 +498,9 @@ export const TOO_CLOSE_TO_CALL_M=.1;
 export const UNKNOWN_REASONS=Object.freeze({
   'driver-inside-vehicle':'driver inside a vehicle','person-inside-vehicle':'person inside a vehicle',
   'driver-inside-object':'driver inside a real object','person-inside-object':'person inside a real object',
-  'overlaps-real-object':'overlaps a real object','too-close-to-call':'too close to call'});
+  'overlaps-real-object':'overlaps a real object','too-close-to-call':'too close to call',
+  // car shape: the line cuts into the recorded stationary vehicle's box, but its LiDAR shape does not prove it blocks there.
+  'height-not-proven':'vehicle height not proven'});
 const fmt3=n=>String(Number(n.toFixed(3)));
 // Signed sightline-to-box gap in the box frame (a, b: segment ends; half: half sizes), from the same closed
 // segment-box test. A segment that touches the box gets minus its cut depth: the largest d at which it still touches the
@@ -513,6 +518,144 @@ export function sightlineGap(a,b,half) {
   hi=Math.max(...[a,b].map(p=>Math.max(...p.map((n,i)=>Math.abs(n)-half[i]))));
   while(hi-lo>1e-9){const m=(lo+hi)/2;if(touches(-m))hi=m;else lo=m;}
   return hi;
+}
+// ---------------------------------------------------------------- measured car shape (shape-v2)
+// The recorded stationary vehicle's LiDAR shape, by the frozen shape-v2 protocol (it changes only the sweep step of
+// .local/evaluation/pao-accuracy/shape-v1/protocol.json: representation, resultRule, deepTest are unchanged). It is a 2.5D height
+// field on a grid that exactly covers the annotated box footprint: one solid top per cell, everything below it solid
+// (windows and the gap under the body count as solid, like the box), null = not proven (height 0 here). Only the real
+// recorded vehicle in its annotated pose carries it; declared, resized and replacement vehicles keep the box.
+// Car-local frame: x forward (front face at x = +L/2), y to the car's left, z above the box bottom. From assessSightline's
+// box-local [side, y, along]: x = -along, y = -side, z = y + H/2. Cell (i, j) spans x in [x_{i+1}, x_i] and y in
+// [y_{j+1}, y_j], with x_i = L/2 - i*L/n (x_n = -L/2 exactly) and y_j = W/2 - j*W/m (y_m = -W/2 exactly).
+// The reason sentences of a shape result (protocol resultRule.reasons) and of a refused shape (protocol refusals).
+export const SHAPE_REASONS=Object.freeze({
+  blocked:'The recorded stationary vehicle\'s LiDAR shape intersects the sightline.',
+  heightNotProvenMeasured:'The sightline cuts into the recorded stationary vehicle\'s box, but its LiDAR returns do not prove the vehicle is tall enough there to block it, so this placement is not decided.',
+  heightNotProvenRefused:refusal=>`The sightline cuts into the recorded stationary vehicle's box, but no LiDAR shape could be built for it (${refusal}), so this placement is not decided.`});
+export const CAR_SHAPE_REFUSALS=Object.freeze({'too-few-sweeps':'fewer than 2 LiDAR sweeps of it were available','not-stationary':'it did not pass the stationary test'});
+// Breakpoints along one axis for depth d: every cell edge minus and plus d, and the two ends of the footprint shrunk by
+// d, kept inside that shrunk range, sorted, with values closer than 1e-9 m merged (the ends keep their exact values).
+function shapeBreakpoints(edges,size,d) {
+  const lo=-size/2+d,hi=size/2-d,values=[lo,hi];
+  for(const x of edges)values.push(x-d,x+d);
+  const out=[];
+  for(const v of values.filter(v=>v>=lo&&v<=hi).sort((a,b)=>a-b))if(!out.length||v-out.at(-1)>=EPS)out.push(v);
+  if(out.length===1)return Float64Array.of(lo,hi);
+  out[0]=lo;out[out.length-1]=hi;
+  return Float64Array.from(out);
+}
+// The cells whose range [edges[k+1], edges[k]] (edges decreasing) overlaps, with some area, the d-square around c:
+// edges[k+1] - d < c < edges[k] + d. [first, last], or [-1, -1] for none.
+function shapeCells(edges,c,d) {
+  let first=-1,last=-1;
+  for(let k=0;k<edges.length-1;k++)if(edges[k+1]-d<c&&c<edges[k]+d){if(first<0)first=k;last=k;}
+  return [first,last];
+}
+function shapeAxis(edges,size,d) {
+  const bp=shapeBreakpoints(edges,size,d),first=new Int32Array(bp.length-1),last=new Int32Array(bp.length-1);
+  for(let p=0;p<bp.length-1;p++)[first[p],last[p]]=shapeCells(edges,(bp[p]+bp[p+1])/2,d);
+  return {bp,first,last};
+}
+// The pieces for depth d (null when the box is smaller than 2d in any direction: nothing can be that deep).
+function shapePieces(P,d) {
+  if(P.length<2*d||P.width<2*d||P.height<2*d)return null;
+  return {d,x:shapeAxis(P.xEdges,P.length,d),y:shapeAxis(P.yEdges,P.width,d),g:null};
+}
+// g(R): the smallest solid top (null = 0) of the cells under the d-square around the piece's midpoint.
+function pieceHeight(P,pieces,px,py) {
+  const ny=pieces.y.bp.length-1;
+  if(pieces.g)return pieces.g[px*ny+py];
+  const i0=pieces.x.first[px],i1=pieces.x.last[px],j0=pieces.y.first[py],j1=pieces.y.last[py];
+  if(i0<0||j0<0)return 0;
+  let g=Infinity;
+  for(let i=i0;i<=i1;i++)for(let j=j0;j<=j1;j++)g=Math.min(g,P.tops[i*P.lateral+j]);
+  return g;
+}
+// The piece index p with bp[p] <= c <= bp[p+1] (binary search, clamped to the first and last piece).
+function findPiece(bp,c) {
+  let lo=0,hi=bp.length-2;
+  while(lo<hi){const mid=(lo+hi+1)>>1;if(bp[mid]<=c)lo=mid;else hi=mid-1;}
+  return lo;
+}
+// Protocol deepTest.perLine: the car-local x of the middle of the first sub-interval (from the eye) where the line is at
+// least pieces.d deep in the columns, or null. e, t: assessSightline's box-local [side, y, along] line ends.
+function deepHitX(P,pieces,e,t) {
+  if(!pieces)return null;
+  const d=pieces.d,x0=-e[2],y0=-e[0],z0=e[1]+P.height/2,dx=e[2]-t[2],dy=e[0]-t[0],dz=t[1]-e[1];
+  if(dx===0&&dy===0)return null;
+  // Clip the ground track to the footprint shrunk by d.
+  let lo=0,hi=1;
+  for(const [p0,dp,a,b] of [[x0,dx,-P.length/2+d,P.length/2-d],[y0,dy,-P.width/2+d,P.width/2-d]]) {
+    if(dp===0){if(p0<a||p0>b)return null;continue;}
+    let u=(a-p0)/dp,v=(b-p0)/dp;
+    if(u>v)[u,v]=[v,u];
+    lo=Math.max(lo,u);hi=Math.min(hi,v);
+    if(lo>hi)return null;
+  }
+  // Sub-intervals between every breakpoint the clipped ground track crosses; each lies inside one closed piece.
+  const ts=[lo,hi];
+  for(const [p0,dp,bp] of [[x0,dx,pieces.x.bp],[y0,dy,pieces.y.bp]])if(dp!==0)for(const c of bp){const s=(c-p0)/dp;if(s>lo&&s<hi)ts.push(s);}
+  ts.sort((a,b)=>a-b);
+  for(let k=1;k<ts.length;k++) {
+    const a=ts[k-1],b=ts[k];
+    if(!(b>a))continue;
+    const m=(a+b)/2,xm=x0+dx*m,g=pieceHeight(P,pieces,findPiece(pieces.x.bp,xm),findPiece(pieces.y.bp,y0+dy*m));
+    if(g-d<d)continue;
+    // The line's height is linear in t: over the closed sub-interval it covers its two end heights.
+    const za=z0+dz*a,zb=z0+dz*b;
+    if(Math.min(za,zb)<=g-d&&Math.max(za,zb)>=d)return xm;
+  }
+  return null;
+}
+// One prepared shape per loaded scene (scene.mjs): typed arrays, cell edges, cached breakpoints and piece heights for
+// d = TOO_CLOSE_TO_CALL_M, and allTopsAtLeastH (every solid top at least the box height: the shape is the box). carShape
+// is ground.json's carShape (validated by the loader); null gives null. The returned object is frozen; its typed arrays
+// are internal and never changed after this call.
+export function prepareCarShape(carShape) {
+  if(carShape===null||carShape===undefined)return null;
+  const L=carShape?.box?.length,W=carShape?.box?.width,H=carShape?.box?.height,n=carShape?.grid?.along,m=carShape?.grid?.lateral;
+  if(![L,W,H].every(v=>Number.isFinite(v)&&v>0)||!Number.isSafeInteger(n)||!Number.isSafeInteger(m)||n<1||m<1||
+    !Array.isArray(carShape.solidTopM)||carShape.solidTopM.length!==n*m)throw new Error('Invalid car shape.');
+  const tops=new Float64Array(n*m);let allTopsAtLeastH=true;
+  carShape.solidTopM.forEach((v,k)=>{
+    if(v!==null&&!Number.isFinite(v))throw new Error('Invalid car shape.');
+    tops[k]=v===null?0:v;if(v===null||v<H)allTopsAtLeastH=false;
+  });
+  const xEdges=new Float64Array(n+1),yEdges=new Float64Array(m+1);
+  for(let i=0;i<n;i++)xEdges[i]=L/2-i*(L/n);
+  for(let j=0;j<m;j++)yEdges[j]=W/2-j*(W/m);
+  xEdges[n]=-L/2;yEdges[m]=-W/2;
+  const status=carShape.status,refusal=carShape.refusal?Object.freeze({code:carShape.refusal.code,reason:carShape.refusal.reason}):null;
+  const P={schema:carShape.schema,status,refusal,track:carShape.track,length:L,width:W,height:H,along:n,lateral:m,tops,xEdges,yEdges,allTopsAtLeastH};
+  const pieces=shapePieces(P,TOO_CLOSE_TO_CALL_M);
+  if(pieces) {
+    const nx=pieces.x.bp.length-1,ny=pieces.y.bp.length-1,g=new Float64Array(nx*ny);
+    for(let px=0;px<nx;px++)for(let py=0;py<ny;py++)g[px*ny+py]=pieceHeight(P,pieces,px,py);
+    pieces.g=g;Object.freeze(pieces.x);Object.freeze(pieces.y);
+  }
+  P.deep=Object.freeze({d:TOO_CLOSE_TO_CALL_M,pieces:pieces&&Object.freeze(pieces)});
+  // Serialized boxes (reports, tool results) name the shape instead of copying its arrays.
+  P.toJSON=()=>({schema:P.schema,status,track:P.track});
+  return Object.freeze(P);
+}
+const shapePiecesFor=(P,d)=>d===P.deep.d?P.deep.pieces:shapePieces(P,d);
+// Protocol deepTest: some point of the line has the whole cube of half-size d around it inside the columns, by the
+// piece-wise test (never larger than the true rule). e, t: assessSightline's box-local line ends. Pieces are cached for
+// d = TOO_CLOSE_TO_CALL_M; any other d (diagnostics only) recomputes them.
+export function shapeDeep(prepared,e,t,d=TOO_CLOSE_TO_CALL_M) {
+  return deepHitX(prepared,shapePiecesFor(prepared,d),e,t)!==null;
+}
+// Diagnostics only, never used by a rule (protocol deepTest.diagnostics). solidCutM: the largest d in
+// [0, min(L, W, H)/2] at which the deep test still hits (bisection to 1e-9 m), null when the line touches no column at
+// d = 0. hitXM: car-local x of the middle of the first hitting sub-interval at d = TOO_CLOSE_TO_CALL_M (from the eye).
+export function shapeCut(prepared,e,t) {
+  const hitXM=deepHitX(prepared,prepared.deep.pieces,e,t),hits=d=>deepHitX(prepared,shapePiecesFor(prepared,d),e,t)!==null;
+  if(!hits(0))return {solidCutM:null,hitXM};
+  let lo=0,hi=Math.min(prepared.length,prepared.width,prepared.height)/2;
+  if(hits(hi))return {solidCutM:hi,hitXM};
+  while(hi-lo>1e-9){const m=(lo+hi)/2;if(hits(m))lo=m;else hi=m;}
+  return {solidCutM:lo,hitXM};
 }
 // Real annotated objects of a mapped-ground scene: every annotated cuboid except the suggestion's stationary vehicle,
 // which is the current vehicle itself or the vehicle a declaration replaced. Each keeps its full 3D pose.
@@ -547,8 +690,9 @@ function overlapsObject(box,o) {
 // stationary vehicle where it really is, so that last test is skipped); or the sightline cuts into the box by less than
 // TOO_CLOSE_TO_CALL_M. Otherwise classifySightline decides (diagnostics false: its box test alone, for sweep rows; the
 // later diagnostics can only give Unknown). gapM is the signed gap (positive: the line passes the box by that much;
-// negative: it cuts in that deep).
-export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false}={}) {
+// negative: it cuts in that deep). shapeCut false skips only the car-shape diagnostics record (solidCutM's bisection), never
+// a result: setbackSweep's run-start confirmations compare state and reason alone.
+export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false,shapeCut:withShapeCut=true}={}) {
   if(![s?.eye,s?.target,s?.targetGround,box?.center,box?.axis].every(finite3))throw new Error('Invalid sightline coordinates.');
   const side=[box.axis[2],0,-box.axis[0]],half=[box.vehicle.width/2,box.vehicle.height/2,box.vehicle.length/2],low=half.map(n=>-n);
   const local=p=>{const d=sub(p,box.center);return [dot(d,side),d[1],dot(d,box.axis)];};
@@ -566,6 +710,20 @@ export function assessSightline(scene,s,box,{diagnostics=true,ownPosition=false}
   const touches=segmentIntersectsBox(e,t,low,half),deep=TOO_CLOSE_TO_CALL_M;
   if(touches&&!(half.every(n=>n-deep>=0)&&segmentIntersectsBox(e,t,half.map(n=>deep-n),half.map(n=>n-deep))))
     return unknown('too-close-to-call',`The sightline cuts only ${fmt3(-gapM)} m into the vehicle box, less than the ${fmt2(deep)} m margin: too close to call.`);
+  // car-shape step 6 (resultRule, the same in shape-v1 and shape-v2): the recorded stationary vehicle's box carries its
+  // LiDAR shape. A line that reaches here touching the box is box-deep (exactly the rows today's code returns as Blocked). When every solid top is
+  // at least the box height the shape is the box (6a: today's code below). Otherwise the line must be deep in the columns
+  // (6b, Blocked), else this placement is not decided (6c). diagnostics false and true run the same step.
+  const shape=box.shape;
+  if(touches&&shape) {
+    if(shape.length!==box.vehicle.length||shape.width!==box.vehicle.width||shape.height!==box.vehicle.height)
+      throw new Error('The measured car shape does not match the vehicle box.');
+    if(!shape.allTopsAtLeastH) {
+      const extra=diagnostics&&withShapeCut?{shape:{status:shape.status,...shapeCut(shape,e,t)}}:undefined;
+      if(shapeDeep(shape,e,t))return {state:'blocked',reason:SHAPE_REASONS.blocked,supportedFraction:null,gapM,...extra};
+      return unknown('height-not-proven',shape.status==='refused'?SHAPE_REASONS.heightNotProvenRefused(shape.refusal.reason):SHAPE_REASONS.heightNotProvenMeasured,extra);
+    }
+  }
   const v=diagnostics?classifySightline(scene,s.eye,s.target,box.vehicle,box.axis,box.center)
     :touches?{state:'blocked',reason:'Declared vehicle volume intersects the sightline.',supportedFraction:null}:{state:'unknown',reason:null,supportedFraction:null};
   return {...v,gapM};
@@ -606,7 +764,7 @@ export function createScenario(scene,input) {
   if([vehicle.width,vehicle.height,targetHeight].some(n=>n>span))throw new Error('Actor dimensions exceed the measured scene extent.');
   // Declared horizontal translation retains the measured current-front height; terrain contact is unvalidated.
   // Mapped scenes keep the vehicle on its own line along the lane axis (vehicleOrigin); otherwise it runs from the crossing.
-  const whatIf=pose?{pose:'annotated',center:pose.center,setback:baselineSetback,axis:p.axis,boxAxis:pose.axis,vehicle:pose.dimensions,cornerOffset}
+  const whatIf=pose?{pose:'annotated',center:pose.center,setback:baselineSetback,axis:p.axis,boxAxis:pose.axis,vehicle:pose.dimensions,cornerOffset,shape:pose.shape}
     :{pose:'declared',origin:mapped?p.vehicleOrigin:p.crossing,axis:p.axis,vehicle,groundHeight:p.parking[1],cornerOffset};
   // Driver eye: the recording camera's position and height, moved along the lane axis by the driver position. On AV2
   // that is the stereo camera (about 1.47 m above the mapped ground), not a seated driver's eye.

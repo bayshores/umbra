@@ -201,6 +201,64 @@ class TranscriptScanTests(unittest.TestCase):
         self.assertEqual(result['toolCalls'], len(CLEAN))
         self.assertEqual(result['bindingCalls'], 3)
 
+    def test_claude_code_tool_list_records_are_read_without_error(self):
+        # Claude Code subagent transcripts carry 'attachment' records whose tool schemas have a property named
+        # 'type' (a dict, not a record type); the scan once failed on them.
+        tools = json.dumps({'type': 'attachment', 'attachment': {'tools': [{'name': 'Bash', 'schema': {'input_schema': {
+            'type': 'object', 'properties': {'type': {'type': 'string'}, 'command': {'type': 'string'}}}}}]}})
+        result = isolation.scan_transcript(self.write('tools.jsonl', [tools] + CLEAN), 'L1', 'V01', self.rules)
+        self.assertEqual(result['hits'], [])
+        self.assertEqual(result['toolCalls'], len(CLEAN))
+
+    def test_the_final_report_is_not_scanned_but_the_same_text_in_a_tool_is(self):
+        # The final reply (Claude Code SubagentHandback) opens no file; the L1/V01 pilot report named its own
+        # scratch folder in plain words, which the bare-word session rule counted as a hit.
+        text = 'I wrote two small helper scripts inside my own scratch folder, ' + REPO + '.local/evaluation/pao-labels/v2/sessions/L2/V01'
+        report = self.write('report.jsonl', CLEAN + [claude_line('SubagentHandback', message=text)])
+        result = isolation.scan_transcript(report, 'L1', 'V01', self.rules)
+        self.assertEqual(result['hits'], [])
+        self.assertEqual((result['toolCalls'], result['reportCalls']), (len(CLEAN), 1))
+        tool = isolation.scan_transcript(self.write('tool.jsonl', CLEAN + [claude_line('Bash', command='echo ' + text)]), 'L1', 'V01', self.rules)
+        self.assertTrue(tool['hits'])
+
+    def test_a_bash_description_is_not_scanned_but_its_command_is(self):
+        # L2/V01 described a pixel probe as "Locate the magenta square ..."; the description is never executed.
+        probe = 'python ' + REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/probe.py ' + OWN
+        clean = isolation.scan_transcript(self.write('described.jsonl', CLEAN + [claude_line(
+            'Bash', command=probe, description='Locate the magenta square in question 5')]), 'L1', 'V01', self.rules)
+        self.assertEqual(clean['hits'], [])
+        dirty = isolation.scan_transcript(self.write('located.jsonl', CLEAN + [claude_line(
+            'Bash', command='locate answer', description='Show question 5')]), 'L1', 'V01', self.rules)
+        self.assertTrue(dirty['hits'])
+        other = isolation.scan_transcript(self.write('other-tool.jsonl', CLEAN + [claude_line(
+            'Write', file_path=REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/n.py', content='x', description='locate x')]),
+            'L1', 'V01', self.rules)
+        self.assertTrue(other['hits'])
+
+    def test_a_comment_in_written_python_is_not_scanned_but_its_code_is(self):
+        # L1/V02 wrote a helper whose comment said "to locate a horizontal edge"; a comment never runs.
+        path = REPO + '.local/evaluation/pao-labels/v2/scratch/L1/V01/edgey.py'
+        comment = 'import sys\n# For each x, print the column values, to locate a horizontal edge.\nx = 1  # locate it\n'
+        for tool, fields in (('Write', {'content': comment}), ('Edit', {'old_string': 'x = 0\n', 'new_string': comment})):
+            with self.subTest(tool):
+                clean = isolation.scan_transcript(self.write(f'{tool}-c.jsonl', CLEAN + [claude_line(tool, file_path=path, **fields)]),
+                                                  'L1', 'V01', self.rules)
+                self.assertEqual(clean['hits'], [])
+        code = [('code', 'import glob\nglob.glob("*")  # list them\n'),
+                ('string', 'import os\nos.system("locate answer")\n'),
+                ('docstring', '"""To locate the edge."""\n'),
+                ('walk', '# just a probe\nimport os\nos.walk(".")\n'),
+                ('does not tokenize', 'x = "unterminated\n# locate it\n')]
+        for label, text in code:
+            with self.subTest(label):
+                dirty = isolation.scan_transcript(self.write(f'{label}.jsonl', CLEAN + [claude_line('Write', file_path=path, content=text)]),
+                                                  'L1', 'V01', self.rules)
+                self.assertTrue(dirty['hits'], label)
+        shell = isolation.scan_transcript(self.write('sh.jsonl', CLEAN + [claude_line(
+            'Write', file_path=path[:-3] + '.sh', content='# locate it\n')]), 'L1', 'V01', self.rules)
+        self.assertTrue(shell['hits'])
+        self.assertEqual(isolation.without_python_comments('a = "#x"  # c\nb = 2\n'), 'a = "#x"  \nb = 2\n')
+
     def test_each_forbidden_access_is_a_hit(self):
         for label, line in FORBIDDEN.items():
             with self.subTest(label):

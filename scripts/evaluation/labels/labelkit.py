@@ -105,7 +105,8 @@ def question_image(args, task, rgb, store, question, seq):
         require(sha256_file(path) == task['overview']['sha256'], 'Overview image changed since the task list was built')
         return path, task['overview']['sha256']
     data = imaging.render_question(rgb, render['context'], render['window'], render['zoom'], render['marker'],
-                                   candidates=render.get('candidates', ()), guides=render.get('guides', ()))
+                                   candidates=render.get('candidates', ()), guides=render.get('guides', ()),
+                                   tick_on_pixel_boundary=bool(render.get('tickOnPixelBoundary')))
     path = store.dir / 'questions' / f'{seq:04d}.png'
     write_bytes_atomic(path, data)
     return path, sha256_bytes(data)
@@ -124,7 +125,8 @@ def describe(args, task, question, image_path, seq, total_hint, scratch=None):
     kind = question['kind']
     how = {'yesno': 'yes | no | cannot_tell', 'box': 'TOPLEFT:BOTTOMRIGHT cells (e.g. C4:H9) | none',
            'cell': 'one cell (e.g. C4) | none', 'count': f"a whole number 0..{question['options']}",
-           'pick': f"a candidate number 1..{question['options']} | 0"}[kind]
+           'pick': f"a candidate number 1..{question['options']} | 0" +
+                   (' | cannot_tell' if question.get('render', {}).get('allowCannotTell') else '')}[kind]
     cmd = (f"python -I scripts/evaluation/labels/labelkit.py --labeler {args.labeler} --task {args.task} answer <ANSWER>")
     lines = [
         f"TASK {task['taskId']}  question {seq} (about {total_hint} in total)  feature {question['feature']}",

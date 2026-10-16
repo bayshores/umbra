@@ -1,12 +1,23 @@
 #!/usr/bin/env node
 // Palo Alto accuracy harness (tasks M0, M2, M4d). Loads the local AV2 8c development scene (current folder GROUNDED_DIR,
-// protocol v3.1) the way tests/av2-ground.test.mjs does and measures the app's own geometry (src/*.mjs) against named
-// references. Development-grade, AV2-referenced numbers from one development scene: not surveyed, not held-out, never a
-// passed gate. Metric K (LiDAR shadow) is computed by v3.1-analysis/metric_k.py next to the grounded folder.
+// placement protocol v3.4 with the recorded stationary vehicle's shape-v2 LiDAR shape) the way tests/av2-ground.test.mjs
+// does and measures the app's own geometry (src/*.mjs) against named references. Development-grade, AV2-referenced
+// numbers from one development scene: not surveyed, not held-out, never a passed gate. Metric K (LiDAR shadow) is computed
+// by v3.1-analysis/metric_k.py next to the grounded folder.
 //
-//   node scripts/evaluation/pao-baseline.mjs [--date YYYY-MM-DD] [--out DIR] [--no-coverage] [--samples N]
+//   node scripts/evaluation/pao-baseline.mjs [--scene DIR] [--date YYYY-MM-DD] [--out DIR] [--no-coverage] [--samples N]
+//   node scripts/evaluation/pao-baseline.mjs --timing-only [--scene DIR] [--date YYYY-MM-DD] [--out DIR] [--sweeps N]
 //
-// Writes DIR/baseline-<UTC date>.json (default DIR .local/evaluation/pao-accuracy/). Reads only local files.
+// Writes DIR/baseline-<UTC date>.json (default DIR .local/evaluation/pao-accuracy/), or with --timing-only DIR/timing-<UTC
+// date>.json (metric J alone: scene load, first result, createScenario and the setback sweep at both target heights).
+// --scene: a built scene folder holding assembled/ and grounded/ (scene-builder-v4.3 and M7 run_heldout.py layout) instead
+// of the 8c development scene; the file names then carry the scene id, and the 8c expectations are not checked.
+// Never overwrites a file. Reads only local files.
+//
+// Since shape-v1 (baseline schemaVersion 3) the app's Blocked is no longer "the line cuts at least 0.10 m into the box":
+// a box-deep line (cut >= 0.10 m) is Blocked only where the recorded vehicle's LiDAR shape is deep enough there, else
+// Unknown height-not-proven. The geometric intervals are therefore named boxDeep* (where the box alone would say Blocked,
+// the v3.2 appBlocked* values), and appBlockedIntervalsM is a scan of the app's own result.
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {existsSync,readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -14,11 +25,12 @@ import {execFileSync} from 'node:child_process';
 import {performance} from 'node:perf_hooks';
 import os from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
+import path from 'node:path';
 import {loadScene} from '../../src/scene.mjs';
 import {mappedGroundHit,mappedGroundHeight,createScenario,comparisonStart,segmentIntersectsBox,whatIfBox,annotatedVehicle,evaluatedPosition,anchorPoint,
-  TOO_CLOSE_TO_CALL_M} from '../../src/geometry.mjs';
-import {setbackSweep,actorConflicts} from '../../src/scenario-assistant.mjs';
-import {suggestedSetup} from '../../src/suggestions.mjs';
+  TOO_CLOSE_TO_CALL_M,SIZE_LIMITS} from '../../src/geometry.mjs';
+import {setbackSweep,actorConflicts,scenarioFacts,allowedNumbersFrom,checkAnswer} from '../../src/scenario-assistant.mjs';
+import {suggestedSetup,crossingText} from '../../src/suggestions.mjs';
 
 export const ROOT=new URL('../../',import.meta.url);
 export const DEV={id:'av2-pao-8c52d911-2658849',dir:new URL('.local/evaluation/av2-map-first-2026-10-11/',ROOT)};
@@ -41,25 +53,33 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 // Output names for the app's pixel keys (its vehicle-front key is not used in written results).
 const pixelsOut=p=>({crossing:p.crossing,vehicleFront:p.parking,person:p.target});
 
-// The current grounded folder (app contract): protocol v3.1. Earlier folders are history and the app refuses them.
-export const GROUNDED_DIR='grounded-v3.1/';
+// The current grounded folder (app contract A14): placement protocol v3.4, grounded-v3.2/ plus the recorded stationary
+// vehicle's shape-v2 LiDAR shape (ground schemaVersion 3; shape-v2 reads more LiDAR sweeps than shape-v1). Earlier folders
+// are history (the app refuses grounded-v3.3/ and older; tests/history-app.mjs loads them with the app source of their own
+// commit).
+export const GROUNDED_DIR='grounded-v3.4/';
 export const devDataPresent=()=>existsSync(new URL(GROUNDED_DIR+'scene.json',DEV.dir))&&existsSync(new URL('assembled/positions.bin',DEV.dir))
   &&existsSync(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir));
 
+// The 8c development scene's folders, and those of a built scene folder (DIR/assembled/ and DIR/grounded/).
+export const DEV_DIRS=Object.freeze({assembled:new URL('assembled/',DEV.dir),grounded:new URL(GROUNDED_DIR,DEV.dir)});
+export const sceneDirs=dir=>{const base=pathToFileURL(path.resolve(dir)+path.sep);return Object.freeze({assembled:new URL('assembled/',base),grounded:new URL('grounded/',base)});};
+
 // Serves the contract's directory like tests/av2-ground.test.mjs: assembled buffers plus every file of the current
 // grounded folder (never files from two grounded folders). cache holds file bytes, so a second load with the same cache
-// measures loadScene without disk reads.
-export async function loadDevelopmentScene(cache=new Map()) {
-  const entry=JSON.parse(await readFile(new URL(GROUNDED_DIR+'catalog-entry.json',DEV.dir),'utf8'));
-  const fetch=async path=>{
-    const name=path.split('/').at(-1);
-    if(!path.startsWith(`/scenes/${DEV.id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
+// measures loadScene without disk reads. dirs: another scene's folders (sceneDirs); the scene id is its catalog entry's.
+export async function loadDevelopmentScene(cache=new Map(),dirs=DEV_DIRS) {
+  const entry=JSON.parse(await readFile(new URL('catalog-entry.json',dirs.grounded),'utf8')),id=entry.id;
+  if(dirs===DEV_DIRS&&id!==DEV.id)throw new Error(`The development catalog entry names ${id}, not ${DEV.id}.`);
+  const fetch=async url=>{
+    const name=url.split('/').at(-1);
+    if(!url.startsWith(`/scenes/${id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
     try{
-      if(!cache.has(name))cache.set(name,await readFile(new URL((GROUNDED.has(name)?GROUNDED_DIR:'assembled/')+name,DEV.dir)));
+      if(!cache.has(name))cache.set(name,await readFile(new URL(name,GROUNDED.has(name)?dirs.grounded:dirs.assembled)));
       return new Response(cache.get(name));
     }catch{return new Response(null,{status:404});}
   };
-  return {scene:await loadScene(fetch,DEV.id,entry.metadataSha256,undefined,entry.suggestions,entry.ground),entry};
+  return {scene:await loadScene(fetch,id,entry.metadataSha256,undefined,entry.suggestions,entry.ground),entry};
 }
 
 // Nearest-rank percentile (sorted[ceil(p n) - 1]); the median is the lower middle value for an even count.
@@ -159,7 +179,7 @@ export function clickToGround(scene) {
     return {band:`${a}-${b} m`,candidates:inBand.length,placed:placed.length,unknown,
       horizontalErrorM:stats(e),medianSignedAlongRayM:r(percentile(placed.map(x=>x.along),.5)),
       shownUncertaintyCoverage:placed.length?r(placed.filter(x=>x.error<=x.shown).length/placed.length,3):null,
-      shownUncertaintyM:{median:r(percentile(shown,.5)),p95:r(percentile(shown,.95))}};
+      shownUncertaintyM:{median:r(percentile(shown,.5)),p95:r(percentile(shown,.95)),max:r(shown.length?Math.max(...shown):null)}};
   });
   return {
     reference:'camera-visible LiDAR ground returns of the scene sweep (protocol v2 cameraVisibleReturn; ground gate on mapped height)',
@@ -170,6 +190,9 @@ export function clickToGround(scene) {
     bands:bin(BANDS,GROUND_GATE_M),fractionalClickBands:bin(BANDS,GROUND_GATE_M,'fractional'),
     strictGate:{groundGateM:STRICT_GROUND_GATE_M,bands:bin(BANDS,STRICT_GROUND_GATE_M)},
     laneBandsForReproduction:bin(LANE_BANDS,GROUND_GATE_M),
+    metricBPoints:{band:'12-25 m',click:'integer',groundGateM:GROUND_GATE_M,
+      definition:'every placed point of the 12-25 m integer-click band as [horizontal error, shown along-ray uncertainty], metres, full precision (pools metric B over sites)',
+      points:rows.filter(x=>x.range>=12&&x.range<25&&Math.abs(x.dy)<=GROUND_GATE_M&&x.unknown===undefined).map(x=>[x.error,x.shown])},
   };
 }
 
@@ -247,19 +270,43 @@ function cutIntervals(sc,eye,target,cut,boxAt=s=>whatIfBox(sc.whatIf,s)) {
   return intervals;
 }
 const lineTouchIntervals=(sc,eye,target,boxAt)=>cutIntervals(sc,eye,target,0,boxAt);
-const appBlockedIntervals=(sc,eye,target,boxAt)=>cutIntervals(sc,eye,target,TOO_CLOSE_TO_CALL_M,boxAt);
+// Box-deep: the line cuts at least TOO_CLOSE_TO_CALL_M into the box (the v3.2 app's Blocked; since shape-v1 the rows where
+// the app asks the vehicle's LiDAR shape: Blocked or Unknown height-not-proven).
+const boxDeepIntervals=(sc,eye,target,boxAt)=>cutIntervals(sc,eye,target,TOO_CLOSE_TO_CALL_M,boxAt);
+const isBoxDeep=v=>v.state==='blocked'||v.reasonCode==='height-not-proven';
+// Intervals of setbacks where test(setback) holds for the app's own result: a 0.05 m scan of the slider range, each change
+// bisected to 1e-6 m. Used for the app's Blocked since shape-v1 (no longer a function of the clearance alone).
+function appIntervals(lo,hi,test) {
+  const step=.05,n=Math.ceil((hi-lo)/step),intervals=[];
+  let prevS=lo,prev=test(lo),open=prev?lo:null;
+  for(let k=1;k<=n;k++) {
+    const s=Math.min(hi,lo+k*step),v=test(s);
+    if(v!==prev) {
+      let a=prevS,b=s;
+      for(let i=0;i<50&&b-a>1e-6;i++){const mid=(a+b)/2;if(test(mid)===prev)a=mid;else b=mid;}
+      const edge=(a+b)/2;
+      if(v)open=edge;else{intervals.push([open,edge]);open=null;}
+    }
+    prevS=s;prev=v;
+  }
+  if(open!==null)intervals.push([open,hi]);
+  return intervals;
+}
 export function setbackSweepBaseline(scene,setup) {
   const child=Number(setup.targetHeight),out={definition:{
     sweep:'app setbackSweep (src/scenario-assistant.mjs) at the suggested driver distance: rows every 0.25 m from limits.minimumSetback, plus the last setback and the 15 ft / 20 ft marks',
-    vehicle:'annotated pose of the suggested stationary vehicle moved along the lane axis (whatIfBox), as the app does',
+    vehicle:'annotated pose of the suggested stationary vehicle moved along the lane axis (whatIfBox), as the app does; it carries the recorded vehicle\'s shape-v2 LiDAR shape',
+    boxDeep:'boxDeepIntervalsM: the line cuts at least 0.10 m into the box (the box alone would say Blocked; the v3.2 appBlockedIntervalsM); confirmed when the app gives Blocked or Unknown height-not-proven inside and neither just outside',
+    appBlocked:'appBlockedIntervalsM: the app\'s own Blocked (createScenario proposedVisibility), 0.05 m scan with every change bisected to 1e-6 m',
     clearance:'signed sightline-to-box clearance, metres (positive: the line misses the box; negative: it cuts in)',
     overlapsAnnotated:'what-if box overlaps another real annotated cuboid (upright footprints and height ranges; the vehicle own track excluded)'}};
   for(const [name,height] of [['child',child],['adult',ADULT_HEIGHT_M]]) {
     const {sc,sweep,rows,signMismatches}=sweepRows(scene,setup,height);
-    const touchIv=lineTouchIntervals(sc,sc.eye,sc.target),blockedIv=appBlockedIntervals(sc,sc.eye,sc.target);
+    const touchIv=lineTouchIntervals(sc,sc.eye,sc.target),deepIv=boxDeepIntervals(sc,sc.eye,sc.target);
     // The app confirms each interval: createScenario inside and just outside its ends. Line touches: Blocked or too close
-    // to call (M1); app Blocked: state blocked.
+    // to call (M1); box-deep: Blocked or Unknown height-not-proven (shape-v1 step 6).
     const at=s=>createScenario(scene,{...setup.input,targetHeight:String(height),proposedSetback:s}).proposedVisibility;
+    const appBlockedIv=appIntervals(sc.limits.minimumSetback,sc.limits.maximumSetback,s=>at(s).state==='blocked');
     const confirm=(iv,test)=>iv.every(([a,b])=>test(at((a+b)/2))&&(a<=sc.limits.minimumSetback+1e-6||!test(at(a-1e-4)))&&(b>=sc.limits.maximumSetback-1e-6||!test(at(b+1e-4))));
     const nonOverlap=rows.filter(x=>x.state!=='overlap');
     // Fine scan (0.01 m) of the setbacks where the what-if overlaps another real annotated cuboid.
@@ -269,11 +316,15 @@ export function setbackSweepBaseline(scene,setup) {
       for(const b of scene.ground.cuboids.items)if(b.track!==track&&boxesOverlap(box,cuboidBox(b))){const k=`${b.category}:${b.track.slice(0,8)}`;(ranges[k]??=[s,s])[1]=s;}
     }
     out[name]={targetHeightM:height,rows,count:rows.length,blockedRows:rows.filter(x=>x.state==='blocked').length,
+      heightNotProvenRows:rows.filter(x=>x.reason==='height-not-proven').length,
+      boxDeepRows:rows.filter(x=>x.state==='blocked'||x.reason==='height-not-proven').length,
       lineTouchesBoxRows:rows.filter(x=>x.clearanceM<=0&&x.state!=='overlap').length,tooCloseToCallRows:rows.filter(x=>x.reason==='too-close-to-call').map(x=>x.setbackM),
       whatIfOverlapsAnnotatedSetbacksM:Object.fromEntries(Object.entries(ranges).map(([k,v])=>[k,v.map(n=>r(n,2))])),
       stopsBlockingAtRowM:r(sweep.stopsBlockingAt),at15ft:sweep.at15ft,at20ft:sweep.at20ft,
       lineTouchesIntervalsM:touchIv.map(x=>x.map(n=>r(n))),lineTouchesIntervalsConfirmedByApp:confirm(touchIv,lineTouches),
-      appBlockedIntervalsM:blockedIv.map(x=>x.map(n=>r(n))),appBlockedIntervalsConfirmedByApp:confirm(blockedIv,v=>v.state==='blocked'),clearanceSignMismatches:signMismatches,
+      boxDeepIntervalsM:deepIv.map(x=>x.map(n=>r(n))),boxDeepIntervalsConfirmedByApp:confirm(deepIv,isBoxDeep),
+      appBlockedIntervalsM:appBlockedIv.map(x=>x.map(n=>r(n))),
+      appBlockedInsideBoxDeep:appBlockedIv.every(([a,b])=>deepIv.some(([c,d])=>a>=c-1e-5&&b<=d+1e-5)),clearanceSignMismatches:signMismatches,
       borderline:{blockedCutInLessThanM:nonOverlap.filter(x=>x.state==='blocked'&&x.clearanceM>-BORDERLINE_M).map(x=>x.setbackM),
         // Misses only (positive clearance): since M1 Unknown rows can also cut in (too close to call).
         unknownMissByLessThanM:nonOverlap.filter(x=>x.state==='unknown'&&x.clearanceM>0&&x.clearanceM<BORDERLINE_M).map(x=>x.setbackM)}};
@@ -286,18 +337,19 @@ export function setbackSweepBaseline(scene,setup) {
 }
 export const LIKELY_FALSE_V2_M=[.85,1.1,9.85,10.1,10.35];
 
-// Where the line stops touching the box and where the app's Blocked ends, and how much each moves with the driver
+// Where the line stops touching the box and where the box-deep cut ends, and how much each moves with the driver
 // position and small box errors (diagnostic only). lineTouches*: the line touches the box (the app's stopsBlockingAt
-// meaning; Blocked or too close to call). appBlocked*: the app's Blocked (a cut of at least 0.10 m).
+// meaning; Blocked, too close to call or height-not-proven). boxDeep*: a cut of at least 0.10 m (the v3.2 app's Blocked;
+// since shape-v1 the app's Blocked or Unknown height-not-proven).
 export function blockedEndRange(scene,setup) {
   const sc=createScenario(scene,setup.input),L=sc.limits,ends=[],iv3=iv=>iv.map(x=>x.map(n=>r(n,3)));
   for(let k=0;k<=40;k++) {
     const d=L.minimumDriverDistance+(L.captureDistance-L.minimumDriverDistance)*k/40,eye=createScenario(scene,{...setup.input,driverDistance:d}).eye;
-    ends.push({driverDistanceM:r(d,3),lineTouchesM:iv3(lineTouchIntervals(sc,eye,sc.target)),appBlockedM:iv3(appBlockedIntervals(sc,eye,sc.target))});
+    ends.push({driverDistanceM:r(d,3),lineTouchesM:iv3(lineTouchIntervals(sc,eye,sc.target)),boxDeepM:iv3(boxDeepIntervals(sc,eye,sc.target))});
   }
   const lastEnd=k=>{const e=ends.filter(x=>x[k].length).map(x=>x[k].at(-1)[1]);return e.length?[r(Math.min(...e),3),r(Math.max(...e),3)]:null;};
   const perturb=(name,fn)=>{const boxAt=s=>fn(whatIfBox(sc.whatIf,s));
-    return {perturbation:name,lineTouchesM:iv3(lineTouchIntervals(sc,sc.eye,sc.target,boxAt)),appBlockedM:iv3(appBlockedIntervals(sc,sc.eye,sc.target,boxAt))};};
+    return {perturbation:name,lineTouchesM:iv3(lineTouchIntervals(sc,sc.eye,sc.target,boxAt)),boxDeepM:iv3(boxDeepIntervals(sc,sc.eye,sc.target,boxAt))};};
   const turn=(deg)=>b=>{const a=deg*Math.PI/180,c=Math.cos(a),s=Math.sin(a);return {...b,axis:[b.axis[0]*c-b.axis[2]*s,0,b.axis[0]*s+b.axis[2]*c]};};
   const shift=(m,dir)=>b=>{const side=[b.axis[2],0,-b.axis[0]],v=dir==='side'?side:b.axis;return {...b,center:b.center.map((n,i)=>n+v[i]*m)};};
   // The stationary vehicle's own (current) result across the driver slider, at its annotated setback (401 positions).
@@ -305,25 +357,26 @@ export function blockedEndRange(scene,setup) {
   for(let k=0;k<=400;k++){const d=L.minimumDriverDistance+(L.captureDistance-L.minimumDriverDistance)*k/400,v=createScenario(scene,{...setup.input,driverDistance:d}).currentVisibility;current.push([d,v.state,v.reasonCode]);}
   const unknownRuns=[];
   current.forEach(([d,st],i)=>{if(st==='blocked')return;if(i>0&&current[i-1][1]!=='blocked')unknownRuns.at(-1).to=d;else unknownRuns.push({from:d,to:d});});
-  const touch=lineTouchIntervals(sc,sc.eye,sc.target)[0]??null,blocked=appBlockedIntervals(sc,sc.eye,sc.target)[0]??null;
+  const touch=lineTouchIntervals(sc,sc.eye,sc.target)[0]??null,blocked=boxDeepIntervals(sc,sc.eye,sc.target)[0]??null;
   return {
     eye:'driver eye = recorded camera moved along the lane axis by (driverDistance - captureDistance), height unchanged (createScenario)',
     atNamedEye:{driverDistanceM:r(L.captureDistance,4),lineTouchesFromM:touch&&r(touch[0],4),lineTouchesUntilM:touch&&r(touch[1],4),
-      appBlockedFromM:blocked&&r(blocked[0],4),appBlockedUntilM:blocked&&r(blocked[1],4),
-      note:'line touches: clearance <= 0 (app Blocked or too close to call); app Blocked: clearance <= -0.10 m. Both confirmed with createScenario (setbackSweep.child.*ConfirmedByApp)'},
+      boxDeepFromM:blocked&&r(blocked[0],4),boxDeepUntilM:blocked&&r(blocked[1],4),
+      note:'line touches: clearance <= 0 (app Blocked, too close to call or height-not-proven); box-deep: clearance <= -0.10 m (the v3.2 app Blocked; since shape-v1 Blocked or Unknown height-not-proven). Both confirmed with createScenario (setbackSweep.child.*ConfirmedByApp); the app\'s own Blocked is setbackSweep.child.appBlockedIntervalsM'},
     laneReconciliation:[
-      {lane:'accuracy metrics',value:'10.50 / 10.60 m',explanation:'same eye as here; 10.50 is the last row of a 0.05 m grid whose line touches the box and 10.60 the first row of the app 0.25 m sweep after it (stopsBlockingAt). Both bracket where the line stops touching the box at the named eye (atNamedEye.lineTouchesUntilM), not where the app Blocked ends (appBlockedUntilM).'},
+      {lane:'accuracy metrics',value:'10.50 / 10.60 m',explanation:'same eye as here; 10.50 is the last row of a 0.05 m grid whose line touches the box and 10.60 the first row of the app 0.25 m sweep after it (stopsBlockingAt). Both bracket where the line stops touching the box at the named eye (atNamedEye.lineTouchesUntilM), not where the v3.2 app Blocked ends (atNamedEye.boxDeepUntilM).'},
       {lane:'error budget',value:'7.69 / 7.99 m',explanation:'loop limits, not transitions: its scans stopped at setback change <= 7 m (0.6865 + 7 = 7.69 m) and setback <= 8 m (last 0.01 m sample 7.993 m) while still Blocked (scratch budget.mjs).'},
       {lane:'error budget facts',value:'11.37 m',explanation:'withdrawn (2026-10-12): it has no source. No saved lane output contains it, and no driver position on the slider or listed box perturbation gives it here.'},
       {lane:'robustness',value:'10.5342 m',explanation:'same eye as here, 13,000-step scan; agrees with atNamedEye.lineTouchesUntilM.'},
       {lane:'challenge',value:'385 of 401 driver positions Blocked',explanation:'this is the stationary vehicle own result across the driver slider (currentResultAcrossDriverPositions), not where the what-if stops blocking.'},
     ],
     currentResultAcrossDriverPositions:{positions:current.length,blocked:current.filter(x=>x[1]==='blocked').length,tooCloseToCall:current.filter(x=>x[2]==='too-close-to-call').length,
+      heightNotProven:current.filter(x=>x[2]==='height-not-proven').length,
       notBlockedRangesM:unknownRuns.map(x=>[r(x.from,3),r(x.to,3)])},
     driverPositions:ends,
-    lastLineTouchesEndAcrossDriverPositionsM:lastEnd('lineTouchesM'),lastAppBlockedEndAcrossDriverPositionsM:lastEnd('appBlockedM'),
+    lastLineTouchesEndAcrossDriverPositionsM:lastEnd('lineTouchesM'),lastBoxDeepEndAcrossDriverPositionsM:lastEnd('boxDeepM'),
     driverPositionsWithAnyLineTouches:`${ends.filter(e=>e.lineTouchesM.length).length} of ${ends.length}`,
-    driverPositionsWithAnyAppBlocked:`${ends.filter(e=>e.appBlockedM.length).length} of ${ends.length}`,
+    driverPositionsWithAnyBoxDeep:`${ends.filter(e=>e.boxDeepM.length).length} of ${ends.length}`,
     boxSensitivity:[perturb('none',b=>b),perturb('yaw +1 deg',turn(1)),perturb('yaw -1 deg',turn(-1)),perturb('box 0.10 m right of travel',shift(.1,'side')),
       perturb('box 0.10 m left of travel',shift(-.1,'side')),perturb('box 0.10 m toward camera',shift(.1,'axis')),perturb('box 0.10 m away from camera',shift(-.1,'axis'))],
     sideConvention:'right of travel = [axis.z, 0, -axis.x] of the what-if box (axis points toward the camera; classifySightline local x)',
@@ -331,7 +384,7 @@ export function blockedEndRange(scene,setup) {
   };
 }
 // Protocol v3.1 evaluation.stopsBlockingRange (plan M0 default, M4d): where the line stops touching the what-if box and
-// where the app's Blocked ends, at the named eye, over every combination of the averaged box moved -1/0/+1 standard
+// where the box-deep cut ends (the v3.2 app's Blocked end; the box alone, without the shape), at the named eye, over every combination of the averaged box moved -1/0/+1 standard
 // deviation of its annotation spread along its heading and sideways, its heading turned -1/0/+1 standard deviation, and
 // the driver eye moved -0.40/0/+0.40 m along the lane axis (outside the slider limits: skipped and counted). Ends are in
 // the app's setback (the slider's number). Not a confidence interval.
@@ -347,7 +400,7 @@ export function stopsBlockingRange(scene,setup) {
   const turn=(v,deg)=>{const t=deg*Math.PI/180,c=Math.cos(t),s=Math.sin(t);return [v[0]*c-v[2]*s,0,v[0]*s+v[2]*c];};
   const out={definition:'protocol v3.1 evaluation.stopsBlockingRange',spreadUsed:{alongStdM:r(a,4),lateralStdM:r(l,4),yawStdDeg:r(y,4),driverShiftM:DRIVER_SHIFT_M}};
   for(const [name,height] of [['child',Number(setup.targetHeight)],['adult',ADULT_HEIGHT_M]]) {
-    const base=createScenario(scene,{...setup.input,targetHeight:String(height)}),ends={lineTouchEnd:[],blockedEnd:[]},none={lineTouchEnd:0,blockedEnd:0};
+    const base=createScenario(scene,{...setup.input,targetHeight:String(height)}),ends={lineTouchEnd:[],boxDeepEnd:[]},none={lineTouchEnd:0,boxDeepEnd:0};
     let skipped=0,combinations=0,nominal=null;
     for(const da of [-a,0,a])for(const dl of [-l,0,l])for(const dy of [-y,0,y])for(const dd of [-DRIVER_SHIFT_M,0,DRIVER_SHIFT_M]) {
       combinations++;
@@ -356,14 +409,14 @@ export function stopsBlockingRange(scene,setup) {
       const eye=createScenario(scene,{...setup.input,targetHeight:String(height),driverDistance:d}).eye;
       const center=w.center.map((n,i)=>n+heading[i]*da+left[i]*dl),boxAxis=turn(w.boxAxis,dy),moved={...w,center,boxAxis};
       const boxAt=s=>whatIfBox(moved,s),touch=cutIntervals(base,eye,base.target,0,boxAt),blocked=cutIntervals(base,eye,base.target,TOO_CLOSE_TO_CALL_M,boxAt);
-      const end={lineTouchEnd:touch.at(-1)?.[1]??null,blockedEnd:blocked.at(-1)?.[1]??null};
+      const end={lineTouchEnd:touch.at(-1)?.[1]??null,boxDeepEnd:blocked.at(-1)?.[1]??null};
       for(const k of Object.keys(ends)){if(end[k]===null)none[k]++;else ends[k].push(end[k]);}
       if(!da&&!dl&&!dy&&!dd)nominal=end;
     }
     const range=v=>v.length?[r(Math.min(...v),4),r(Math.max(...v),4)]:null;
     out[name]={targetHeightM:height,combinations,skippedDriverPositions:skipped,
       lineTouchEndM:{nominal:r(nominal.lineTouchEnd,4),range:range(ends.lineTouchEnd),withoutInterval:none.lineTouchEnd},
-      blockedEndM:{nominal:r(nominal.blockedEnd,4),range:range(ends.blockedEnd),withoutInterval:none.blockedEnd}};
+      boxDeepEndM:{nominal:r(nominal.boxDeepEnd,4),range:range(ends.boxDeepEnd),withoutInterval:none.boxDeepEnd}};
   }
   return out;
 }
@@ -402,7 +455,10 @@ export function samplePlacements(scene,{count=3000,seed=12345,maxAttempts=400000
 }
 export function honestyCounters(scene,setup,placements) {
   const suggestionTrack=pose(scene,setup)?.track,cuboids=scene.ground.cuboids.items;
-  const suggestionBox=cuboidBox(cuboids.find(b=>b.track===suggestionTrack));
+  // A declared-default suggestion (no annotated recorded vehicle; M7 lock 2 built-box sites fd5c6932 and e1d68dde) has no
+  // cuboid: every annotated cuboid is a real object, and the two counts against the suggested vehicle are null (not
+  // measured), never 0 and never an invented box. An annotated track always has its cuboid (geometry.mjs annotatedBox).
+  const suggestionBox=suggestionTrack===undefined?null:cuboidBox(cuboids.find(b=>b.track===suggestionTrack));
   const tally={person:{rows:0,blocked:0,unknown:0},driver:{rows:0,blocked:0,unknown:0}};
   const start={placements:0,conflictReportedBlocked:0,conflicts:0};
   const realOverlap={currentOverlapsReal:0,currentOverlapsReplacedSuggestionVehicle:0,whatIfRowsOverlappingReal:0,whatIfRowsOverlappingRealReportedBlocked:0,whatIfRowsOverlappingRealReportedUnknown:0,byCategory:{}};
@@ -420,10 +476,10 @@ export function honestyCounters(scene,setup,placements) {
       if(c.targetInside||c.eyeInside){start.conflicts++;if(vis.state==='blocked'){start.conflictReportedBlocked++;if(examples.conflictBlocked.length<3)examples.conflictBlocked.push({pixels:pixelsOut(input.pixels),which,label});}}
     }
     if(real.some(b=>boxesOverlap(sc.baseline,cuboidBox(b))))realOverlap.currentOverlapsReal++;
-    if(!track&&boxesOverlap(sc.baseline,suggestionBox))realOverlap.currentOverlapsReplacedSuggestionVehicle++;
+    if(suggestionBox&&!track&&boxesOverlap(sc.baseline,suggestionBox))realOverlap.currentOverlapsReplacedSuggestionVehicle++;
     if(sc.baseline.pose==='declared'&&sc.currentVisibility.state==='unknown') {
       declaredUnknown++;
-      if(appIntersects(sc.eye,sc.target,suggestionBox))declaredUnknownWithSuggestionVehicleOnLine++;
+      if(suggestionBox&&appIntersects(sc.eye,sc.target,suggestionBox))declaredUnknownWithSuggestionVehicleOnLine++;
     }
     const vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(input.vehicle[k])]));
     const sweep=setbackSweep(scene,{pixels:input.pixels,driverDistance:input.driverDistance},{label,...vehicle},Number(input.targetHeight));
@@ -454,7 +510,10 @@ export function honestyCounters(scene,setup,placements) {
       }
     }
   }
+  if(!suggestionBox)realOverlap.currentOverlapsReplacedSuggestionVehicle=null;
   return {
+    suggestionVehicle:suggestionBox?{status:'annotated',track:suggestionTrack}
+      :{status:'none',reason:'The suggested setup has no annotated recorded vehicle (declared default), so it has no cuboid. Every annotated cuboid counts as a real object; currentOverlapsReplacedSuggestionVehicle and declaredCurrentUnknownWithSuggestionVehicleOnLine are null (not measured).'},
     definitions:{
       personOrDriverInsideBox:'scenario-assistant boxTests: the person ground-to-head column touches the box, or the eye is inside it (the Distance check and Nemotron facts call this overlap); counted when createScenario reports that same box as Blocked',
       realObjectOverlap:'the current vehicle or the what-if box overlaps a real annotated cuboid other than itself (upright footprints and height ranges). A declared current vehicle replaces the suggested stationary vehicle (decision 12), so overlap with that one vehicle is counted separately',
@@ -462,7 +521,7 @@ export function honestyCounters(scene,setup,placements) {
     },
     sweepRowsWithPersonInsideBox:tally.person,sweepRowsWithDriverInsideBox:tally.driver,
     startValues:start,realObjectOverlap:realOverlap,borderline,
-    informational:{declaredCurrentUnknown:declaredUnknown,declaredCurrentUnknownWithSuggestionVehicleOnLine:declaredUnknownWithSuggestionVehicleOnLine,
+    informational:{declaredCurrentUnknown:declaredUnknown,declaredCurrentUnknownWithSuggestionVehicleOnLine:suggestionBox?declaredUnknownWithSuggestionVehicleOnLine:null,
       note:'today a declared current vehicle replaces the suggested stationary vehicle (decision 12, keep and label); listed only so the count is visible'},
     unknownReasonsInNonOverlapRows:unknownReasons,sweepErrors,clearanceSignMismatches:signMismatches,clearanceStateMismatches:stateMismatches,examples,
   };
@@ -479,47 +538,120 @@ export function firstLoad(scene,setup) {
     targetHeightM:Number(setup.targetHeight),targetGround:sc.targetGround.map(n=>r(n,6))};
 }
 
+// ---------------------------------------------------------------- I. fixed bad-sentence set (protocol lock metrics.I)
+// The set of tests/av2-ground.test.mjs ("answer check catches invented stop reasons ...": 11 wording and 4 role sentences,
+// written on 8c, each of which passed the M1 check), with each number replaced by this scene's value of the same role:
+// 0.42 m by the suggested setback, 1.49 m by the suggested vehicle's height and 1.88 m by its width (two decimals, as
+// written). Each must fail the app's answer check (checkAnswer on a mapped scene) with the same kind. Values that are
+// equal at two decimals would make a role sentence true, so they fail the check by name.
+export const BAD_SENTENCES=Object.freeze({
+  wording:['The car pulled over 0.42 m from the crossing.','The car is out of gas at 0.42 m.','It has a flat tire.','It is letting a passenger out.',
+    'The crossing position comes from LiDAR.','The LiDAR shows the crossing 0.42 m away.','The stationary vehicle is exactly 0.42 m back.','The setback is verified.',
+    'This is ground truth.','The stationary vehicle is a Tesla Model S.','It is a Toyota.'],
+  role:['The stationary vehicle is 1.49 m from the intersection.','It is set back 1.49 m.','It sits 1.88 m from the stop line.','The setback is 1.49 m.']});
+export function badSentenceCheck(scene,setup) {
+  const sc=createScenario(scene,setup.input),allowed=allowedNumbersFrom(scenarioFacts(scene,sc));
+  const values={'0.42':sc.baselineSetback,'1.49':Number(setup.vehicle.height),'1.88':Number(setup.vehicle.width)};
+  if(!Object.values(values).every(Number.isFinite))return {error:'The suggested setback or vehicle size is not a number.',pass:false};
+  const text=Object.fromEntries(Object.entries(values).map(([k,v])=>[k,v.toFixed(2)])),distinct=new Set(Object.values(text)).size===3,rows=[];
+  for(const [kind,list] of Object.entries(BAD_SENTENCES))for(const written of list) {
+    const sentence=written.replace(/0\.42|1\.49|1\.88/g,m=>text[m]),res=checkAnswer(sentence,allowed,{mapped:true});
+    rows.push({kind,sentence,ok:res.ok,checkKind:res.kind??null,pass:!res.ok&&res.kind===kind});
+  }
+  return {source:'tests/av2-ground.test.mjs fixed bad-sentence set (October 12 audit), numbers replaced by this scene\'s values',
+    values:{setbackM:text['0.42'],vehicleHeightM:text['1.49'],vehicleWidthM:text['1.88']},distinctValues:distinct,
+    rows,failures:rows.filter(x=>!x.pass).length,pass:distinct&&rows.every(x=>x.pass)};
+}
+
+// Metric I "0 out-of-range inputs accepted": the suggested setup with one field just outside its SIZE_LIMITS range, not a
+// number, empty or not positive, or one pixel outside the recorded image. Each must make createScenario throw; the
+// unchanged setup must not (so a refusal is the field's own). expectedMessage: the refusal names that field's rule; pass
+// also needs every refusal to carry it (a case refused by an earlier check does not test its own limit).
+const PIXEL_ROLE=Object.freeze({crossing:'crossing',parking:'vehicleFront',target:'person'});
+export function outOfRangeCheck(scene,setup) {
+  const base=setup.input,{width,height}=scene.camera,cases=[],step=.01;
+  const vehicle=(k,v)=>({...base,vehicle:{...base.vehicle,[k]:v}});
+  for(const k of ['width','height','length'])for(const [label,v] of [['below',String(SIZE_LIMITS[k][0]-step)],['above',String(SIZE_LIMITS[k][1]+step)],['not a number','NaN'],['empty',''],['negative','-1']])
+    cases.push({field:`vehicle.${k}`,value:v,label,input:vehicle(k,v),expectedMessage:`Vehicle ${k} must be a number from`});
+  for(const [label,v] of [['below',String(SIZE_LIMITS.targetHeight[0]-step)],['above',String(SIZE_LIMITS.targetHeight[1]+step)],['not a number','NaN'],['empty',''],['negative','-1']])
+    cases.push({field:'targetHeight',value:v,label,input:{...base,targetHeight:v},expectedMessage:'Target height must be a number from'});
+  for(const k of ['proposedSetback','driverDistance'])for(const [label,v] of [['zero','0'],['negative','-1'],['not a number','NaN'],['empty','']])
+    cases.push({field:k,value:v,label,input:{...base,[k]:v},expectedMessage:k==='proposedSetback'?'Proposed setback must be a positive number.':'Driver distance must be a positive number.'});
+  for(const key of ['crossing','parking','target'])for(const [label,px] of [['left of the image',[-1,base.pixels[key][1]]],['right of the image',[width,base.pixels[key][1]]],
+    ['above the image',[base.pixels[key][0],-1]],['below the image',[base.pixels[key][0],height]],['not a whole pixel',[base.pixels[key][0]+.5,base.pixels[key][1]]]])
+    cases.push({field:`pixels.${PIXEL_ROLE[key]}`,value:px,label,input:{...base,pixels:{...base.pixels,[key]:px}},expectedMessage:'Select a pixel inside the recorded image.'});
+  const rows=cases.map(({input,...c})=>{
+    try{createScenario(scene,input);return {...c,accepted:true,message:null,messageMatches:false};}
+    catch(e){return {...c,accepted:false,message:e.message,messageMatches:c.expectedMessage===null||e.message.startsWith(c.expectedMessage)};}
+  });
+  let control;
+  try{createScenario(scene,base);control={accepted:true};}catch(e){control={accepted:false,message:e.message};}
+  const accepted=rows.filter(x=>x.accepted).length;
+  return {definition:'metric I: out-of-range inputs accepted by createScenario (each case changes one field of the suggested setup; sizes 0.01 m outside src/geometry.mjs SIZE_LIMITS)',
+    sizeLimits:SIZE_LIMITS,control,cases:rows.length,accepted,messageMismatches:rows.filter(x=>!x.accepted&&!x.messageMatches).length,rows,pass:control.accepted&&accepted===0&&rows.every(x=>x.accepted||x.messageMatches)};
+}
+
 // ---------------------------------------------------------------- timing (Node only; browser timing is a later task)
 // firstLoadMs: the process's first loadDevelopmentScene (disk reads, cold code paths), measured by the caller.
-export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=null}={}) {
+export async function timing(setup,{loads=10,creates=300,sweeps=100,firstLoadMs=null,firstResultMs=null,dirs=DEV_DIRS}={}) {
   const ms=f=>{const t=performance.now();f();return performance.now()-t;};
   const cache=new Map();
-  let t=performance.now();const {scene}=await loadDevelopmentScene(cache);const cold=performance.now()-t;
+  let t=performance.now();const {scene}=await loadDevelopmentScene(cache,dirs);const cold=performance.now()-t;
   const warm=[];
-  for(let i=0;i<loads;i++){t=performance.now();await loadDevelopmentScene(cache);warm.push(performance.now()-t);}
+  for(let i=0;i<loads;i++){t=performance.now();await loadDevelopmentScene(cache,dirs);warm.push(performance.now()-t);}
   const create=[],sweep=[],vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(setup.vehicle[k])]));
   for(let i=0;i<creates;i++)create.push(ms(()=>createScenario(scene,setup.input)));
-  for(let i=0;i<sweeps;i++)sweep.push(ms(()=>setbackSweep(scene,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',...vehicle},Number(setup.targetHeight))));
+  const run=height=>setbackSweep(scene,{pixels:setup.pixels,driverDistance:setup.input.driverDistance},{label:'your vehicle',...vehicle},height);
+  for(let i=0;i<sweeps;i++)sweep.push(ms(()=>run(Number(setup.targetHeight))));
+  const adult=[];
+  for(let i=0;i<sweeps;i++)adult.push(ms(()=>run(ADULT_HEIGHT_M)));
   const ps=a=>({p50:r(percentile(a,.5),3),p95:r(percentile(a,.95),3),n:a.length});
-  return {sceneLoadMs:{firstInProcess:r(firstLoadMs,1),emptyByteCacheWarmProcess:r(cold,1),warmBytesInMemory:ps(warm)},createScenarioMs:ps(create),setbackSweepMs:ps(sweep),
+  return {sceneLoadMs:{firstInProcess:r(firstLoadMs,1),emptyByteCacheWarmProcess:r(cold,1),warmBytesInMemory:ps(warm)},
+    firstResultMs:{firstInProcess:r(firstResultMs,1),definition:'process start of the first loadDevelopmentScene to the end of the first createScenario on the suggested setup (scene load, suggestedSetup, first current and proposed results)'},
+    createScenarioMs:ps(create),setbackSweepMs:ps(sweep),setbackSweepAdultMs:ps(adult),
+    carShape:scene.carShape?{status:scene.carShape.status,along:scene.carShape.along,lateral:scene.carShape.lateral,allTopsAtLeastH:scene.carShape.allTopsAtLeastH}:null,
     environment:{node:process.version,platform:`${process.platform} ${process.arch}`,cpu:os.cpus()[0]?.model??null,cores:os.cpus().length,memoryGB:r(os.totalmem()/2**30,1)},
     note:'Node only, single process, warm module cache except the cold load; browser load and drag latency are measured separately'};
 }
 
-// ---------------------------------------------------------------- expected values (app contract A5-A7, protocol v3.1)
+// ---------------------------------------------------------------- expected values (app contract A5-A7 and A14)
 // The protocol v2 planning-lane reproduction (first-load gap 0.0251 m, residuals 0.144/0.177/0.210 m, 41 touching rows) is
 // recorded in baseline-2026-10-12.json and after-m1-fixes-2026-10-12/; the app no longer loads protocol v2 data. These
-// are the contract's protocol v3 values (grounded-v3.1 has the same geometry), from independent preparation-side code.
+// are the contract's protocol v3 values (grounded-v3.1 and grounded-v3.2 have the same geometry), from independent
+// preparation-side code.
 function expectations(b) {
   const checks=[];
   const check=(name,expected,measured,tolerance)=>checks.push({name,expected,measured,tolerance,pass:measured!=null&&Math.abs(measured-expected)<=tolerance});
   check('first-load clearance (m), contract A6',.06241,b.firstLoad.clearanceM,1e-4);
   check('first-load baseline setback (m), contract A6',.41981,b.firstLoad.baselineSetbackM,1e-4);
   // Contract A6 lists 0.005 m grid values; these are the bisected ends (a grid value can be up to one step inside).
+  // The A6 Blocked intervals are box-deep since shape-v1 (the box alone; the geometry is unchanged in grounded-v3.4).
   for(const [k,[a,z]] of [['child',[1.093,10.038]],['adult',[6.028,10.038]]]) {
-    const iv=b.setbackSweep[k].appBlockedIntervalsM;
-    check(`${k} app Blocked from (m), contract A6`,a,iv[0]?.[0],.006);check(`${k} app Blocked until (m), contract A6`,z,iv.at(-1)?.[1],.006);
+    const iv=b.setbackSweep[k].boxDeepIntervalsM;
+    check(`${k} box-deep (v3.2 app Blocked) from (m), contract A6`,a,iv[0]?.[0],.006);check(`${k} box-deep (v3.2 app Blocked) until (m), contract A6`,z,iv.at(-1)?.[1],.006);
+  }
+  // Contract A14 (the shape-v2 allowed-change check, scene-builder-v4.3/allowed-changes-v4.3.json): first load unchanged,
+  // sweep rows with the shape.
+  const same=(name,expected,measured)=>checks.push({name,expected,measured,tolerance:0,pass:JSON.stringify(expected)===JSON.stringify(measured)});
+  same('first-load results unchanged (Unknown / Unknown), contract A14 and shape-v2 prediction 2',['unknown','unknown'],[b.firstLoad.current,b.firstLoad.proposed]);
+  for(const [k,want] of [['child',{rows:57,blocked:21,heightNotProven:17}],['adult',{rows:57,blocked:0,heightNotProven:17}]]) {
+    const x=b.setbackSweep[k];
+    same(`${k} setback-sweep rows with the shape (rows, Blocked, height-not-proven), contract A14`,want,{rows:x.count,blocked:x.blockedRows,heightNotProven:x.heightNotProvenRows});
   }
   const touch=b.setbackSweep.child.lineTouchesIntervalsM;
   check('child line touches from (m), contract A6',.683,touch[0]?.[0],.006);check('child line touches until (m), contract A6',10.453,touch.at(-1)?.[1],.006);
   const band=b.clickToGround.bands.find(x=>x.band==='12-25 m'),far=b.clickToGround.bands.find(x=>x.band==='30-60 m');
   check('metric B 12-25 m shown-uncertainty coverage (integer click), run-receipt-v3 harnessMetricB',.962,band.shownUncertaintyCoverage,.001);
   check('metric B 30-60 m refused as too far (integer click), run-receipt-v3 harnessMetricB',516,far.unknown['Too far to place (over 30 m).']??0,0);
+  same('metric I bad-sentence set on 8c is the test file\'s own (0.42 / 1.49 / 1.88) and every sentence fails with its kind',
+    {values:{setbackM:'0.42',vehicleHeightM:'1.49',vehicleWidthM:'1.88'},pass:true},{values:b.metricI.values,pass:b.metricI.pass});
+  same('metric I out-of-range inputs: the suggested setup is accepted, all 43 changed ones refused, each size and number by its own rule',
+    {cases:43,accepted:0,messageMismatches:0,pass:true},(({cases,accepted,messageMismatches,pass})=>({cases,accepted,messageMismatches,pass}))(b.metricIOutOfRange));
   check('metric C crossing point used (m)',0,b.suggestionConsistency.roles.crossing.pointUsed.horizontalM,1e-6);
   check('metric C person point used (m)',0,b.suggestionConsistency.roles.person.pointUsed.horizontalM,1e-6);
   check('metric C vehicle front point used (m)',0,b.suggestionConsistency.roles.vehicleFront.pointUsed.horizontalM,1e-6);
   check('stored vehicle-front pixelUV ray hit residual (m), contract A5 (metric C NOT met there)',1.02848,b.suggestionConsistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1e-4);
-  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 has the same geometry)',checks,allPass:checks.every(c=>c.pass)};
+  return {source:'app-contract.md A5-A7 and run-receipt-v3.json (protocol v3 values; grounded-v3.1 to v3.4 have the same geometry), and A14 (shape-v2 counts of the allowed-change check)',checks,allPass:checks.every(c=>c.pass)};
 }
 
 function provenance() {
@@ -532,54 +664,90 @@ function provenance() {
 }
 
 // The whole baseline. coverage: run every crop pixel (about 4 s); samples: random placements for honesty counters.
-export async function computeBaseline({coverage=true,samples=3000,timingRuns}={}) {
-  const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
-  if(setup.error||!setup.input)throw new Error(`Suggested setup unavailable: ${setup.error}`);
-  const sc=createScenario(scene,setup.input);
+// dirs: another built scene (sceneDirs); its baseline has no 8c expectations.
+export async function computeBaseline({coverage=true,samples=3000,timingRuns,dirs=DEV_DIRS}={}) {
+  const dev=dirs===DEV_DIRS;
+  const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(new Map(),dirs),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
+  // Another scene without a complete suggested setup keeps the parts that need none (click-to-ground B, suggestion
+  // consistency C, placeable pixels); the parts that need one are listed in setupUnavailable, never filled in.
+  const setupError=setup.error||!setup.input?`Suggested setup unavailable: ${setup.error}`:null;
+  if(setupError&&dev)throw new Error(setupError);
+  const sc=setupError?null:createScenario(scene,setup.input),firstResultMs=performance.now()-t0;
   const lock=existsSync(new URL('split.lock.json',OUT_DIR))?JSON.parse(await readFile(new URL('split.lock.json',OUT_DIR),'utf8')):null;
   const splitBytes=existsSync(new URL('split.json',OUT_DIR))?await readFile(new URL('split.json',OUT_DIR)):null;
-  const b={schemaVersion:2,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
-    label:'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.',
+  const b={schemaVersion:3,kind:'pao-accuracy-baseline',generatedUtc:new Date().toISOString(),
+    label:dev?'Development scene only (8c52d911 / crossing 2658849): development-grade, AV2-referenced, not surveyed, not held-out. Never a passed gate.'
+      :`Scene ${entry.id} (built scene folder): AV2-referenced, not surveyed. Its split role and run mode are in the scene's build receipt.`,
     provenance:provenance(),
     split:{file:'split.json',lockSha256:lock?.sha256??null,fileSha256:splitBytes?sha(splitBytes):null,matchesLock:!!(lock&&splitBytes&&sha(splitBytes)===lock.sha256)},
-    scene:{id:DEV.id,groundedFolder:GROUNDED_DIR,protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions},
+    scene:{id:entry.id,groundedFolder:dev?GROUNDED_DIR:fileURLToPath(dirs.grounded),protocolSha256:scene.ground.protocol.sha256,metadataSha256:entry.metadataSha256,ground:entry.ground,suggestions:entry.suggestions,
+      crosswalkChip:crossingText(scene.suggestions.crossing),
+      carShape:scene.carShape?{status:scene.carShape.status,track:scene.carShape.track,along:scene.carShape.along,lateral:scene.carShape.lateral,
+        allTopsAtLeastH:scene.carShape.allTopsAtLeastH,shapeProtocolSha256:scene.ground.carShape.protocol.shapeProtocolSha256}:null},
     conventions:{
-      driverEye:`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`,
-      target:`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`,
+      driverEye:sc?`recorded stereo_front_left camera centre (world origin [0, 0, 0]), ${r(sc.eye[1]-mappedGroundHeight(scene,0,0),3)} m above the mapped ground under it; driverDistance = limits.captureDistance (${r(sc.limits.captureDistance,4)} m from the crossing point along the lane axis). Camera height, not a seated driver eye (decision: camera eye, labeled).`:'no suggested setup (setupUnavailable)',
+      target:sc?`suggested person point; child ${setup.targetHeight} m (suggestion default) and adult ${ADULT_HEIGHT_M} m`:'no suggested setup (setupUnavailable)',
       percentile:'nearest-rank: sorted[ceil(p n) - 1]',
       distances:'metres; horizontal means world X/Z',
-      results:'Blocked or Unknown only (Clear removed); overlap is the sweep and facts label for the Unknown reason person or driver inside the vehicle box; other Unknown reasons (M1) are row reasons',
+      results:'Blocked or Unknown only (Clear removed); overlap is the sweep and facts label for the Unknown reason person or driver inside the vehicle box; other Unknown reasons (M1, shape-v1 height-not-proven) are row reasons',
     },
-    firstLoad:firstLoad(scene,setup),
     clickToGround:clickToGround(scene),
     suggestionConsistency:suggestionConsistency(scene),
-    setbackSweep:setbackSweepBaseline(scene,setup),
-    blockedEnd:blockedEndRange(scene,setup),
   };
   let list=null;
   if(coverage){const p=placeablePixels(scene);list=p.list;b.placeablePixels=p.summary;}
+  if(setupError) {
+    b.setupUnavailable={reason:setupError,missing:['firstLoad','setbackSweep','blockedEnd','metricI','metricIOutOfRange','honesty','timing'],
+      note:'these parts need the suggested setup; they are left out, never filled in'};
+    b.expectations={source:'none: the expectations are the 8c development scene\'s values',checks:[],allPass:null};
+    return b;
+  }
+  Object.assign(b,{firstLoad:firstLoad(scene,setup),
+    setbackSweep:setbackSweepBaseline(scene,setup),
+    // laneReconciliation explains the 8c planning lanes' numbers; other scenes leave it out.
+    blockedEnd:dev?blockedEndRange(scene,setup):(({laneReconciliation,...rest})=>rest)(blockedEndRange(scene,setup)),
+    metricI:badSentenceCheck(scene,setup),
+    metricIOutOfRange:outOfRangeCheck(scene,setup)});
   if(samples>0) {
     const sample=samplePlacements(scene,{count:samples});
     b.honesty={sample:{count:sample.placements.length,attempts:sample.attempts,generator:sample.generator,rejected:sample.errors},
       ...honestyCounters(scene,setup,sample.placements)};
   }
-  b.timing=await timing(setup,{...timingRuns,firstLoadMs});
-  b.expectations=expectations(b);
+  b.timing=await timing(setup,{...timingRuns,firstLoadMs,firstResultMs,dirs});
+  b.expectations=dev?expectations(b):{source:'none: the expectations are the 8c development scene\'s values',checks:[],allPass:null};
   return b;
 }
 
 async function main(argv) {
   const arg=k=>{const i=argv.indexOf(k);return i>=0?argv[i+1]:undefined;};
-  if(!devDataPresent())throw new Error('AV2 8c development data is local-only and not present.');
+  const dirs=arg('--scene')?sceneDirs(arg('--scene')):DEV_DIRS;
+  if(dirs===DEV_DIRS&&!devDataPresent())throw new Error('AV2 8c development data is local-only and not present.');
   const date=arg('--date')??new Date().toISOString().slice(0,10);
   if(!/^\d{4}-\d{2}-\d{2}$/.test(date))throw new Error('--date must be YYYY-MM-DD');
   const out=arg('--out')?pathToFileURL(arg('--out').replace(/\/?$/,'/')):OUT_DIR,samples=arg('--samples')?Number(arg('--samples')):3000;
-  const b=await computeBaseline({coverage:!argv.includes('--no-coverage'),samples});
+  let b,name;
+  if(argv.includes('--timing-only')) {
+    // Metric J alone: nothing else runs in this process before or during the measurements.
+    const t0=performance.now(),{scene,entry}=await loadDevelopmentScene(new Map(),dirs),firstLoadMs=performance.now()-t0,setup=suggestedSetup(scene,scene.suggestions);
+    if(setup.error||!setup.input)throw new Error(`Suggested setup unavailable: ${setup.error}`);
+    createScenario(scene,setup.input);
+    const firstResultMs=performance.now()-t0,sweeps=arg('--sweeps')?Number(arg('--sweeps')):300;
+    b={schemaVersion:1,kind:'pao-accuracy metric J timing',generatedUtc:new Date().toISOString(),provenance:provenance(),
+      scene:{id:entry.id,groundedFolder:dirs===DEV_DIRS?GROUNDED_DIR:fileURLToPath(dirs.grounded),ground:entry.ground,suggestions:entry.suggestions},
+      gate:'setback sweep p50 <= 5 ms with the shape (shape-v2 prediction 12, metric J)',
+      timing:await timing(setup,{sweeps,firstLoadMs,firstResultMs,dirs})};
+    b.gatePass=b.timing.setbackSweepMs.p50<=5&&b.timing.setbackSweepAdultMs.p50<=5;
+    name=`timing-${dirs===DEV_DIRS?'':entry.id+'-'}${date}.json`;
+  }else{
+    b=await computeBaseline({coverage:!argv.includes('--no-coverage'),samples,dirs});
+    name=`baseline-${dirs===DEV_DIRS?'':b.scene.id+'-'}${date}.json`;
+  }
   const text=JSON.stringify(b,null,1)+'\n';
   if(/park/i.test(text))throw new Error('Baseline text uses banned vehicle-status wording.');
   await mkdir(out,{recursive:true});
-  const target=new URL(`baseline-${date}.json`,out);
-  await writeFile(target,text);
-  console.log(JSON.stringify({wrote:fileURLToPath(target),sha256:sha(text),expectationsAllPass:b.expectations.allPass}));
+  const target=new URL(name,out);
+  // Never overwrite an earlier result ('wx' fails when the file exists).
+  await writeFile(target,text,{flag:'wx'});
+  console.log(JSON.stringify({wrote:fileURLToPath(target),sha256:sha(text),...(b.expectations&&{expectationsAllPass:b.expectations.allPass}),...('gatePass' in b&&{gatePass:b.gatePass})}));
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href)await main(process.argv.slice(2));

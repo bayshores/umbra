@@ -345,7 +345,7 @@ export function suggestionStatus(suggestions,setup,current) {
   return {parts,edited,context:Object.keys(context).length?context:null};
 }
 
-// The crosswalk chip text (protocol v3.1 crossingError.display): the mapped near edge with a bound on its paint offset
+// The crosswalk chip text (protocol v3.1 crossingError.display; filled from protocol v3.2): the mapped near edge with a bound on its paint offset
 // (|measured offset| + 2 × spread, e.g. "crosswalk mapped ±0.18 m") or the offset's status ("crosswalk mapped · paint offset pending measurement"). The
 // crossing's along-ray uncertainty describes its pixel ray, not the crossing position, so it is never shown here.
 export function crossingText(crossing) {
@@ -362,7 +362,7 @@ function mappedStatus(s,p,still,unknown,parts,context,edited,pose) {
   if(still('crossing')) {
     const e=s.crossing.crossingError;
     parts.push({key:'crossing',text:crossingText(s.crossing),note:`(${support('crossing')})`,
-      title:`${title('crossing',s.crossing.reason)} · ${e.status==='measured'?`mapped near edge; ${e.label} bounds the paint offset (measured offset + 2 × spread; development-grade, not calibrated)`:`mapped near edge; ${e.label}`}`});
+      title:`${title('crossing',s.crossing.reason)} · ${e.status==='measured'?`mapped near edge; ${e.label} bounds the paint offset (|measured offset| + 2 × spread; development-grade, not calibrated)`:`mapped near edge; ${e.label}`}`});
   }
   unknown('crossing','crossing');
   if(still('parking')&&still('vehicle')) {

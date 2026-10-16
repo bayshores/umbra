@@ -2,6 +2,12 @@
 
 Used only to test the tools and to measure the method's floor (quantisation + snapping error with a
 perfect labeler). It is never a labeler and its sessions are never written into the labels area.
+
+ambiguous_band (coverage-design.md section 6; synthetic truth only, default off): an "honest" oracle answers
+cannot_tell to a yes/no question about a pixel whose true coverage is in [lo, hi), and to a line question when the
+most-covered pixel beyond the line is in [lo, hi). The band is checked before any answer flip and draws no random
+number, so with the band off every answer (and every flip) is exactly as before. Other question kinds (box, cell,
+count, pick, paint "visible") have no band rule in the design and stay definite.
 """
 from __future__ import annotations
 
@@ -20,8 +26,9 @@ def cell_label(meta, i, j):
 
 
 class Oracle:
-    def __init__(self, truth, task, flip=0.0, seed=0, lidar_pick_tolerance=8.0):
+    def __init__(self, truth, task, flip=0.0, seed=0, lidar_pick_tolerance=8.0, ambiguous_band=None):
         self.t, self.task, self.flip = truth, task, flip
+        self.band = tuple(ambiguous_band) if ambiguous_band else None
         self.lidar_pick_tolerance = lidar_pick_tolerance
         self.rng = random.Random(seed)
         self.meta = task['overview']
@@ -72,6 +79,19 @@ class Oracle:
             return bool((p[:, 1] >= pos).any())
         raise ValueError(feature)
 
+    def uncertain(self, q):
+        """True when the band applies (synthetic truth) and the deciding coverage lies in [lo, hi)."""
+        if not self.band or self.t.source != 'synthetic':
+            return False
+        lo, hi = self.band
+        marker = q['render']['marker']
+        if marker['type'] == 'pixel':
+            i, j = marker['at']
+            value = self.t.coverage(i, j, paint=self.mode == 'paint')
+        else:
+            value = self.t.coverage_beyond(q['feature'], q['render']['position'])
+        return lo <= value < hi
+
     def answer(self, q):
         kind = q['kind']
         if kind == 'box':
@@ -111,6 +131,8 @@ class Oracle:
             purpose = q['render'].get('purpose')
             if purpose == 'visible':
                 return 'yes' if self.t.paint_near(q['render']['marker']['at']) is not None else 'no'
+            if self.uncertain(q):
+                return 'cannot_tell'
             value = self.predicate(q)
             if self.flip and self.rng.random() < self.flip:
                 value = not value

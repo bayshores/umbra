@@ -29,3 +29,5 @@ __pycache__/
 .env
 .env.*
 !.env.example
+# Graphify code maps (local only)
+graphify-out/

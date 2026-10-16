@@ -12,6 +12,10 @@ Rules (frozen in protocol-v1.json `caseSelection`):
   The mapped crossing is used only to choose the frame and region, never as a reference.
 - Sweeps: every sweep whose ego origin is within sweepRadiusM of a case target, thinned to one sweep per
   sweepSpacingM of ego travel, plus the sweep nearest each case frame.
+- Exclusions (protocol v2, optional): `excludeFrames` (camera timestamps, never eligible for car or paint cases),
+  `excludeFrameWindowS` (also exclude frames within this many seconds of an excluded frame; default 0) and
+  `excludeTracks` (track-id prefixes, never chosen as car cases; the app case is skipped when its track or frame
+  is excluded). Without these keys (protocol v1) the selection is unchanged.
 """
 from __future__ import annotations
 
@@ -79,9 +83,28 @@ def occluded_by_annotation(log_obj, track, rect, timestamp):
     return None
 
 
+def frame_excluded(rules):
+    """Predicate: is a camera timestamp excluded by rules['excludeFrames'] (+/- excludeFrameWindowS)?"""
+    frames = sorted({int(f) for f in rules.get('excludeFrames', [])})
+    window = int(round(float(rules.get('excludeFrameWindowS', 0)) * 1e9))
+    if not window:
+        excluded = set(frames)
+        return lambda t: int(t) in excluded
+    return lambda t: any(abs(int(t) - f) <= window for f in frames)
+
+
+def track_excluded(rules, track):
+    return any(str(track).startswith(prefix) for prefix in rules.get('excludeTracks', []))
+
+
+def app_case_allowed(rules):
+    return not track_excluded(rules, APP_CASE['track']) and not frame_excluded(rules)(APP_CASE['frame'])
+
+
 def car_cases(log_short, log_obj, rules):
-    frames = [t for t in frames_for(log_short) if t in log_obj.poses]
-    tracks = [s for s in log_obj.stationary_vehicles(rules['maxSpreadM'], rules['minAnnotations'])]
+    excluded = frame_excluded(rules)
+    frames = [t for t in frames_for(log_short) if t in log_obj.poses and not excluded(t)]
+    tracks = [s for s in log_obj.stationary_vehicles(rules['maxSpreadM'], rules['minAnnotations']) if not track_excluded(rules, s['track'])]
     candidates = []
     for s in tracks:
         row = s['rows'][len(s['rows']) // 2]
@@ -109,7 +132,7 @@ def car_cases(log_short, log_obj, rules):
     eligible = [c for c in candidates if c['annotationOccluder'] is None]
     eligible.sort(key=lambda c: (-c['maxInteriorPoints'], c['track']))
     chosen = eligible[:rules['carsPerLog']]
-    if log_short == APP_CASE['log']:
+    if log_short == APP_CASE['log'] and app_case_allowed(rules):
         app = [c for c in candidates if c['track'].startswith(APP_CASE['track'])]
         if app:
             app = dict(app[0])
@@ -135,7 +158,8 @@ def visible_edge(log_obj, timestamp, edge, samples=200):
 def paint_cases(log_short, log_obj, rules):
     """One paint case per target range in rules['paintTargetRangesM'] (plus the app frame for the app log)."""
     out, frames = [], set()
-    targets = [None] + list(rules['paintTargetRangesM']) if log_short == APP_CASE['log'] else list(rules['paintTargetRangesM'])
+    app = log_short == APP_CASE['log'] and app_case_allowed(rules)
+    targets = [None] + list(rules['paintTargetRangesM']) if app else list(rules['paintTargetRangesM'])
     for target in targets:
         case = paint_case(log_short, log_obj, rules, target)
         if case and case['frame'] not in frames:
@@ -151,7 +175,8 @@ def paint_case(log_short, log_obj, rules, target_range):
     crossing_id = CROSSINGS[log_short]
     crossing = read_json(map_file(log_obj.log))['pedestrian_crossings'][crossing_id]
     edges = [np.array([[p['x'], p['y'], p['z']] for p in crossing[k]]) for k in ('edge1', 'edge2')]
-    frames = [t for t in frames_for(log_short) if t in log_obj.poses]
+    excluded = frame_excluded(rules)
+    frames = [t for t in frames_for(log_short) if t in log_obj.poses and not excluded(t)]
     if target_range is None:
         frames, target_range = [APP_CASE['frame']], rules['targetRangeM']
     best = None

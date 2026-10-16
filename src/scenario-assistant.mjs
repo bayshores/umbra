@@ -206,10 +206,11 @@ export function setbackSweep(scene,baseInput,vehicle,targetHeight=baseInput?.tar
     const box=whatIfBox(s.whatIf,setback),r=assessSightline(scene,s,box,{diagnostics:false,ownPosition:own&&setback===s.baselineSetback});
     const row={setback,state:factState(r),...(r.reasonCode&&{reason:r.reasonCode}),gapM:r.gapM};
     if(row.state==='overlap'){const c=boxTests(s,box);Object.assign(row,{person:c.targetInside,driver:c.eyeInside});}
-    // assessSightline with its diagnostics stays the authority: it confirms the first row of every run.
+    // assessSightline with its diagnostics stays the authority: it confirms the first row of every run (state and reason
+    // only, so the car-shape diagnostics record is skipped).
     const prev=rows.at(-1);
     if(row.state!=='overlap'&&(row.state!==prev?.state||row.reason!==prev?.reason)) {
-      const full=assessSightline(scene,s,box,{ownPosition:own&&setback===s.baselineSetback});
+      const full=assessSightline(scene,s,box,{ownPosition:own&&setback===s.baselineSetback,shapeCut:false});
       if(full.state!==row.state||full.reasonCode!==r.reasonCode)throw new Error('Sweep disagrees with the measured comparison.');
     }
     rows.push(row);
@@ -226,9 +227,10 @@ export function setbackSweep(scene,baseInput,vehicle,targetHeight=baseInput?.tar
     notBlockedFrom:rows.find((r,i)=>i>touches&&plain(r))?.setback??null,
     at15ft:at(MARKS.at15ft),at20ft:at(MARKS.at20ft)};
 }
-// The line touches the tested box: Blocked, or Unknown only because it is too close to call (or the box overlaps a real
-// object while touching the line).
-const lineTouches=r=>r.state==='blocked'||r.reason==='too-close-to-call'||r.reason==='overlaps-real-object'&&r.gapM<=0;
+// The line touches the tested box: Blocked, or Unknown only because it is too close to call or because the recorded
+// stationary vehicle's LiDAR shape does not prove its height there (car shape; the line cuts into its box), or the box
+// overlaps a real object while touching the line.
+const lineTouches=r=>r.state==='blocked'||r.reason==='too-close-to-call'||r.reason==='height-not-proven'||r.reason==='overlaps-real-object'&&r.gapM<=0;
 // A row whose placement is not tested: Unknown (or overlap) for any reason except too close to call.
 const untested=r=>r.state!=='blocked'&&!!r.reason&&r.reason!=='too-close-to-call';
 
@@ -239,7 +241,8 @@ const runs=(rows,state)=>{const is=typeof state==='function'?state:r=>r.state===
 },[]);};
 const plainRow=r=>r.state==='unknown'&&!r.reason;
 // Unknown reasons named per row range in the phrase and facts (overlap rows keep their own "overlaps person" wording).
-const ROW_REASONS=[['overlaps-real-object','overlapsRealObject_m'],['person-inside-object','personInsideRealObject_m'],['driver-inside-object','driverInsideRealObject_m']];
+const ROW_REASONS=[['overlaps-real-object','overlapsRealObject_m'],['person-inside-object','personInsideRealObject_m'],['driver-inside-object','driverInsideRealObject_m'],
+  ['height-not-proven','heightNotProven_m']];
 const span=g=>{const a=fmt(g[0].setback),b=fmt(g.at(-1).setback);return a===b?`at ${a} m`:`${a}-${b} m`;};
 // The one result phrase per swept vehicle (model facts, Distance check rows and the app's own line), read from the rows:
 // blocked runs, too-close-to-call runs, the stop distance (or that no tested row touches the vehicle), then overlaps and
@@ -253,7 +256,7 @@ export function sweepPhrase(r) {
   if(touched&&r.stopsBlockingAt!==null)parts.push(`not blocked by the vehicle from ${fmt(r.stopsBlockingAt)} m (${fmt(r.stopsBlockingAt/FOOT)} ft)`);
   else if(!touched&&r.rows.some(plainRow))parts.push('not blocked by the vehicle at any tested distance (rest unknown)');
   for(const g of runs(r.rows,'overlap')){const p=g.some(x=>x.person),d=g.some(x=>x.driver);parts.push(`overlaps ${p&&d?'person and driver':p?'person':'driver'} ${span(g)}`);}
-  for(const [code] of ROW_REASONS)for(const g of runs(r.rows,x=>x.reason===code))parts.push(`${UNKNOWN_REASONS[code]} ${span(g)}`);
+  for(const [code] of ROW_REASONS){const g=runs(r.rows,x=>x.reason===code);if(g.length)parts.push(`${UNKNOWN_REASONS[code]} ${g.map(span).join(', ')}`);}
   return parts.join('; ');
 }
 const MARK_WORDS={blocked:'Blocked',unknown:'Unknown',overlap:'Overlap'};

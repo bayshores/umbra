@@ -225,9 +225,6 @@ def evaluate(observation_path, prediction_path, visibility_path=None):
     if any(type(m['schemaVersion']) is not int or m['schemaVersion'] != 1 for m in (manifest, prediction)):
         raise ValueError('Unsupported manifest schema version')
     observations = manifest['observations']
-    for candidate in observations:
-        for source in candidate['sources']:
-            artifact(source, observation_path.parent)
     audit = split_audit(observations)
     if audit['failures']:
         raise ValueError('; '.join(audit['failures']))
@@ -237,6 +234,9 @@ def evaluate(observation_path, prediction_path, visibility_path=None):
     observation = matching[0]
     if observation['split'] != 'development':
         raise ValueError('Final/heldout scoring is refused until a justified threshold lock and reference design exist')
+    for candidate in observations:
+        for source in candidate['sources']:
+            artifact(source, observation_path.parent)
     if prediction['execution']['status'] != 'succeeded':
         raise ValueError('Successful actual execution receipt required')
     model = prediction['model']

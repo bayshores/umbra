@@ -355,7 +355,8 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.outputColorSpace = THREE.SRGBColorSpace;
       renderer.domElement.setAttribute('aria-hidden', 'true');
-      renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none;';
+      // A finger on a view still scrolls the page; only the draggable vehicle and handle take touch drags (styles.css).
+      renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:manipulation;';
       element.appendChild(renderer.domElement);
       if (mode !== 'recorded') {
         const surface = renderGeometry(scene);
@@ -678,7 +679,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
   const truck = plan && scenario.proposed.vehicle.length >= TRUCK_LENGTH_M;
   const blocked = plan && scenario.proposedVisibility.state === 'blocked';
   const personLabel = 'Person' + (scenario?.support?.target?.supportLabel ? ': ' + scenario.support.target.supportLabel : '');
-  return <div ref={host} role={plan ? 'group' : 'img'} aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'recorded' ? 0 : 160, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
+  return <div ref={host} role={plan ? 'group' : 'img'} aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'plan' ? 160 : 0, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
     {plan && <>
       <div ref={node => { labels.current.baseline = node; }} className="map-vehicle map-vehicle--baseline" title={baselineLabel}/>
       <div {...sliderProps('setback', 'Proposed vehicle distance from crossing')} className={'map-vehicle map-vehicle--proposed' + (truck ? ' map-vehicle--truck' : '')}>

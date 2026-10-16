@@ -148,7 +148,7 @@ def retrieval_block(window):
 
 
 def build_plan(sid, injected, *, paths=None, downloads=None, test_only=False, min_free_bytes=None,
-               nvidia_smi=None, python='python3', image=IMAGE, model=None, retrieval_window=300):
+               image=IMAGE, model=None, retrieval_window=300):
     """Plan dict (validated by the wrapper's own validator). `injected`: dicts with path/role/bytes/sha256."""
     paths = paths or real_paths(sid)
     downloads = downloads or real_downloads(paths)
@@ -159,11 +159,9 @@ def build_plan(sid, injected, *, paths=None, downloads=None, test_only=False, mi
         'image': image, 'paths': paths, 'injected': injected, 'imageInput': dict(IMAGE_INPUT),
         'spec': {'path': spec['path'], 'sha256': spec['sha256']}, 'model': dict(model or MODEL),
         'downloads': downloads, 'downloadTimeoutSeconds': {'weights': 900, 'bert': 300},
-        'preflight': {'minFreeBytes': min_free_bytes or total + (2 << 30), 'python': python,
-                      'nvidiaSmi': nvidia_smi or ['nvidia-smi', '--query-gpu=name,driver_version,memory.total',
-                                                  '--format=csv,noheader'],
-                      'timeoutSeconds': 180},
-        'tao': {'argv': ['grounding_dino', 'inference', '-e', spec['path']],
+        'preflight': {'minFreeBytes': min_free_bytes or total + (2 << 30), 'python': wrapper.PREFLIGHT_PYTHON,
+                      'nvidiaSmi': list(wrapper.NVIDIA_SMI_ARGV), 'timeoutSeconds': 180},
+        'tao': {'argv': [*wrapper.TAO_COMMAND, spec['path']],
                 'env': {'TELEMETRY_OPT_OUT': 'yes', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1'},
                 'timeoutSeconds': 900, 'labels': 'recorded.txt', 'annotated': 'recorded.jpg', 'logCapBytes': 1 << 20},
         'prompt': {'captions': list(CAPTIONS), 'caption': ' . '.join(CAPTIONS) + ' .', 'confThreshold': 0.25},

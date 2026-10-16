@@ -1,4 +1,5 @@
 import { validateSuggestions } from './suggestions.mjs';
+import { prepareCarShape, CAR_SHAPE_REFUSALS } from './geometry.mjs';
 
 const LOAD_TIMEOUT_MS=30_000;
 const timeoutError=()=>new Error('Scene loading exceeded 30 seconds. Retry loading to try again.');
@@ -49,9 +50,11 @@ function matchingBounds(positions,bounds) {
   return min.every((n,k)=>Math.abs(n-bounds.min[k])<=2e-5&&Math.abs(max[k]-bounds.max[k])<=2e-5);
 }
 
-// ground.json schemaVersion 2 (protocol v3): the schema 1 keys plus the placement range limit and the fitted along-ray
-// uncertainty band. Schema 1 layers (protocol v1/v2) are history and are refused.
-const GROUND_KEYS=['alongRayUncertainty','baseSceneSha256','boundaryEpsilonMeters','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind',
+// ground.json schemaVersion 3 (placement protocol v3.4): the schema 2 keys (protocol v3: the schema 1 keys plus the
+// placement range limit and the fitted along-ray uncertainty band) plus carShape, the recorded stationary vehicle's
+// LiDAR shape (shape-v2). Schema 1 and 2 layers, and schema 3 layers with a shape-v1 car shape (placement protocol v3.3),
+// are history and are refused (they load only with the app source of their own commit).
+const GROUND_KEYS=['alongRayUncertainty','baseSceneSha256','boundaryEpsilonMeters','carShape','crossing','cuboids','dependencies','drivableAreas','egoLane','frame','kind',
   'license','limitations','maxRangeMeters','placementRangeLimitMeters','processingCodeHashes','protocol','roadToleranceMeters','sceneId','schemaVersion','sources',
   'support','supportHeightAgreementMeters','supportRadiusMeters','terrain'];
 // Frozen protocols whose layers have the current schema numbers but are superseded, by sha256. Protocol v3
@@ -62,14 +65,14 @@ const SUPERSEDED_PROTOCOLS=Object.freeze({c91066034d6b13ce06ab1ee14cd70a148a4531
 const SOURCE_KEYS='annotations,assembledScene,groundRaster,groundTransform,map,poses,preparedManifest,references';
 const CUBOID_KEYS='category,center,height,length,motion,numInteriorPoints,track,width,worldFromBox';
 const TERRAIN_KEYS='byteOrder,bytes,cellMeters,column0,columns,dtype,file,finiteCells,layout,nanCells,rasterShape,row0,rows,samplingRule,sha256,sim2,values';
-// Structural checks on ground.json (schemaVersion 2) before any value is used; the bytes are already hash-pinned.
+// Structural checks on ground.json (schemaVersion 3) before any value is used; the bytes are already hash-pinned.
 function validateGround(g,scene) {
   const need=(ok,detail)=>{if(!ok)throw new Error(`Invalid mapped ground: ${detail}.`);};
   const object=v=>v!==null&&typeof v==='object'&&!Array.isArray(v),text=v=>typeof v==='string'&&v.length>0&&v.length<=4096,
     hash=v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v),finite=v=>typeof v==='number'&&Number.isFinite(v),
     finite3=p=>Array.isArray(p)&&p.length===3&&p.every(finite),count=v=>Number.isSafeInteger(v)&&v>=0,
     positiveInt=v=>Number.isSafeInteger(v)&&v>0,keys=(v,list)=>object(v)&&Object.keys(v).sort().join()===list;
-  need(object(g)&&g.schemaVersion===2,'schemaVersion must be 2 (protocol v3; earlier ground layers are history)');
+  need(object(g)&&g.schemaVersion===3,'schemaVersion must be 3 (placement protocol v3.4 with the measured car shape; earlier ground layers are history)');
   need(keys(g,GROUND_KEYS.join()),'unexpected or missing top-level fields');
   need(g.kind==='av2MappedGround'&&g.sceneId===scene.id,'schema, kind or scene identity');
   need(hash(g.baseSceneSha256)&&keys(g.protocol,'bytes,path,readOnlyExternal,sha256')&&hash(g.protocol.sha256)&&text(g.protocol.path)&&count(g.protocol.bytes),'protocol record');
@@ -125,6 +128,58 @@ function validateGround(g,scene) {
     Number.isFinite(m.referencePositions[r*3])&&Number.isFinite(m.referencePositions[r*3+2])),'support rows must be ascending camera-eligible source rows');
   need(keys(g.license,'attribution,changes,id,source')&&g.license.id==='CC-BY-NC-SA-4.0'&&['attribution','changes','source'].every(k=>text(g.license[k])),'license');
   need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');
+  if(g.carShape!==null)validateCarShape(g.carShape,c.items,{need,object,text,hash,finite,count,positiveInt,keys});
+}
+// shape-v2 (.local/evaluation/pao-accuracy/shape-v2/protocol.json: the shape-v1 dataSchema and loaderValidation with
+// the 0.25 m sweep step, schema 'shape-v2' and placement protocol v3.4): the recorded
+// stationary vehicle's LiDAR shape. Any failure rejects the whole scene; there is no box fallback. Whether it must be
+// present (exactly when suggestions name an annotated vehicle, with the same track) is checked after suggestions load.
+const CAR_SHAPE_KEYS='box,code,counts,diagnostics,frame,grid,protocol,refusal,removed,schema,solidTopM,status,sweeps,track';
+const CAR_SHAPE_SWEEP_KEYS='candidates,downloadDropped,kept,listing,planSha256,rule,scoring,shape,thinned';
+const CAR_SHAPE_SCHEMA='shape-v2',CAR_SHAPE_PLACEMENT_PROTOCOL='3.4';
+const CAR_SHAPE_RULE=Object.freeze({maxEgoDistanceM:30,minEgoStepM:.25,maxKept:40,split:'alternate',minShapeSweeps:2,downloadAttempts:4,retryWaitsS:[5,10,20]});
+const CAR_SHAPE_GRID_ORDER='index = i*lateral + j; i from the front face, j from the left side';
+function validateCarShape(s,cuboids,{need,object,text,hash,finite,count,positiveInt,keys}) {
+  const fail=detail=>need(false,`car shape ${detail}`),check=(ok,detail)=>{if(!ok)fail(detail);};
+  check(keys(s,CAR_SHAPE_KEYS),'has unexpected or missing fields');
+  check(s.schema!=='shape-v1','is shape-v1 (placement protocol v3.3); earlier car shapes are history');
+  check(s.schema===CAR_SHAPE_SCHEMA&&['measured','refused'].includes(s.status)&&text(s.track)&&text(s.frame),'schema, status, track or frame');
+  const owners=cuboids.filter(box=>Object.hasOwn(box,'poseAverage')&&box.track===s.track);
+  check(owners.length===1,'track must name exactly one averaged annotated cuboid');
+  const [box]=owners,L=box.length,W=box.width,H=box.height;
+  check(keys(s.box,'height,length,width')&&s.box.length===L&&s.box.width===W&&s.box.height===H,'box must equal the averaged cuboid sizes exactly');
+  const n=Math.ceil(L/.1-1e-9),m=Math.ceil(W/.1-1e-9),N=n*m,g=s.grid;
+  check(keys(g,'along,cellAlongM,cellLateralM,lateral,maxCellM,order')&&g.along===n&&g.lateral===m&&g.cellAlongM===L/n&&g.cellLateralM===W/m&&g.maxCellM===.1&&
+    g.order===CAR_SHAPE_GRID_ORDER&&positiveInt(n)&&positiveInt(m),'grid must be recomputed from the box');
+  const cellCounts=a=>Array.isArray(a)&&a.length===N&&a.every(count);
+  check(keys(s.counts,'returnSweeps,returns')&&cellCounts(s.counts.returns)&&cellCounts(s.counts.returnSweeps)&&
+    s.counts.returnSweeps.every((k,i)=>k<=s.counts.returns[i]),'counts');
+  check(Array.isArray(s.solidTopM)&&s.solidTopM.length===N&&s.solidTopM.every((v,i)=>v===null||finite(v)&&v>=.25&&v<=H&&s.counts.returnSweeps[i]>=2),
+    'solid tops must be null or in [0.25 m, box height] with returns from at least 2 sweeps');
+  check(keys(s.removed,'aboveBoxTop,belowFloor,otherObjects')&&Object.values(s.removed).every(count),'removed counts');
+  const w=s.sweeps,rule=w?.rule,decimal=v=>typeof v==='string'&&/^[0-9]{1,32}$/.test(v);
+  check(keys(w,CAR_SHAPE_SWEEP_KEYS)&&keys(rule,Object.keys(CAR_SHAPE_RULE).sort().join())&&
+    Object.entries(CAR_SHAPE_RULE).every(([k,v])=>JSON.stringify(rule[k])===JSON.stringify(v)),'sweep rule');
+  check(hash(w.planSha256)&&keys(w.listing,'attempts,status')&&['ok','failed'].includes(w.listing.status)&&count(w.listing.attempts)&&
+    [w.candidates,w.thinned,w.kept].every(count),'sweep plan record');
+  // Each list is in increasing time order (compared as integers); no sweep is in two lists.
+  const increasing=list=>list.every((x,i)=>i===0||BigInt(x.timestampNs)>BigInt(list[i-1].timestampNs));
+  const used=list=>Array.isArray(list)&&list.every(x=>keys(x,'sha256,timestampNs')&&decimal(x.timestampNs)&&hash(x.sha256))&&increasing(list);
+  check(used(w.shape)&&used(w.scoring),'shape and scoring sweeps must be increasing decimal timestamps with SHA-256 hashes');
+  check(Array.isArray(w.downloadDropped)&&w.downloadDropped.every(x=>keys(x,'attempts,reason,set,timestampNs')&&decimal(x.timestampNs)&&
+    ['shape','scoring'].includes(x.set)&&x.reason==='download-failed'&&x.attempts===4),'dropped downloads');
+  const stamps=[...w.shape,...w.scoring,...w.downloadDropped].map(x=>BigInt(x.timestampNs));
+  check(new Set(stamps).size===stamps.length,'sweep lists must be disjoint');
+  check(w.shape.length+w.scoring.length+w.downloadDropped.length===w.kept,'sweep lists must add up to the kept count');
+  if(s.status==='measured')check(s.refusal===null&&w.shape.length>=2,'measured needs no refusal and at least 2 shape sweeps');
+  else check(keys(s.refusal,'code,reason')&&Object.hasOwn(CAR_SHAPE_REFUSALS,s.refusal.code)&&s.refusal.reason===CAR_SHAPE_REFUSALS[s.refusal.code]&&
+    s.solidTopM.every(v=>v===null)&&s.counts.returns.every(k=>k===0)&&s.counts.returnSweeps.every(k=>k===0),'refused needs a known refusal, no solid tops and zero counts');
+  const d=s.diagnostics;
+  check(keys(d,'frontFaceToFirstSolidCellM,returnsBeyondEnds')&&(d.frontFaceToFirstSolidCellM===null||finite(d.frontFaceToFirstSolidCellM))&&
+    keys(d.returnsBeyondEnds,'front,rear')&&count(d.returnsBeyondEnds.front)&&count(d.returnsBeyondEnds.rear),'diagnostics');
+  check(keys(s.protocol,'placementProtocolVersion,sha256,shapeProtocolSha256')&&s.protocol.placementProtocolVersion===CAR_SHAPE_PLACEMENT_PROTOCOL&&hash(s.protocol.sha256)&&
+    hash(s.protocol.shapeProtocolSha256),'protocol record');
+  check(keys(s.code,'path,sha256')&&s.code.path==='scripts/california/car_shape.py'&&hash(s.code.sha256),'code record');
 }
 // The scene's descriptor {file,bytes,sha256} for ground.json and the catalog's caller pin {file,sha256} must agree.
 function validGroundDescriptor(descriptor,pin) {
@@ -423,6 +478,14 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
       (scene.sourceHashes?.left!==undefined&&inputs['recorded.jpg']!==scene.sourceHashes.left))
       throw new Error('Placement suggestions were prepared from different scene inputs.');
     scene.suggestions=raw;
+  }
+  if(mapped) {
+    // car shape: the LiDAR shape exists exactly for the annotated stationary vehicle the suggestions name, by its track.
+    const vehicle=scene.suggestions?.vehicle,shape=scene.ground.carShape;
+    if((vehicle?.status==='annotated')!==(shape!==null))
+      throw new Error('Invalid mapped ground: car shape must be present exactly when the suggestions name an annotated stationary vehicle.');
+    if(shape!==null&&shape.track!==vehicle.track)throw new Error('Invalid mapped ground: car shape track differs from the suggested vehicle.');
+    scene.carShape=prepareCarShape(shape);
   }
   checkActive(signal,deadline);
   return scene;

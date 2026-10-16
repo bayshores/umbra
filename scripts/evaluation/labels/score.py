@@ -83,6 +83,9 @@ def stats(rows):
     if len(errs):
         out.update(exactN=int(len(errs)), medianAbs=round(float(np.median(errs)), 3), p90Abs=round(float(np.percentile(errs, 90)), 3),
                    maxAbs=round(float(errs.max()), 3), meanSigned=round(float(np.mean([r['error'] for r in rows if r['referenceKind'] == 'exact'])), 3))
+    ranged = [r for r in rows if 'rangeHalfWidthPx' in r]
+    if ranged:  # protocol v2 (search.ambiguity): how many of these resolved features are range results (+/- > 0)
+        out['rangeN'] = sum(1 for r in ranged if r['rangeHalfWidthPx'] > 0)
     coarse = [r for r in rows if 'consistent' in r]
     if coarse:
         out.update(lidarN=len(coarse), lidarConsistentShare=round(sum(r['consistent'] for r in coarse) / len(coarse), 3),
@@ -154,6 +157,8 @@ def score(protocol, phash, base, aggregate_dir, sessions, set_protocol_sha=None)
                     continue
                 row = evaluate(float(result['value']), ref, kind, feature, entry, coarse)
                 row.update(task=task_id, feature=feature, family=family(feature), source=entry['source'], labeler=labeler)
+                if 'rangeHalfWidthPx' in result:
+                    row['rangeHalfWidthPx'] = result['rangeHalfWidthPx']
                 rows[labeler].append(row)
                 if kind == 'exact' and feature not in OUTWARD:
                     raw = evaluate(float(result['estimate']), ref, kind, feature, entry, coarse)
@@ -173,6 +178,8 @@ def score(protocol, phash, base, aggregate_dir, sessions, set_protocol_sha=None)
             row = evaluate(record['value'], ref, kind, feature, entry, coarse)
             row.update(task=task_id, feature=feature, family=family(feature), source=entry['source'], labeler='aggregate',
                        spread=record.get('spread'))
+            if 'rangeHalfWidthPx' in record:
+                row['rangeHalfWidthPx'] = record['rangeHalfWidthPx']
             rows['aggregate'].append(row)
     summary = {}
     for who, items in rows.items():

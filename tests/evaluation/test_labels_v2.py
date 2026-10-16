@@ -373,6 +373,42 @@ class LabelkitV2Tests(unittest.TestCase):
         self.assertIn('instructions changed', text)
 
 
+class RepeatSubstituteTests(unittest.TestCase):
+    """protocol repeatCasesRule: an excluded planned real repeat case is replaced only by the next case by the same rule."""
+
+    def setUp(self):
+        self.tasks = [{'taskId': 'V01'}, {'taskId': 'V02'}, {'taskId': 'V03'}]
+        self.key = {'V01': {'source': 'lidar', 'kind': 'car', 'caseLabel': 'aaaa-t1-1', 'case': {'maxInteriorPoints': 1641}},
+                    'V02': {'source': 'lidar', 'kind': 'car', 'caseLabel': 'bbbb-t2-2', 'case': {'maxInteriorPoints': 1240}},
+                    'V03': {'source': 'lidar', 'kind': 'paint', 'caseLabel': 'aaaa-c9-3', 'case': {'maxInteriorPoints': 9999}}}
+        self.excluded = [{'case': 'cccc-t0-5', 'reason': 'unresolved cluster extent'}]
+
+    def test_no_substitute_keeps_the_planned_case(self):
+        self.assertEqual(build_validation.repeat_substitute('SV05', self.tasks, self.key, self.excluded, {}), ('SV05', None))
+
+    def test_next_case_by_the_rule_is_accepted_and_recorded(self):
+        label, record = build_validation.repeat_substitute('cccc-t0', self.tasks, self.key, self.excluded, {'cccc-t0': 'aaaa-t1'})
+        self.assertEqual(label, 'aaaa-t1')
+        self.assertEqual((record['planned'], record['substituteCase'], record['maxInteriorPoints']), ('cccc-t0', 'aaaa-t1-1', 1641))
+        self.assertEqual(record['plannedExcludedBecause'], 'unresolved cluster extent')
+
+    def test_refusals(self):
+        with self.assertRaises(common.ProtocolError):  # not the most interior points (paint cases do not count)
+            build_validation.repeat_substitute('cccc-t0', self.tasks, self.key, self.excluded, {'cccc-t0': 'bbbb-t2'})
+        with self.assertRaises(common.ProtocolError):  # the planned case was built, so no substitute is allowed
+            build_validation.repeat_substitute('aaaa-t1', self.tasks, self.key, self.excluded, {'aaaa-t1': 'bbbb-t2'})
+        self.excluded.append({'case': 'aaaa-t1-0', 'reason': 'another frame'})
+        with self.assertRaises(common.ProtocolError):  # excluded in one frame but built in another
+            build_validation.repeat_substitute('aaaa-t1', self.tasks, self.key, self.excluded, {'aaaa-t1': 'bbbb-t2'})
+        self.key['V04'] = dict(self.key['V01'], repeatOf='V01')
+        self.tasks.append({'taskId': 'V04'})
+        label, _ = build_validation.repeat_substitute('cccc-t0', self.tasks, self.key, self.excluded, {'cccc-t0': 'aaaa-t1'})
+        self.assertEqual(label, 'aaaa-t1')  # an earlier repeat copy is not a tie
+        self.key['V02']['case']['maxInteriorPoints'] = 1641
+        with self.assertRaises(common.ProtocolError):  # a tie is not resolved by the coordinator
+            build_validation.repeat_substitute('cccc-t0', self.tasks, self.key, self.excluded, {'cccc-t0': 'aaaa-t1'})
+
+
 class LockTests(unittest.TestCase):
     def write(self, tmp, **extra):
         path = Path(tmp) / 'protocol-v9.json'

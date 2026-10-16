@@ -4,7 +4,14 @@ labeler) and robustness to random answer errors. Writes ONLY into the given outp
 the labels area. Not a labeling run.
 
   python -I selftest.py BASE OUTDIR [--protocol PATH [--draft]] [--flips 0,0,0] [--seeds 0-9 | --seed N]
-                                    [--tasks V01,V02] [--keep-sessions]
+                                    [--tasks V01,V02] [--keep-sessions] [--ambiguous-band 0.3,0.7]
+                                    [--variant earlier-draft]
+
+--ambiguous-band LO,HI: "honest" oracles answer cannot_tell where the true coverage is in [LO, HI) (synthetic cases
+only; coverage-design.md section 6). Off by default, so earlier self-test outputs reproduce.
+--variant earlier-draft (with --draft): run the session rules of the v2 draft before coverage-design.md on the same
+set (no search.ambiguity, no pixel-boundary ticks, stations.carColumns 'labelerExtremes', columnSpreadMaxPx 3.0),
+for the frozen comparison against this design. The protocol hash gets a '+earlier-draft' suffix.
 
 Each oracle's answer flips come from random.Random(stable_seed(taskId, labeler, seed)): the same seed gives
 the same flips in every process. (Until 2026-10-12 the seed was Python's hash() of a tuple of strings, which
@@ -14,6 +21,10 @@ With several seeds the summary reports the gate pass count and the range of ever
 Each oracle session is written like a labelkit session (hash-chained answers.jsonl, label.json, label.sha256), so
 aggregation checks it the same way (chain, head, deterministic replay). Under a protocol with `isolation` the
 output folder must be outside the repository: rows and aggregates hold exact reference values.
+Under `aggregation.requireReportedHeads` the self-test is its own coordinator: it writes the heads it recorded to
+aggregate/reported-heads.json and names that file's sha256 in the manifest. Oracle sessions have no labeler transcript,
+so under `isolation.requireTranscriptScan` aggregation and scoring use a copy of the protocol with only that requirement
+off (session, search and aggregation rules and the protocol hash are unchanged).
 """
 from __future__ import annotations
 
@@ -43,8 +54,40 @@ from truth import Truth  # noqa: E402
 FAMILIES = ('extreme/synthetic', 'profile/synthetic', 'contact/synthetic', 'paint/synthetic')
 
 
+VARIANTS = ('earlier-draft',)
+
+
 def oracle_seed(task_id, labeler, seed):
     return stable_seed(task_id, labeler, seed)
+
+
+def protocol_variant(protocol, variant):
+    """Session/aggregation rules of an earlier draft applied to `protocol` (the built set itself is unchanged)."""
+    require(variant in VARIANTS, f'unknown variant {variant}')
+    p = json.loads(json.dumps(protocol))
+    p['search'].pop('ambiguity', None)
+    p['render'].pop('tickOnPixelBoundary', None)
+    p['stations']['carColumns'] = 'labelerExtremes'
+    p['aggregation']['columnSpreadMaxPx'] = 3.0
+    return p
+
+
+def oracle_protocol(protocol):
+    """The protocol for aggregating and scoring oracle sessions: they have no labeler transcript to scan, so
+    isolation.requireTranscriptScan is turned off. Nothing else changes; a protocol without it is returned as is."""
+    if not isolation.settings(protocol).get('requireTranscriptScan'):
+        return protocol
+    p = json.loads(json.dumps(protocol))
+    p['isolation']['requireTranscriptScan'] = False
+    return p
+
+
+def parse_band(text):
+    if not text:
+        return None
+    lo, hi = (float(x) for x in text.split(','))
+    require(0.0 <= lo < hi <= 1.0, '--ambiguous-band needs 0 <= LO < HI <= 1')
+    return (lo, hi)
 
 
 def drive(task, protocol, labeler, rgb, oracle):
@@ -108,13 +151,14 @@ def load_set(base, wanted):
     return tasks_doc, prepared
 
 
-def run_once(base, out, protocol, phash, flips, seed, tasks_doc, prepared, sessions, set_protocol_sha=None, quiet=False):
+def run_once(base, out, protocol, phash, flips, seed, tasks_doc, prepared, sessions, set_protocol_sha=None, quiet=False,
+             band=None, variant=None):
     labelers = [f'O{k + 1}' for k in range(len(flips))]
     per_task, heads = {}, {}
     for task, entry, truth, rgb in prepared:
         counts = []
         for labeler, flip in zip(labelers, flips):
-            oracle = Oracle(truth, task, flip=flip, seed=oracle_seed(task['taskId'], labeler, seed))
+            oracle = Oracle(truth, task, flip=flip, seed=oracle_seed(task['taskId'], labeler, seed), ambiguous_band=band)
             result, answers = drive(task, protocol, labeler, rgb, oracle)
             replay_pending, replay_result, asked = session.run(task, protocol, labeler, rgb, answers)
             assert replay_pending is None and json.dumps(replay_result, default=float) == json.dumps(result, default=float), 'replay mismatch'
@@ -129,16 +173,24 @@ def run_once(base, out, protocol, phash, flips, seed, tasks_doc, prepared, sessi
         copy['protocol'] = {'sha256': phash, 'note': f'self-test copy; set built with {set_protocol_sha}'}
     sub_tasks = out / 'validation-tasks.subset.json'
     write_json(sub_tasks, copy)
-    result, label_hashes, evidence = agg.aggregate(sub_tasks, sessions, labelers, protocol, phash, heads)
+    checked = oracle_protocol(protocol)
+    result, label_hashes, evidence = agg.aggregate(sub_tasks, sessions, labelers, checked, phash, heads)
     agg_dir = out / 'aggregate'
     agg_hash = write_json(agg_dir / 'labels-aggregate.json', {'schema': 'pao-labels-aggregate-v1', 'protocolSha256': phash,
                                                              'labelers': labelers, 'tasks': result})
-    write_json(agg_dir / 'labels-manifest.json', {'protocolSha256': phash, 'labelSha256': label_hashes,
-                                                  'answerLogSha256': evidence['answerLogSha256'], 'aggregateSha256': agg_hash})
-    scored = scoring.score(protocol, phash, base, agg_dir, sessions, set_protocol_sha=set_protocol_sha)
+    manifest = {'protocolSha256': phash, 'labelSha256': label_hashes, 'answerLogSha256': evidence['answerLogSha256'],
+                'aggregateSha256': agg_hash}
+    if protocol.get('aggregation', {}).get('requireReportedHeads'):
+        manifest['reportedHeadsSha256'] = write_json(agg_dir / 'reported-heads.json', {'heads': heads, 'selftest': True})
+    write_json(agg_dir / 'labels-manifest.json', manifest)
+    scored = scoring.score(checked, phash, base, agg_dir, sessions, set_protocol_sha=set_protocol_sha)
     report = {'flips': dict(zip(labelers, flips)), 'seed': seed, 'seedRule': 'random.Random(int(sha256(f"{taskId}|{labeler}|{seed}")[:8], 16))',
               'protocolSha256': phash, 'aggregateSha256': agg_hash, 'questions': per_task, 'summary': scored['summary'],
               'gate': scored['gate'], 'snapping': scored['snapping']}
+    if band:
+        report['ambiguousBand'] = list(band)
+    if variant:
+        report['variant'] = variant
     write_json(out / 'selftest-report.json', report)
     write_json(out / 'selftest-rows.json', scored['rows'])
     return report
@@ -165,6 +217,8 @@ def summarize(reports):
         out[fam] = {'medianAbs': rng([s.get(fam, {}).get('medianAbs') for s in agg_summaries]),
                     'maxAbs': rng([s.get(fam, {}).get('maxAbs') for s in agg_summaries]),
                     'n': rng([s.get(fam, {}).get('exactN') for s in agg_summaries])}
+        if any('rangeN' in s.get(fam, {}) for s in agg_summaries):
+            out[fam]['rangeN'] = rng([s.get(fam, {}).get('rangeN') for s in agg_summaries])
     out['perSeed'] = [{'seed': r['seed'], 'gatePass': r['gate']['pass'], 'resolvedShare': r['summary']['aggregate']['resolvedShare'],
                        'aggregateSha256': r['aggregateSha256']} for r in reports]
     return out
@@ -181,14 +235,22 @@ def main(argv=None):
     parser.add_argument('--seeds', default='', help='e.g. 0-19 or 3,5,8; one output folder per seed plus summary.json')
     parser.add_argument('--tasks', default='')
     parser.add_argument('--keep-sessions', action='store_true')
+    parser.add_argument('--ambiguous-band', default='', help='LO,HI e.g. 0.3,0.7: honest cannot_tell on synthetic cases')
+    parser.add_argument('--variant', default='', help='earlier-draft: the v2 draft rules before coverage-design.md (needs --draft)')
     args = parser.parse_args(argv)
     base, out = Path(args.base), Path(args.out)
+    band = parse_band(args.ambiguous_band)
+    variant = args.variant or None
     set_protocol_sha = None
     if args.draft:
         protocol = read_json(args.protocol)
         phash = 'DRAFT-' + sha256_file(args.protocol)
         set_protocol_sha = read_json(base / 'validation-lock.json')['protocolSha256']
+        if variant:
+            protocol = protocol_variant(protocol, variant)
+            phash += '+' + variant
     else:
+        require(not variant, '--variant changes the rules: run it with --draft')
         protocol, phash = load_protocol(args.protocol)
     isolation.output_dir(protocol, out, 'self-test output (rows and aggregates hold exact reference values)')
     flips = [float(x) for x in args.flips.split(',')]
@@ -201,16 +263,22 @@ def main(argv=None):
         run_dir = out / f'seed-{seed}' if multi else out
         run_dir.mkdir(parents=True, exist_ok=True)
         if args.keep_sessions:
-            report = run_once(base, run_dir, protocol, phash, flips, seed, tasks_doc, prepared, run_dir / 'sessions', set_protocol_sha, multi)
+            report = run_once(base, run_dir, protocol, phash, flips, seed, tasks_doc, prepared, run_dir / 'sessions', set_protocol_sha, multi,
+                              band, variant)
         else:
             with tempfile.TemporaryDirectory(dir=run_dir, prefix='.sessions-') as tmp:
-                report = run_once(base, run_dir, protocol, phash, flips, seed, tasks_doc, prepared, Path(tmp), set_protocol_sha, multi)
+                report = run_once(base, run_dir, protocol, phash, flips, seed, tasks_doc, prepared, Path(tmp), set_protocol_sha, multi,
+                                  band, variant)
         reports.append(report)
         agg_s = report['summary']['aggregate']
         print(json.dumps({'seed': seed, 'gate': report['gate']['pass'], 'resolvedShare': agg_s['resolvedShare'],
                           'aggregateSha256': report['aggregateSha256'][:12]}), flush=True)
     if multi:
         summary = {'flips': flips, 'seeds': seeds, 'protocolSha256': phash, 'draft': bool(args.draft), **summarize(reports)}
+        if band:
+            summary['ambiguousBand'] = list(band)
+        if variant:
+            summary['variant'] = variant
         write_json(out / 'summary.json', summary)
         print(json.dumps({k: v for k, v in summary.items() if k != 'perSeed'}, indent=1))
     else:

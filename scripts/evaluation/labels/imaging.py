@@ -195,11 +195,15 @@ def zoom_panel(rgb, window, zoom, enhanced):
     return Image.fromarray(upscale(crop, zoom)).convert('RGBA')
 
 
-def render_question(rgb, context_region, window, zoom, marker, candidates=(), guides=(), context_width=360):
+def render_question(rgb, context_region, window, zoom, marker, candidates=(), guides=(), context_width=360,
+                    tick_on_pixel_boundary=False):
     """Three panels: CONTEXT (scaled region with the marker and a yellow zoom frame), RAW zoom, ENHANCED zoom.
 
     marker: {'type': 'vline'|'hline', 'at': boundary coordinate} or {'type': 'pixel', 'at': (i, j)}.
     candidates: [(number, axis, coordinate, fixed)] numbered ticks for a pick question (pixel scans).
+    tick_on_pixel_boundary (protocol v2, coverage-design.md section 3): draw each tick on the pixel boundary nearest
+    the candidate, floor(c) + 0.5, so a tick never sits inside a pixel. Only the drawing moves; brackets and snapping
+    keep the sub-pixel candidate. False (protocol v1) draws at the sub-pixel coordinate as before.
     """
     cx0, cy0, cw, ch = context_region
     ctx = crop_padded(rgb, cx0, cy0, cw, ch)
@@ -278,6 +282,8 @@ def render_question(rgb, context_region, window, zoom, marker, candidates=(), gu
             draw.line([(zx - half - 2 - arm, zy), (zx - half - 3, zy)], fill=MAGENTA + (255,), width=2)
             draw.line([(zx + half + 2, zy), (zx + half + 2 + arm, zy)], fill=MAGENTA + (255,), width=2)
     for number, axis, coordinate, fixed in candidates:
+        if tick_on_pixel_boundary:
+            coordinate = float(np.floor(coordinate)) + 0.5
         color = CANDIDATE_COLORS[(number - 1) % len(CANDIDATE_COLORS)] + (255,)
         for origin_x in (cdisp[0] + gap, cdisp[0] + gap + zw + gap):
             if axis == 'y':

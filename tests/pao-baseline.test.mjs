@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {suggestedSetup} from '../src/suggestions.mjs';
+import {suggestedSetup,crossingText} from '../src/suggestions.mjs';
 import {devDataPresent,loadDevelopmentScene,signedClearance,appIntersects,boxesOverlap,percentile,clickToGround,suggestionConsistency,
   setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters,GROUNDED_DIR} from '../scripts/evaluation/pao-baseline.mjs';
+import {historyApp} from './history-app.mjs';
+import {annotatedVehicle} from '../src/geometry.mjs';
+import {analytic,loadAnalytic} from './mapped-fixture.mjs';
 
 const near=(a,b,tolerance,what)=>assert.ok(Math.abs(a-b)<=tolerance,`${what??''} ${a} differs from ${b}`);
 
@@ -36,14 +39,51 @@ test('baseline helpers: upright box overlap and nearest-rank percentile',()=>{
   assert.equal(percentile([5,1,4,2,3],.5),3);assert.equal(percentile([1,2,3,4],.5),2);assert.equal(percentile([1,2,3,4],.95),4);assert.equal(percentile([],.5),null);
 });
 
+// M7 lock 2 (built-box sites fd5c6932/2659589 and e1d68dde/5987490): the suggested vehicle is a declared default, so no
+// annotated cuboid is the suggestion's. honestyCounters threw there (cuboidBox(undefined): "reading 'worldFromBox'").
+// The analytic mapped scene (one annotated cuboid at z -12, not suggested) with an in-memory declared-default suggestion.
+test('honesty counters: a declared-default suggested vehicle has no cuboid; reported as none, never an invented box',async()=>{
+  const base=await loadAnalytic(analytic());
+  const scene={...base,suggestions:{schemaVersion:3,crossing:{status:'mapped',pixel:[2,4]},
+    vehicle:{status:'declared-default',pixel:[2,5],label:'SUV',dimensions:{width:1.9,height:1.5,length:4},setbackM:6.096},
+    person:{status:'declared-default',pixel:[3,5],label:'child',heightM:1.1}}};
+  const setup=suggestedSetup(scene,scene.suggestions);
+  assert.equal(setup.error,'');assert.ok(setup.input);
+  assert.equal(annotatedVehicle(scene,setup.pixels,setup.vehicle),null,'no annotated recorded vehicle');
+  assert.deepEqual(scene.ground.cuboids.items.map(b=>b.track),['analytic'],'one annotated cuboid, not the suggestion');
+  const honesty=honestyCounters(scene,setup,[{kind:'suggested',input:setup.input,label:'SUV'}]);
+  // Reported explicitly; the two counts against the suggested vehicle are not measured (null), not 0.
+  assert.deepEqual(Object.keys(honesty.suggestionVehicle),['status','reason']);assert.equal(honesty.suggestionVehicle.status,'none');
+  assert.equal(honesty.realObjectOverlap.currentOverlapsReplacedSuggestionVehicle,null);
+  assert.equal(honesty.informational.declaredCurrentUnknownWithSuggestionVehicleOnLine,null);
+  assert.equal(honesty.informational.declaredCurrentUnknown,1);
+  // Every annotated cuboid is a real object: the what-if rows at small setbacks overlap the cuboid at z -12.
+  const real=honesty.realObjectOverlap;
+  assert.ok(real.whatIfRowsOverlappingReal>0);assert.deepEqual(real.byCategory,{REGULAR_VEHICLE:real.whatIfRowsOverlappingReal});
+  assert.equal(real.whatIfRowsOverlappingRealReportedBlocked,0);assert.equal(real.currentOverlapsReal,0);
+  assert.ok(honesty.examples.realOverlap.every(x=>x.objects.includes('REGULAR_VEHICLE:analytic')));
+  assert.deepEqual([honesty.startValues.placements,honesty.sweepErrors,honesty.clearanceSignMismatches,honesty.clearanceStateMismatches],[1,0,0,0]);
+  assert.doesNotMatch(JSON.stringify(honesty),/park/i);
+});
+
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
 const skip=devDataPresent()?false:'AV2 8c development data is local-only and not present';
-// The expected numbers belong to these data pins (grounded-v3.1, protocol v3.1); other pins run the invariant checks only.
-const PINS={ground:'b92ddab7f6323aec16044f9b34ef4b097437776b76cb12535072e8e1c938a305',suggestions:'b0bed508f0c6a6a85b7ce9d851227b338450741e1e2e24f1417109e0949357b9'};
+// The expected numbers belong to these data pins (grounded-v3.2, protocol v3.2; the same numbers as grounded-v3.1);
+// other pins run the invariant checks only.
+const PINS={ground:'556bc31b922c59853fe9e6e1d4cf9bcb8d8f7f6863de46835272f53235236115',suggestions:'86b2e5a134fbed2fc8ee778da78341aa60da86df044b08ffbc4ca87be32f7dae'};
+// grounded-v3.4 (placement protocol v3.4, shape-v2): grounded-v3.2 plus the recorded vehicle's LiDAR shape (app contract A14).
+// grounded-v3.3 (shape-v1, contract A13) is history; the current app refuses it (tests/av2-ground.test.mjs).
+const PINS34={ground:'2add396633d1878330989d5549ef0eb4bf7ff80d6cee98128294b2e092aa78c2',suggestions:'e9fb43063191ae0d47d273eae482cf2a2fa522bb458f5d87692c0f7e20ad6809'};
 
-test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked-end range and its own invariants',{skip},async()=>{
+// History: the current app refuses grounded-v3.2 (ground schema 2, no car shape), so this baseline runs pao-baseline.mjs
+// and the app source of commit c7a39eb, the code that produced these numbers (tests/history-app.mjs). The current
+// harness (pao-baseline.mjs GROUNDED_DIR) reads grounded-v3.4; it is tested after this one.
+test('baseline on AV2 8c (protocol v3.2, history): contract values, metric C, the Blocked-end range and its own invariants',{skip},async()=>{
+  assert.equal(GROUNDED_DIR,'grounded-v3.4/');
+  const {baseline,suggestions}=await historyApp(),{suggestedSetup,crossingText}=suggestions;
+  const {loadDevelopmentScene,clickToGround,suggestionConsistency,setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters}=baseline;
+  assert.equal(baseline.GROUNDED_DIR,'grounded-v3.2/');
   const {scene,entry}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions);
-  assert.equal(GROUNDED_DIR,'grounded-v3.1/');
   const pinned=entry.ground.sha256===PINS.ground&&entry.suggestions.sha256===PINS.suggestions;
   const first=firstLoad(scene,setup),click=clickToGround(scene),consistency=suggestionConsistency(scene),sweep=setbackSweepBaseline(scene,setup),end=blockedEndRange(scene,setup);
   for(const k of ['child','adult']) {
@@ -62,6 +102,8 @@ test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked
   assert.deepEqual(click.fractionalClickBands.map(x=>x.band),click.bands.map(x=>x.band));
   assert.doesNotMatch(JSON.stringify([first,click,consistency,sweep,end,honesty]),/park/i);
   if(!pinned)return;
+  // Protocol v3.2: the crosswalk chip shows the measured paint-offset bound (the only first-load change from v3.1).
+  assert.equal(crossingText(scene.suggestions.crossing),'crosswalk mapped ±0.18 m');
   // Contract A6: first load Unknown / Unknown, the averaged box misses the line by 0.0624 m at a 0.4198 m setback.
   assert.deepEqual([first.current,first.proposed],['unknown','unknown']);near(first.clearanceM,.06241,1e-4,'first-load clearance');near(first.baselineSetbackM,.41981,1e-4);
   // Metric C: the points the app uses lie on their mapped points; the stored vehicle-front pixelUV ray hit does not (raster
@@ -91,4 +133,54 @@ test('baseline on AV2 8c (protocol v3.1): contract values, metric C, the Blocked
   assert.deepEqual([range.lineTouchEndM.range,range.blockedEndM.range],[[9.9651,10.7128],[9.558,10.2984]]);
   assert.match(end.laneReconciliation.find(x=>x.value==='11.37 m').explanation,/^withdrawn/);
   assert.deepEqual([end.currentResultAcrossDriverPositions.blocked,end.currentResultAcrossDriverPositions.tooCloseToCall],[332,37]);
+});
+
+// The current harness on grounded-v3.4 (shape-v2). The geometry is the v3.2 geometry, so every box number of the v3.2
+// test above holds as a box-deep number; the app's own Blocked also needs the recorded vehicle's LiDAR shape (step 6):
+// the shape-v2 allowed-change check's counts (child 21 Blocked and 17 height-not-proven of 57 rows, adult 0 and 17) and no
+// new Blocked.
+test('baseline on AV2 8c (protocol v3.4, shape-v2): box-deep values unchanged, the app Blocked inside them, contract A14 counts',{skip},async()=>{
+  assert.equal(GROUNDED_DIR,'grounded-v3.4/');
+  const {scene,entry}=await loadDevelopmentScene(),setup=suggestedSetup(scene,scene.suggestions);
+  assert.equal(scene.ground.schemaVersion,3);assert.equal(scene.carShape.status,'measured');
+  const pinned=entry.ground.sha256===PINS34.ground&&entry.suggestions.sha256===PINS34.suggestions;
+  const first=firstLoad(scene,setup),click=clickToGround(scene),consistency=suggestionConsistency(scene),sweep=setbackSweepBaseline(scene,setup),end=blockedEndRange(scene,setup);
+  for(const k of ['child','adult']) {
+    assert.equal(sweep[k].clearanceSignMismatches,0,k);
+    assert.equal(sweep[k].lineTouchesIntervalsConfirmedByApp,true,k);assert.equal(sweep[k].boxDeepIntervalsConfirmedByApp,true,k);
+    assert.equal(sweep[k].appBlockedInsideBoxDeep,true,`${k}: no Blocked outside the box-deep intervals`);
+    assert.ok(sweep[k].rows.every(r=>['blocked','unknown','overlap'].includes(r.state)),k);
+    // Every row the app calls Blocked cuts at least 0.10 m into the box (no new Blocked).
+    assert.ok(sweep[k].rows.filter(r=>r.state==='blocked').every(r=>r.clearanceM<=-.1+1e-4),k);
+  }
+  const sample=samplePlacements(scene,{count:40}),honesty=honestyCounters(scene,setup,sample.placements);
+  assert.equal(sample.placements.length,40);assert.equal(honesty.sweepErrors,0);assert.equal(honesty.clearanceSignMismatches,0);
+  assert.equal(honesty.clearanceStateMismatches,0);assert.equal(honesty.borderline.blockedCutInLessThan,0);
+  assert.equal(honesty.startValues.conflictReportedBlocked,0);
+  assert.doesNotMatch(JSON.stringify([first,click,consistency,sweep,end,honesty]),/park/i);
+  if(!pinned)return;
+  assert.equal(crossingText(scene.suggestions.crossing),'crosswalk mapped ±0.18 m');
+  // Shape-v2 prediction 2: the first load is unchanged (the line misses the box, so step 6 never runs).
+  assert.deepEqual([first.current,first.proposed],['unknown','unknown']);near(first.clearanceM,.06241,1e-4,'first-load clearance');near(first.baselineSetbackM,.41981,1e-4);
+  for(const k of ['crossing','vehicleFront','person'])near(consistency.roles[k].pointUsed.horizontalM,0,1e-6,k);
+  near(consistency.roles.vehicleFront.pixelUVRayHit.horizontalM,1.028483,1e-6);
+  const band=x=>click.bands.find(b=>b.band===x);
+  near(band('12-25 m').shownUncertaintyCoverage,.962,1e-3);assert.equal(band('30-60 m').unknown['Too far to place (over 30 m).'],516);
+  // The v3.2 contract A6 intervals, now box-deep.
+  assert.deepEqual([sweep.child.lineTouchesIntervalsM,sweep.child.boxDeepIntervalsM,sweep.adult.boxDeepIntervalsM],[[[.6784,10.4562]],[[1.0928,10.0419]],[[6.0274,10.0419]]]);
+  assert.deepEqual([sweep.child.lineTouchesBoxRows,sweep.child.boxDeepRows,sweep.child.tooCloseToCallRows],[41,38,[.8532,10.1032,10.3532]]);
+  // Contract A14: the app's own rows with the shape (child Blocked from 2.59 m to 7.14 m of setback).
+  assert.deepEqual([sweep.child.count,sweep.child.blockedRows,sweep.child.heightNotProvenRows],[57,21,17]);
+  assert.deepEqual(sweep.child.appBlockedIntervalsM,[[2.5887,7.1354]]);
+  assert.deepEqual([sweep.adult.count,sweep.adult.blockedRows,sweep.adult.heightNotProvenRows,sweep.adult.boxDeepRows],[57,0,17,17]);
+  assert.deepEqual(sweep.adult.appBlockedIntervalsM,[]);
+  near(sweep.child.stopsBlockingAtRowM,10.6032,1e-3);
+  const range=end.stopsBlockingRange.child;
+  assert.deepEqual([range.combinations,range.skippedDriverPositions,range.lineTouchEndM.withoutInterval,range.boxDeepEndM.withoutInterval],[81,27,0,0]);
+  near(range.lineTouchEndM.nominal,10.4562,1e-4);near(range.boxDeepEndM.nominal,10.0419,1e-4);
+  assert.deepEqual([range.lineTouchEndM.range,range.boxDeepEndM.range],[[9.9651,10.7128],[9.558,10.2984]]);
+  // The stationary vehicle's own result across the driver slider: the v3.2 Blocked positions (332) are now Blocked (134)
+  // or height-not-proven (198); too close to call is unchanged.
+  const across=end.currentResultAcrossDriverPositions;
+  assert.deepEqual([across.blocked,across.heightNotProven,across.tooCloseToCall],[134,198,37]);
 });

@@ -22,7 +22,12 @@ an `isolation` block therefore adds three recorded controls to the labeler instr
 transcripts.json (coordinator-owned): {"sessions": {"L1/V01": ["<agent transcript .jsonl>", ...], ...}}
 
 Limits: the scan reads tool-call inputs only (Claude Code `tool_use`, Codex `function_call`, `custom_tool_call`,
-`local_shell_call`). A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
+`local_shell_call`). The agent's final report (Claude Code `SubagentHandback`, REPORT_TOOLS) is the reply the
+labeler instructions ask for, opens no file and is not scanned; reports are counted (`reportCalls`). A Claude Code Bash
+call's `description` (a display label, never run) is not scanned either: "Locate the magenta square" matched the
+`locate` rule in the L2/V01 transcript. Python comments in the text that a Claude Code Write or Edit call puts into a
+`.py` file are not scanned either (a comment never runs; the code and its strings still are): "to locate a horizontal
+edge" in a helper's comment matched the `locate` rule in the L1/V02 transcript (Sean approved this change). A path assembled at run time, or a relative path after `cd`, can evade the path rules; the name
 rules (sealed, answer-key, selftest, ...), the parent-folder (`..`) rule and the directory-walk rule narrow this but
 do not close it. The scan is recorded evidence, not proof.
 """
@@ -31,11 +36,13 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import glob
+import io
 import json
 import os
 import re
 import shutil
 import sys
+import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -45,6 +52,9 @@ from common import (LABELS_DIR, ROOT, canonical_json, load_protocol, read_json, 
 SCAN_SCHEMA = 'pao-labels-transcript-scan-v1'
 TOOL_CALL_FIELDS = {'tool_use': ('input',), 'server_tool_use': ('input',), 'function_call': ('arguments',),
                     'custom_tool_call': ('input',), 'local_shell_call': ('action',)}
+REPORT_TOOLS = ('SubagentHandback',)  # the final reply to the coordinator (section 7), not a file access
+DISPLAY_ONLY = {'Bash': ('description',)}  # Claude Code input fields shown to people, never executed
+WRITTEN_TEXT = {'Write': ('content',), 'Edit': ('old_string', 'new_string')}  # Claude Code file text (comments dropped in .py)
 ID = r'[A-Za-z0-9_-]+'
 SESSION_WORD = re.compile(r'(?<![\w-])(?:sessions|scratch)(?![\w-])', re.IGNORECASE)
 FLAG = re.compile(r'--(labeler|task)(?:=|\s+)[\'"]?(' + ID + ')')
@@ -169,6 +179,29 @@ def scan_rules(protocol):
     return {'forbidden': list(patterns), 'ownSessionPrefix': own, 'oneTaskPerAgent': True}
 
 
+def without_python_comments(text):
+    """The text with its Python comment tokens removed (a comment never runs). Unchanged if it does not tokenize."""
+    try:
+        comments = [t for t in tokenize.generate_tokens(io.StringIO(text).readline) if t.type == tokenize.COMMENT]
+    except (tokenize.TokenError, SyntaxError):
+        return text
+    lines = text.splitlines(keepends=True)
+    for token in reversed(comments):  # at most one comment per line; it ends before the line break
+        (row, start), (_, end) = token.start, token.end
+        lines[row - 1] = lines[row - 1][:start] + lines[row - 1][end:]
+    return ''.join(lines)
+
+
+def scanned_fields(name, value):
+    """A Claude Code tool input as the scan reads it: display-only fields left out, comments left out of .py text."""
+    if not isinstance(value, dict):
+        return value
+    value = {k: v for k, v in value.items() if k not in DISPLAY_ONLY.get(name, ())}
+    if name in WRITTEN_TEXT and str(value.get('file_path', '')).endswith('.py'):
+        value = {k: without_python_comments(v) if k in WRITTEN_TEXT[name] and isinstance(v, str) else v for k, v in value.items()}
+    return value
+
+
 def tool_inputs(node):
     """(tool name, input text) for every tool call anywhere in one transcript record."""
     stack = [node]
@@ -176,8 +209,10 @@ def tool_inputs(node):
         item = stack.pop()
         if isinstance(item, dict):
             kind = item.get('type')
-            if kind in TOOL_CALL_FIELDS:
+            if isinstance(kind, str) and kind in TOOL_CALL_FIELDS:  # some records carry a non-text 'type'
                 parts = [item[f] for f in TOOL_CALL_FIELDS[kind] if item.get(f) is not None]
+                if kind == 'tool_use':
+                    parts = [scanned_fields(item.get('name'), p) for p in parts]
                 yield str(item.get('name', kind)), ' '.join(p if isinstance(p, str) else json.dumps(p, sort_keys=True) for p in parts)
                 continue
             stack.extend(item.values())
@@ -217,7 +252,8 @@ def scan_transcript(path, labeler, task, rules):
     own = own_regex(rules, labeler, task)
     binding = re.compile(rf'--labeler(?:=|\s+)[\'"]?{re.escape(labeler)}\b.*--task(?:=|\s+)[\'"]?{re.escape(task)}\b|'
                          rf'--task(?:=|\s+)[\'"]?{re.escape(task)}\b.*--labeler(?:=|\s+)[\'"]?{re.escape(labeler)}\b', re.DOTALL)
-    out = {'name': Path(path).name, 'sha256': sha256_file(path), 'lines': 0, 'toolCalls': 0, 'bindingCalls': 0, 'hits': []}
+    out = {'name': Path(path).name, 'sha256': sha256_file(path), 'lines': 0, 'toolCalls': 0, 'reportCalls': 0, 'bindingCalls': 0,
+           'hits': []}
     with open(path, encoding='utf-8') as handle:
         for number, line in enumerate(handle, 1):
             out['lines'] += 1
@@ -230,6 +266,9 @@ def scan_transcript(path, labeler, task, rules):
                 out['hits'].append({'line': number, 'tool': None, 'rule': 'unreadable transcript line', 'excerpt': line[:120]})
                 continue
             for tool, text in tool_inputs(record):
+                if tool in REPORT_TOOLS:
+                    out['reportCalls'] += 1
+                    continue
                 out['toolCalls'] += 1
                 if binding.search(text):
                     out['bindingCalls'] += 1

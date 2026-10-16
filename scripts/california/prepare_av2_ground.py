@@ -16,6 +16,14 @@ stationary vehicle drawn at the average of all its annotations (poseAverage), an
 height band fitted on this development scene's camera-visible LiDAR ground returns (alongRayUncertainty)
 and a 30 m placement range limit (placementRangeLimitMeters). Protocols v1/v2 produce the schema-1 layer
 exactly as before.
+
+Protocol v3.4 (protocolRevision '3.4', pinning the frozen shape-v2 protocol in its carShape section) adds, and only then:
+ground.json schemaVersion 3 with the required key carShape, the recorded stationary vehicle's LiDAR shape built by
+car_shape.py from a hashed sweep plan and its receipted sweeps (--car-shape-dir with --car-shape-plan-sha256), or null
+(--no-car-shape) for a scene whose suggestions name no annotated stationary vehicle. Exactly one of the two is required;
+every other field is computed exactly as under v3.2. suggest_av2_placements.py refuses a layer whose carShape does not
+match its vehicle (present exactly when the vehicle is 'annotated', same track). Protocol v3.3 (shape-v1, 1.0 m sweep step)
+is history: it runs only from its committed files (8ec75f8); this file refuses it.
 """
 import argparse
 from importlib.metadata import version
@@ -34,6 +42,7 @@ sys.path.insert(0, str(SCRIPTS / 'sponsors'))
 sys.path.insert(0, str(HERE))
 from common import canonical, digest, parse, publish, record, require, snapshot  # noqa: E402
 import prepare_av2  # noqa: E402  (sampling rule, map decoding, Feather reading)
+import car_shape  # noqa: E402  (protocol v3.4: shape-v2 car shape)
 
 WORLD_FROM_CITY = np.array([[1., 0, 0], [0, 0, 1.], [0, -1., 0]])
 MAX_SCENE = 128 * 1024
@@ -528,7 +537,7 @@ def cuboids_from_annotations(data, poses, timestamp, origin, average_prefix=None
 
 
 def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_path, protocol_sha256,
-          annotations_path, annotations_sha256, output):
+          annotations_path, annotations_sha256, output, car_shape_dir=None, car_shape_plan_sha256=None, no_car_shape=False):
     output = Path(output).absolute()
     require(not os.path.lexists(output), 'Existing output retained')
     scene_path = Path(scene_path).resolve(); prepared_path = Path(prepared_path).resolve(); protocol_path = Path(protocol_path).resolve()
@@ -539,6 +548,20 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     protocol_version = protocol.get('protocolVersion', 1)
     require(protocol_version in (1, 2, 3), 'Unsupported protocol version')
     v3 = protocol_version == 3
+    # protocol v3.4: the carShape section pins the frozen shape-v2 protocol; ground.json becomes schemaVersion 3.
+    # Protocol v3.3 (shape-v1) also has a carShape section; it is history and refused here (it runs from 8ec75f8).
+    require(not (v3 and protocol.get('protocolRevision') == '3.3'), 'Protocol v3.3 (shape-v1) is history; it runs only from its committed files')
+    shaped = v3 and protocol.get('protocolRevision') == car_shape.PLACEMENT_PROTOCOL_VERSION
+    require(('carShape' in protocol) == shaped, 'Only protocol v3.4 carries a carShape section')
+    if shaped:
+        spec = protocol['carShape']
+        require(spec['shapeProtocol']['sha256'] == car_shape.SHAPE_PROTOCOL_SHA256 and spec['groundSchemaVersion'] == 3,
+                'Protocol v3.4 must pin the frozen shape-v2 protocol and ground schemaVersion 3')
+        require((car_shape_dir is not None) != bool(no_car_shape),
+                'Protocol v3.4 needs exactly one of --car-shape-dir (with --car-shape-plan-sha256) or --no-car-shape')
+    else:
+        require(car_shape_dir is None and not no_car_shape, 'A car shape exists only under protocol v3.4')
+    require((car_shape_dir is None) == (car_shape_plan_sha256 is None), '--car-shape-dir and --car-shape-plan-sha256 go together')
     if v3:
         pose_rule = protocol['currentVehicle']['pose']['rule']; limit = protocol['placementRange']['limitMeters']
         require(pose_rule == 'averageAllAnnotations' and type(limit) is float and 0 < limit <= tol['maxRangeMeters'],
@@ -618,13 +641,20 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     require(mismatch == 0, 'World-based terrain lookup disagrees with prepare_av2.ground_sample')
 
     timestamp = int(p_scene['annotationTimestampNs']); cuboids = []
-    annotations_record = None
+    annotations_record = None; ann = None
     if annotations_path is not None:
         annotations_path = Path(annotations_path).resolve()
         ann = snapshot(annotations_path, annotations_sha256, MAX_FILE)
         cuboids = cuboids_from_annotations(ann, _poses(captured['poses']), timestamp, origin,
                                            protocol['currentVehicle']['trackPrefix'] if v3 else None)
         annotations_record = record(annotations_path, ann, output)
+    shape_block = None
+    if car_shape_dir is not None:  # protocol v3.4: the single averaged stationary vehicle's LiDAR shape
+        require(ann is not None, 'The car shape needs the annotations')
+        averaged = [c for c in cuboids if 'poseAverage' in c]
+        require(len(averaged) == 1, 'No single averaged stationary vehicle: the car shape does not apply (use --no-car-shape)')
+        shape_block = car_shape.build_car_shape(car_shape_dir, car_shape_plan_sha256, averaged[0], origin, ann,
+                                                captured['poses'], protocol_sha256)
     road_tol = tol['roadToleranceMeters']
     rows, stats = support_rows(positions, eligible, terrain, cuboids if annotations_path is not None else None,
                                tol['supportHeightAgreementMeters'])
@@ -670,7 +700,8 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
                     'rule': 'row is leftEligible, finite, not behind an annotated cuboid from the camera, and |worldY-(terrain(row)-cityOrigin[2])| <= supportHeightAgreementMeters',
                     **stats, 'preparedLookupMismatches': mismatch},
         'processingCodeHashes': {str(path.relative_to(SCRIPTS)): digest(path.read_bytes()) for path in
-                                 (Path(__file__).resolve(), HERE / 'prepare_av2.py', SCRIPTS / 'sponsors/common.py')},
+                                 (Path(__file__).resolve(), HERE / 'prepare_av2.py', SCRIPTS / 'sponsors/common.py',
+                                  *((HERE / 'car_shape.py',) if shaped else ()))},
         'dependencies': {name: version(name) for name in ('numpy', 'pyarrow')},
         'license': LICENSE,
         'limitations': ['Mapped ground is publisher terrain inside mapped drivable areas, not observed road; support classes describe nearby LiDAR agreement only.',
@@ -691,6 +722,8 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
              'Protocol v3: the along-ray uncertainty uses a height band fitted on this development scene\'s camera-visible LiDAR ground '
              'returns (in-sample; not a held-out test, and the LiDAR shares calibration with the camera).'),
             f'Protocol v3: a mapped-ground hit more than {limit:g} m from the camera (horizontal) is refused.']
+    if shaped:
+        ground.update(schemaVersion=3, carShape=shape_block)
     _no_absolute(ground, 'ground.json')
     ground_bytes = canonical(ground)
     grounded = parse(scene_raw)
@@ -711,6 +744,12 @@ def build(scene_path, scene_sha256, prepared_path, prepared_sha256, protocol_pat
     if v3:
         result.update(heightBandMeters=v3_fields['alongRayUncertainty']['heightBandMeters'],
                       averagedTracks=[c['track'] for c in cuboids if 'poseAverage' in c])
+    if shaped:
+        result['carShape'] = None if shape_block is None else {
+            'status': shape_block['status'], 'track': shape_block['track'],
+            'refusal': None if shape_block['refusal'] is None else shape_block['refusal']['code'],
+            'solidCells': sum(v is not None for v in shape_block['solidTopM']), 'cells': len(shape_block['solidTopM']),
+            'shapeSweeps': len(shape_block['sweeps']['shape']), 'planSha256': shape_block['sweeps']['planSha256']}
     return result
 
 
@@ -719,12 +758,16 @@ def main():
     for name in ('scene', 'scene-sha256', 'prepared', 'prepared-sha256', 'protocol', 'protocol-sha256', 'output'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--annotations'); parser.add_argument('--annotations-sha256')
+    parser.add_argument('--car-shape-dir', help='protocol v3.4: the shape-v2 sweep plan directory (.local/data/av2/shape-v2-<log>/)')
+    parser.add_argument('--car-shape-plan-sha256', help='protocol v3.4: sha256 of its sweep-plan.json (printed by car_shape.py plan)')
+    parser.add_argument('--no-car-shape', action='store_true', help='protocol v3.4: carShape null (no annotated stationary vehicle)')
     args = parser.parse_args()
     if (args.annotations is None) != (args.annotations_sha256 is None):
         parser.exit(1, 'AV2 ground layer rejected: --annotations and --annotations-sha256 go together\n')
     try:
         result = build(args.scene, args.scene_sha256, args.prepared, args.prepared_sha256, args.protocol, args.protocol_sha256,
-                       args.annotations, args.annotations_sha256, args.output)
+                       args.annotations, args.annotations_sha256, args.output, args.car_shape_dir, args.car_shape_plan_sha256,
+                       args.no_car_shape)
     except (ValueError, OSError, KeyError, TypeError, AttributeError) as error:
         parser.exit(1, f'AV2 ground layer rejected: {error}\n')
     print(canonical(result).decode())

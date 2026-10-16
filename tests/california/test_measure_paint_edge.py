@@ -24,8 +24,9 @@ SCRIPT = ROOT / 'scripts/california/measure_paint_edge.py'
 spec = importlib.util.spec_from_file_location('measure_paint_edge', SCRIPT)
 tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(tool)
 
-# Same values as protocol v4 (.local/evaluation/pao-paint/protocol-v4.json) except bootstrapReps (1000 there; the
+# Same values as protocol v5 (.local/evaluation/pao-paint/protocol-v5.json) except bootstrapReps (1000 there; the
 # strip bootstrap is a diagnostic only since v4), reduced for test speed; tests never read .local.
+# v5 differs from v4 only in estimatorA's laser tail window keys and the uncertainty method keys (see PARAMS_V4).
 PARAMS = {
     'sweepSelection': {'count': 15, 'lidarSensor': 'up_lidar', 'edgeAheadRangeM': [5.0, 30.0], 'maxHeadingToEdgeNormalDeg': 30.0},
     'groundBand': {'belowM': -0.10, 'aboveM': 0.10},
@@ -34,7 +35,9 @@ PARAMS = {
     'estimatorA': {'stripWidthM': 0.15, 'stripOffsetM': 0.0, 'minStripWidthM': 0.075, 'minReferenceReturns': 20,
                    'roadMedianFloor': 1.0, 'ratio': 3.0, 'laserReferenceMinReturns': 20, 'laserTailQuantile': 0.90,
                    'onsetLookaheadReturns': 3, 'onsetMinPaintInLookahead': 2, 'confirmWindowM': 0.5, 'confirmMinPaintReturns': 3,
-                   'confirmMinPaintFraction': 0.5, 'continuityWindowM': 1.0, 'maxIntervalM': 0.5, 'minStrips': 6},
+                   'confirmMinPaintFraction': 0.5, 'continuityWindowM': 1.0, 'maxIntervalM': 0.5, 'minStrips': 6,
+                   'laserTailRegion': 'stripLateralWindow', 'laserTailLateralMarginM': 0.5, 'laserTailMaxLateralMarginM': 1.0,
+                   'laserTailMarginStepM': 0.25},
     'estimatorB': {'stripWidthM': 0.15, 'stripOffsetM': 0.075, 'minStripWidthM': 0.075, 'minLaserReferenceReturns': 30,
                    'gainFloor': 1.0, 'segmentLengthM': 0.05, 'minReturnsPerSegment': 1, 'minSegments': 20,
                    'minSegmentsEachSide': 6, 'alpha': 1e-4, 'minAuc': 0.70, 'minStrips': 5},
@@ -42,11 +45,17 @@ PARAMS = {
     'maxEstimatorSdM': 0.075,
     'evaluationPoint': 'centerOfLongestCoveredRun',
     'uncertainty': {'bootstrapReps': 200, 'minLeaveOneOutMeasuredFraction': 0.9, 'seed': 20261012,
-                    'maxSlopeDeg': 10.0, 'slopeStep': 0.002},
+                    'maxSlopeDeg': 10.0, 'slopeStep': 0.002, 'method': 'maxOfBoth', 'sweepGroups': 5,
+                    'sweepGroupLayout': 'interleaved'},
     'coverage': {'stripWidthM': 0.25, 'halfWindowM': 0.5, 'minReturns': 3},
     'shadow': {'obstacleHeightM': [0.3, 3.0], 'skipNearLidarM': 1.0, 'stopBeforeTargetM': 0.5, 'corridorHalfWidthM': 0.25,
                'minObstacleReturns': 3, 'minObstructedFraction': 0.5, 'egoBoxM': [-1.5, 4.5, 1.2]},
 }
+PARAMS_V4 = copy.deepcopy(PARAMS)
+for _key in ('laserTailRegion', 'laserTailLateralMarginM', 'laserTailMaxLateralMarginM', 'laserTailMarginStepM'):
+    del PARAMS_V4['estimatorA'][_key]
+for _key in ('method', 'sweepGroups', 'sweepGroupLayout'):
+    del PARAMS_V4['uncertainty'][_key]
 CORRIDOR = (-1.75, 4.75)
 EVAL_L = (CORRIDOR[0] + CORRIDOR[1]) / 2
 # Median ground-ring radii (m) of the AV2 roof LiDAR pair, from the x/y/z geometry of one development sweep
@@ -59,7 +68,9 @@ def ring_cloud(paint, seed=1, distances=None, road=4.0, paint_level=20.0, outlie
 
     `paint(S, L)` marks painted ground. Each sweep's sensor sits at S=-d, L=0; each ring is one laser with
     its own gain. `drop(S, L)` removes returns (a LiDAR shadow). `sampler(painted, ring_index, rng)` replaces the
-    gain/noise intensity model (for intensity distributions measured on development crossings)."""
+    gain/noise intensity model (for intensity distributions measured on development crossings); a sampler with
+    attribute `lateral = True` is called as sampler(painted, ring_index, rng, S, L) so the road can vary across
+    the corridor (lane line, curbside band). Other samplers draw exactly the same random numbers as before."""
     rng = np.random.default_rng(seed)
     distances = np.linspace(30.0, 10.0, 15) if distances is None else distances
     gains = rng.uniform(0.8, 1.25, len(RINGS))
@@ -78,6 +89,8 @@ def ring_cloud(paint, seed=1, distances=None, road=4.0, paint_level=20.0, outlie
             if sampler is None:
                 level = np.where(painted, paint_level, road)
                 I = np.clip(np.round(rng.normal(level, 0.25 * level) * gains[j]), 0, 255)
+            elif getattr(sampler, 'lateral', False):
+                I = np.asarray(sampler(painted, j, rng, S, L), float)
             else:
                 I = np.asarray(sampler(painted, j, rng), float)
             if outliers:
@@ -101,6 +114,45 @@ def dark_road_sampler(painted, ring, rng):
         road = rng.choice([1, 2, 3, 4, 5, 6], n, p=[0.22, 0.55, 0.15, 0.04, 0.02, 0.02])
     paint = np.clip(np.round(rng.normal(13.0, 4.0, n)), 0, 255)
     return np.where(painted, paint, road)
+
+
+def lateral_road_sampler(seed, edge, full=False, corridor=CORRIDOR, band_share=None, line=True, band_on=True):
+    """Laterally varying road (v4 review of 8c: a lane line at L 2.0-2.5 m and a bright curbside band at L 3.5-5.5 m
+    inside the road reference window). Its own parameters are drawn from `seed`:
+      dark lane road as in dark_road_sampler (median 2, far rings 6-8);
+      a solid lane line 0.15-0.5 m wide, intensity ~20 x laser gain (25% noise), at a random L in the lane part;
+      a curbside band at the right corridor end, 25-45% of the corridor width (or `band_share`), median 5-11 x gain;
+      dim paint: per laser, round(band upper tail) + 1, 2 or 3 units, with 25% noise, where the band upper tail is
+      the band's 0.90 quantile, about median x gain x (1 + 1.2816 x 0.25).
+    full=False: line and band only in the road reference window (S < -3 m), the mechanism the review found;
+    full=True: the band runs along the whole road and the line stops 0.5-1.5 m before the paint edge."""
+    prm = np.random.default_rng(seed)
+    gains = prm.uniform(0.8, 1.25, len(RINGS))
+    width = corridor[1] - corridor[0]
+    share = prm.uniform(0.25, 0.45) if band_share is None else band_share
+    band_lo = corridor[1] - share * width
+    band_median = prm.uniform(5.0, 11.0)
+    line_w = prm.uniform(0.15, 0.5)
+    line_c = prm.uniform(corridor[0] + 0.5 + line_w / 2, max(corridor[0] + 0.5 + line_w / 2, band_lo - 0.5 - line_w / 2))
+    line_end = edge - prm.uniform(0.5, 1.5) if full else -3.0
+    band_end = 99.0 if full else -3.0
+    band_tail = band_median * gains * (1 + 1.2816 * 0.25)
+    paint_level = np.round(band_tail) + prm.integers(1, 4, len(RINGS))
+
+    def sampler(painted, ring, rng, S, L):
+        I = dark_road_sampler(np.zeros(len(S), bool), ring, rng).astype(float)
+        on_band = (L >= band_lo) & (S < band_end) if band_on else np.zeros(len(S), bool)
+        on_line = (np.abs(L - line_c) <= line_w / 2) & (S < line_end) if line else np.zeros(len(S), bool)
+        I[on_band] = np.round(rng.normal(band_median, 0.25 * band_median, on_band.sum()) * gains[ring])
+        I[on_line] = np.round(rng.normal(20.0, 5.0, on_line.sum()) * gains[ring])
+        level = paint_level[ring]
+        I[painted] = np.round(rng.normal(level, 0.25 * level, painted.sum()))
+        return np.clip(I, 0, 255)
+    sampler.lateral = True
+    sampler.gains = gains; sampler.band_lo = float(band_lo); sampler.band_median = float(band_median)
+    sampler.description = {'bandL': [float(band_lo), corridor[1]], 'bandMedian': float(band_median), 'lineL': [float(line_c - line_w / 2), float(line_c + line_w / 2)],
+                           'lineEndS': float(line_end), 'bandEndS': float(band_end), 'paintLevelMedian': float(np.median(paint_level))}
+    return sampler
 
 
 def band(edge, width=3.0, slope=0.0):
@@ -199,6 +251,31 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(tool.combine(a, b, self.loo(agreeing=14), PARAMS)['label'], 'marginally resolved')
         self.assertEqual(tool.combine(a, b, self.loo(sd_mean=0.08), PARAMS)['label'], 'marginally resolved')
 
+    def test_stated_plus_minus_is_two_combined_sigma_and_labelled(self):
+        a = {'status': 'measured', 'edgeSAtEval': 0.30}; b = {'status': 'measured', 'edgeSAtEval': 0.25}
+        u = tool.combine(a, b, self.loo(), PARAMS)['uncertainty']
+        self.assertAlmostEqual(u['statedPlusMinusM'], 2 * u['combinedM'])
+        self.assertIn('2 x combinedM', u['statedPlusMinusLabel']); self.assertIn('not calibrated', u['statedPlusMinusLabel'])
+
+    def test_sweep_groups_and_precision_methods(self):
+        self.assertEqual(tool.sweep_groups(range(15), 5, 'interleaved'),
+                         [[0, 5, 10], [1, 6, 11], [2, 7, 12], [3, 8, 13], [4, 9, 14]])
+        self.assertEqual(tool.sweep_groups(range(15), 5, 'consecutive')[0], [0, 1, 2])
+        with self.assertRaises(ValueError):
+            tool.sweep_groups(range(15), 5, 'random')
+        loo = self.loo(sd_a=0.02, sd_b=0.05, frac_a=1.0, frac_b=14 / 15, agreeing=15, sd_mean=0.03)
+        grp = {'runs': 5, 'agreeing': 4, 'A': {'measuredFraction': 0.8, 'jackknifeSdM': 0.04},
+               'B': {'measuredFraction': 1.0, 'jackknifeSdM': 0.01}, 'mean': {'bothMeasured': 5, 'jackknifeSdM': 0.02}}
+        self.assertIs(tool.precision(loo, None, 'leaveOneSweepOut'), loo)
+        self.assertIs(tool.precision(loo, grp, 'sweepGroups'), grp)
+        both = tool.precision(loo, grp, 'maxOfBoth')
+        self.assertEqual((both['runs'], both['agreeing']), (20, 19))
+        self.assertEqual((both['A']['jackknifeSdM'], both['A']['measuredFraction']), (0.04, 0.8))
+        self.assertEqual((both['B']['jackknifeSdM'], both['B']['measuredFraction']), (0.05, 14 / 15))
+        self.assertEqual(both['mean']['jackknifeSdM'], 0.03)
+        with self.assertRaises(ValueError):
+            tool.precision(loo, None, 'sweepGroups')
+
     def test_jackknife_sd_formula(self):
         v = [0.1, 0.2, 0.4, None]
         x = np.array([0.1, 0.2, 0.4])
@@ -217,11 +294,29 @@ class EstimatorTests(unittest.TestCase):
         self.assertAlmostEqual(final['paintEdgeS'], expected, delta=tol)
         self.assertGreater(final['uncertainty']['combinedM'], 0)
 
+    def assert_near_or_unresolved_by_jackknife(self, result, expected, tol=0.10):
+        """Both estimators measure near the truth on all sweeps; the edge is either resolved near it or left
+        unresolved by the leave-out precision gate (never confidently wrong)."""
+        a, b, final = result
+        self.assertAlmostEqual(a['edgeSAtEval'], expected, delta=tol)
+        self.assertAlmostEqual(b['edgeSAtEval'], expected, delta=tol)
+        if final['status'] == 'resolved':
+            self.assertAlmostEqual(final['paintEdgeS'], expected, delta=tol)
+        else:
+            self.assertIn('jackknife', final['reason'])
+
     def test_known_edge_beyond_map(self):
         self.assert_resolved_near(measure(ring_cloud(band(0.40))), 0.40)
 
     def test_known_edge_before_map(self):
-        self.assert_resolved_near(measure(ring_cloud(band(-1.20))), -1.20)
+        # v5 (max of the leave-one-sweep-out and 5 interleaved sweep-group jackknifes): B does not measure when
+        # sweeps {3, 8, 13} are left out, so B measures in 4 of 5 group runs (< 90%) and this cloud is unresolved;
+        # under v4 (leave-one-sweep-out only) it resolves.
+        result = measure(ring_cloud(band(-1.20)))
+        self.assert_near_or_unresolved_by_jackknife(result, -1.20, tol=0.08)
+        self.assertEqual(result[2]['status'], 'unresolved')
+        self.assertEqual(result[2]['sweepGroupJackknife']['B']['measuredFraction'], 0.8)
+        self.assert_resolved_near(measure(ring_cloud(band(-1.20)), PARAMS_V4), -1.20)
 
     def test_skewed_edge_recovers_slope(self):
         a, b, final = measure(ring_cloud(band(0.20, slope=0.05)))
@@ -230,10 +325,17 @@ class EstimatorTests(unittest.TestCase):
         self.assertAlmostEqual(b['slope'], 0.05, delta=0.03)
 
     def test_continental_bars_with_gaps(self):
+        # v5 notes. Tail window: with a fixed +/- 0.5 m window (no widening) the far rings (24-26 m) have fewer than 20
+        # reference returns per strip and are dropped; in this cloud they hold the returns nearest the edge, so A's
+        # leave-one-sweep-out sd rose to 0.16 m. The per-laser widening to at most +/- 1.0 m keeps them (A -0.296 m,
+        # leave-one-sweep-out sd 0.049 m). Uncertainty: leaving out sweeps {2, 7, 12} moves A and B to about -0.40 m, so
+        # the sweep-group jackknife sds are 0.106 m (A) and 0.088 m (B) > 0.075 m and v5 leaves the cloud unresolved.
         bars = lambda S, L: band(-0.30)(S, L) & (np.mod(L - CORRIDOR[0], 1.2) < 0.6)
         result = measure(ring_cloud(bars, seed=4))
-        self.assert_resolved_near(result, -0.30, tol=0.10)
+        self.assert_near_or_unresolved_by_jackknife(result, -0.30, tol=0.10)
         self.assertGreater(result[0]['stripStatus'].get('noPaint', 0), 0)
+        self.assertLessEqual(result[2]['leaveOneSweepOut']['A']['jackknifeSdM'], 0.075)
+        self.assert_resolved_near(measure(ring_cloud(bars, seed=4), PARAMS_V4), -0.30, tol=0.10)
 
     def test_narrow_bars_like_a_continental_crosswalk(self):
         bars = lambda S, L: band(0.15)(S, L) & (np.mod(L - CORRIDOR[0], 0.75) < 0.3)
@@ -343,6 +445,116 @@ class DarkRoadTests(unittest.TestCase):
             self.assertEqual(a['status'], 'measured', a.get('reason'))
             self.assertAlmostEqual(a['edgeSAtEval'], edge, delta=0.06)
             self.assertGreater(a['returnsWithoutLaserReference'], 0)
+
+
+class LateralRoadTests(unittest.TestCase):
+    """Protocol v5: estimator A's laser tails come from the strip's own lateral neighbourhood (strip +/- 0.5 m in the
+    road reference window, widened per laser in 0.25 m steps to at most +/- 1.0 m when the laser has fewer than 20
+    returns there), so a bright lane line or curbside band elsewhere cannot raise them (v4 review, 8c)."""
+
+    def test_tail_window_widens_the_strip_and_clips_to_the_corridor(self):
+        m = PARAMS['estimatorA']['laserTailLateralMarginM']
+        self.assertEqual(tool.tail_window(0.0, 0.15, CORRIDOR, m), (-0.5, 0.65))
+        self.assertEqual(tool.tail_window(-1.75, -1.6, CORRIDOR, m), (-1.75, -1.1))
+        self.assertEqual(tool.tail_window(4.6, 4.75, CORRIDOR, m), (4.1, 4.75))
+
+    def test_strip_tails_ignore_bright_returns_outside_the_window_and_drop_sparse_lasers(self):
+        corridor = (0.0, 3.0)
+        ss = np.round(np.arange(-1.0, 1.0, 0.02), 3)
+        S = np.r_[np.full(40, -5.0), np.full(40, -5.0), np.full(10, -5.0), ss, np.full(5, 0.5)]
+        L = np.r_[np.full(40, 0.05), np.full(40, 2.5), np.full(10, 0.05), np.full(len(ss), 0.05), np.full(5, 0.05)]
+        I = np.r_[np.full(40, 2.0), np.full(40, 30.0), np.full(10, 2.0), np.where(ss >= 0.0, 12.0, 2.0), np.full(5, 50.0)]
+        laser = np.r_[np.zeros(40, int), np.zeros(40, int), np.ones(10, int), np.zeros(len(ss), int), np.ones(5, int)]
+        v5 = tool.estimator_a(S, L, I, laser, corridor, 0.075, PARAMS, PARAMS['windows'], strip_bootstrap=False)
+        row = v5['strips'][0]
+        self.assertEqual(row['tailWindowL'], [0.0, 0.65])
+        self.assertEqual(row['lasersWithTail'], 1)                 # laser 1 has 10 < 20 reference returns even at +/- 1.0 m
+        self.assertEqual(row['lasersWidened'], 0)
+        self.assertEqual(row['returnsWithoutLaserReference'], 5)    # its bright search-window returns are not used
+        self.assertEqual(row['status'], 'edge')
+        self.assertLessEqual(row['interval'][0], 0.0); self.assertGreaterEqual(row['interval'][1], 0.0)
+        # version 4: laser 0's corridor-wide 0.90 quantile is 30 (the bright line at L 2.5 m), so the 12-unit paint fails
+        v4 = tool.estimator_a(S, L, I, laser, corridor, 0.075, PARAMS_V4, PARAMS['windows'], strip_bootstrap=False)
+        self.assertEqual(v4['strips'][0]['status'], 'noPaint')
+        bad = copy.deepcopy(PARAMS); bad['estimatorA']['laserTailRegion'] = 'coveredRun'
+        with self.assertRaises(ValueError):
+            tool.estimator_a(S, L, I, laser, corridor, 0.075, bad, PARAMS['windows'], strip_bootstrap=False)
+
+    def test_sparse_laser_widens_its_own_window_in_steps_up_to_the_cap(self):
+        corridor = (0.0, 3.0)
+        A = PARAMS['estimatorA']
+        self.assertEqual(tool.tail_margins(A), [0.5, 0.75, 1.0])
+        self.assertEqual(tool.tail_margins(PARAMS_V4['estimatorA'] | {'laserTailLateralMarginM': 0.5}), [0.5])
+        # laser 0: 30 returns at L 0.1 (inside +/- 0.5 m of strip [0, 0.15)); laser 1: 12 at L 0.6 and 12 at L 0.85
+        # (24 within +/- 0.75 m, 12 within +/- 0.5 m); laser 2: 25 at L 1.2 (outside +/- 1.0 m); a bright line at L 2.5.
+        S = np.full(30 + 24 + 25 + 40, -5.0)
+        L = np.r_[np.full(30, 0.1), np.full(12, 0.6), np.full(12, 0.85), np.full(25, 1.2), np.full(40, 2.5)]
+        I = np.r_[np.arange(30) % 5, np.full(24, 3.0), np.full(25, 9.0), np.full(40, 30.0)]
+        laser = np.r_[np.zeros(30, int), np.ones(24, int), np.full(25, 2), np.zeros(40, int)]
+        in_ref = np.ones(len(S), bool)
+        tails, used = tool.strip_laser_tails(S, L, I, laser, in_ref, 0.0, 0.15, corridor, tool.tail_margins(A), PARAMS, PARAMS['windows'])
+        self.assertEqual(used, {0: 0.5, 1: 0.75})
+        self.assertEqual(tails[0], float(np.quantile(np.arange(30) % 5, 0.9)))   # the bright line 2.4 m away is not used
+        self.assertEqual(tails[1], 3.0)
+        self.assertNotIn(2, tails)
+
+    def test_bright_curbside_band_in_reference_window_moves_a_by_at_most_3cm(self):
+        # 8c-like: dark lane road; a bright curbside band over the right 40% of the corridor only in S -7..-3; that
+        # side shadowed near the edge (8c: stationary vehicle); dim paint 1-3 units above the band's upper tail.
+        # The same cloud is measured with and without the band (intensities replaced with a separate generator).
+        # Seeds 5 and 6 were picked from 12 tried (0-11) because the version-4 corridor-wide tails move A by more than
+        # 0.03 m there (0.043, 0.056 m); the version-5 shift was <= 0.0283 m in all 12 (fixed +/- 0.5 m window and the
+        # adopted widening to +/- 1.0 m alike).
+        for seed in (5, 6):
+            smp = lateral_road_sampler(seed, 0.0, band_share=0.4, line=False, band_on=False)
+            edge = float(np.random.default_rng(seed).uniform(-0.8, 0.8))
+            shadow = lambda S, L: (L >= smp.band_lo) & (S > -2.0)
+            S, L, I, laser, k = ring_cloud(band(edge), seed=seed, sampler=smp, drop=shadow)
+            on = (L >= smp.band_lo) & (S >= -7.0) & (S < -3.0)
+            rng = np.random.default_rng(seed + 1000)
+            J = I.copy()
+            J[on] = np.clip(np.round(rng.normal(smp.band_median, 0.25 * smp.band_median, on.sum()) * smp.gains[laser[on]]), 0, 255)
+            shift = {}
+            for name, params in (('v5', PARAMS), ('v4', PARAMS_V4)):
+                a0 = tool.estimator_a(S, L, I, laser, CORRIDOR, EVAL_L, params, params['windows'], strip_bootstrap=False)
+                a1 = tool.estimator_a(S, L, J, laser, CORRIDOR, EVAL_L, params, params['windows'], strip_bootstrap=False)
+                self.assertEqual(a1['status'], 'measured', a1.get('reason'))
+                shift[name] = a1['edgeSAtEval'] - a0['edgeSAtEval']
+                if name == 'v5':  # strips whose widest tail window (+/- 1.0 m) misses the band are untouched
+                    far = [i for i, r in enumerate(a0['strips']) if r['L'][1] + 1.0 <= smp.band_lo]
+                    self.assertGreater(len(far), 15)
+                    for i in far:
+                        self.assertEqual(a0['strips'][i], a1['strips'][i])
+            self.assertLessEqual(abs(shift['v5']), 0.03, shift)
+            self.assertGreater(abs(shift['v4']), 0.03, shift)
+
+    def test_lateral_road_sampler_matches_its_description(self):
+        smp = lateral_road_sampler(3, 0.2, full=True)
+        S, L, I, laser, k = ring_cloud(band(0.2), seed=3, sampler=smp)
+        d = smp.description
+        road = (S < 0.2)
+        in_band = road & (L >= d['bandL'][0]); lane = road & (L < d['lineL'][0] - 0.3)
+        self.assertGreater(np.median(I[in_band]), 3 * np.median(I[lane]) - 1)
+        line = (L > d['lineL'][0] + 0.02) & (L < d['lineL'][1] - 0.02) & (S < d['lineEndS'])
+        self.assertGreater(np.median(I[line]), 14)
+        self.assertLess(np.median(I[(L > d['lineL'][0]) & (L < d['lineL'][1]) & (S > d['lineEndS'] + 0.05) & (S < 0.2)]), 4)
+        self.assertTrue(-1.5 <= d['lineEndS'] - 0.2 <= -0.5)
+
+
+class VariantDiagnosticsTests(unittest.TestCase):
+    def test_estimator_a_variants_reproduce_the_named_rules(self):
+        S, L, I, laser, k = ring_cloud(band(0.1), seed=21)
+        frame = frame_stub()
+        out = tool.estimator_a_variants(S, L, I, laser, frame, PARAMS)
+        v4 = tool.estimator_a(S, L, I, laser, CORRIDOR, EVAL_L, PARAMS_V4, PARAMS['windows'], strip_bootstrap=False)
+        self.assertEqual(out['corridorWideTailsV4']['edgeSAtEval'], v4['edgeSAtEval'])
+        self.assertEqual(out['corridorWideTailsV4']['laserTailRegion'], 'corridor')
+        fixed = copy.deepcopy(PARAMS)
+        for key in ('laserTailMaxLateralMarginM', 'laserTailMarginStepM'):
+            del fixed['estimatorA'][key]
+        f = tool.estimator_a(S, L, I, laser, CORRIDOR, EVAL_L, fixed, PARAMS['windows'], strip_bootstrap=False)
+        self.assertEqual(out['fixedWindowNoWidening']['edgeSAtEval'], f['edgeSAtEval'])
+        self.assertEqual(set(out), {'note', 'corridorWideTailsV4', 'noRunRule', 'laserTailAtMinimum', 'fixedWindowNoWidening'})
 
 
 class EvaluationPointTests(unittest.TestCase):

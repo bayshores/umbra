@@ -59,6 +59,36 @@ class Truth:
         span = self.column_span(i)
         return span is not None and span[0] <= j <= span[1]
 
+    def coverage(self, i, j, paint=False):
+        """Synthetic only: the covered fraction (0..1) of pixel (column i, row j); 0 outside the coverage map."""
+        cov, (x0, y0) = self._coverage_map(paint)
+        if not (0 <= j - y0 < cov.shape[0] and 0 <= i - x0 < cov.shape[1]):
+            return 0.0
+        return float(cov[j - y0, i - x0])
+
+    def coverage_beyond(self, feature, pos):
+        """Synthetic only: the largest car coverage of any pixel beyond line position `pos` of extreme `feature`
+        (L: columns <= pos - 1, R: columns >= pos, T: rows <= pos - 1, B: rows >= pos)."""
+        cov, (x0, y0) = self._coverage_map(False)
+        if feature == 'L':
+            part = cov[:, :max(0, pos - x0)]
+        elif feature == 'R':
+            part = cov[:, max(0, pos - x0):]
+        elif feature == 'T':
+            part = cov[:max(0, pos - y0), :]
+        elif feature == 'B':
+            part = cov[max(0, pos - y0):, :]
+        else:
+            raise ValueError(feature)
+        return float(part.max()) if part.size else 0.0
+
+    def _coverage_map(self, paint):
+        if self.source != 'synthetic':
+            raise ValueError('coverage maps exist for synthetic cases only')
+        if paint:
+            return self.entry['_paintCoverage'], self.entry['paintCoverageOrigin']
+        return self.entry['_coverage'], self.entry['coverageOrigin']
+
     def paint_covered(self, i, j):
         if self.source == 'synthetic':
             cov = self.entry['_paintCoverage']

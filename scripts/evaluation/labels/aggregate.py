@@ -88,7 +88,9 @@ def combine(feature, entries, spread_max, column_spread_max=None):
     """entries: {labeler: feature result or None}. Returns the aggregated record.
 
     column_spread_max (protocol v2): roofline stations sit at each labeler's own columns; they are combined only
-    when those columns differ by at most this many pixels.
+    when those columns differ by at most this many pixels (0 under 'labelerExtremesOnGrid': identical grid columns).
+    A resolved record carries rangeHalfWidthPx (the largest of the labelers' stated +/-) when the session results
+    have one (protocol v2 search.ambiguity); v1 records are unchanged.
     """
     values, columns = {}, {}
     for labeler, result in entries.items():
@@ -116,6 +118,9 @@ def combine(feature, entries, spread_max, column_spread_max=None):
     record.update(status='resolved', value=float(np.median(list(values.values()))))
     if columns:
         record['column'] = int(np.median(list(columns.values())))
+    halves = [float(r['rangeHalfWidthPx']) for r in entries.values() if r and 'rangeHalfWidthPx' in r]
+    if halves:  # protocol v2 (search.ambiguity): the widest stated +/- of the labelers' range results (0 = ordinary)
+        record['rangeHalfWidthPx'] = max(halves)
     return record
 
 

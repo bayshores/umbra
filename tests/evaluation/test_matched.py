@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 from PIL import Image
@@ -176,6 +177,18 @@ class MatchedTests(unittest.TestCase):
         self.observation.update(split='heldoutCandidate', developmentExposed=False)
         with self.assertRaisesRegex(ValueError, 'threshold lock'):
             self.evaluate()
+
+    def test_non_development_refused_before_any_artifact_read(self):
+        other = copy.deepcopy(self.observation)
+        other.update(id='another-development', siteGroup='another-group',
+                     sources=[self.pin('other.bin', b'other analytic source', role='left')])
+        self.manifest['observations'].insert(0, other)
+        for split in ('heldoutCandidate', 'unassigned'):
+            self.observation.update(split=split, developmentExposed=False, modelExposure='verifiedAbsent')
+            with self.subTest(split=split), mock.patch.object(matched, 'artifact', side_effect=AssertionError('artifact read')) as read, \
+                    self.assertRaisesRegex(ValueError, 'threshold lock'):
+                self.evaluate()
+            read.assert_not_called()
 
     def test_duplicate_ids_and_json_keys(self):
         with self.assertRaisesRegex(ValueError, 'Duplicate observation'):

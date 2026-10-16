@@ -1,0 +1,40 @@
+{
+ "runs": [
+  {
+   "logId": "25e5c600-36fe-3245-9cc0-40ef91620c22",
+   "crossingId": "2659878",
+   "siteRecordSha256": "164799b1d14a8d79294eb7e0e34f92f4d0508d9d05b19db978eb83b1f6c13e91",
+   "paintRecordSha256": "37efc1f0e3b90dec06158e8248b074ee2f8b3fc879a7c4fe5295ca9e585dac03"
+  },
+  {
+   "logId": "3153b5b3-d381-3664-8f82-1d3c5ca841d2",
+   "crossingId": "2659599",
+   "siteRecordSha256": "4242a52a698b0e391645e9d9a7636a5bd5bfcf8f238f4b3f9a234159fba3e257",
+   "paintRecordSha256": "ffa11df506771e9bef5d6d9cda2d5dcfcc5c83dc0f6e94cf6f27d27808f9985f"
+  },
+  {
+   "logId": "88f47a10-87b4-3ea8-a0c7-a07d825b647d",
+   "crossingId": "2659268",
+   "siteRecordSha256": "f7de382a577a90935aed69fa21b414ae8486063e7972862fc1c2d4d30b9005b9",
+   "paintRecordSha256": "6e25bd6cd12d1fa40e58068b4c72ffea882b4806075ea64a73319b312c582efb"
+  },
+  {
+   "logId": "d33f667d-7b6c-39aa-9ba9-eac2fa615ae1",
+   "crossingId": "2399287",
+   "siteRecordSha256": "eb42a84bc4e3b66b2cb1fa8706c8dc6138e67fce27d18258e52226cf423057c1",
+   "paintRecordSha256": "bcef7db3a6d2b6cb9b5874e96847909f5caaa0bfb4d15007191713063d3ca3d4"
+  },
+  {
+   "logId": "e1d68dde-22a9-3918-a526-0850b21ff2eb",
+   "crossingId": "5987490",
+   "siteRecordSha256": "d031732004546e59d72a5d64ef3039fa1e02d3192229943accaa0435bfa4fd78",
+   "paintRecordSha256": "f9e812b8f46a54dfc4e47b2e9dfc8ee1aeaabfbe300e3a77da18a5dbeb86b0c3"
+  },
+  {
+   "logId": "fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91",
+   "crossingId": "2659589",
+   "siteRecordSha256": "db48bd5a85e27b13a1d4a2181d0de142dff55c82a3a95c97e8a65bdf8b9ba6d1",
+   "paintRecordSha256": "37990840d88c18abae763d281c482f83ea123b439e9d429c500e149341b499c1"
+  }
+ ]
+}

@@ -16,6 +16,8 @@ Protocol v3.2 (crossingApplicability) adds a guard: when the mapped-edge crossin
 45 degrees from perpendicular to the lane, an edge not ahead of the camera, or the centre line meeting the near-edge line off
 the mapped edge or behind the camera), no crossing point is emitted; the crossing and everything anchored on it stay Unknown
 with the named refusal in the reason. A protocol without that section runs unchanged (v3, v3.1).
+Protocol v3.3 (shape-v1) and v3.4 (shape-v2) read ground.json schemaVersion 3 and refuse it unless its carShape is present
+exactly when the suggested vehicle is 'annotated' (with the same track); the suggestions themselves are computed as under v3.2.
 """
 import argparse
 from datetime import datetime, timezone
@@ -125,8 +127,10 @@ class Context:
         require(protocol.get('protocolVersion') == 3 and isinstance(sel, dict) and sel.get('rule') == 'exactProjection',
                 'Protocol v3 pixelSelection (exactProjection) required; protocol v1/v2 outputs are historical')
         band = ground.get('alongRayUncertainty', {}).get('heightBandMeters'); limit = ground.get('placementRangeLimitMeters')
-        require(ground.get('schemaVersion') == 2 and type(band) is float and 0 < band <= 1 and type(limit) is float and
-                limit == protocol['placementRange']['limitMeters'], 'Protocol v3 ground layer (schemaVersion 2) required')
+        # protocol v3.3 and v3.4 write ground.json schemaVersion 3 (adds carShape); v3 to v3.2 write schemaVersion 2.
+        schema = 3 if protocol.get('protocolRevision') in ('3.3', '3.4') else 2
+        require(ground.get('schemaVersion') == schema and type(band) is float and 0 < band <= 1 and type(limit) is float and
+                limit == protocol['placementRange']['limitMeters'], f'Protocol v3 ground layer (schemaVersion {schema}) required')
         self.band, self.limit = band, limit
 
     def height(self, xz):
@@ -233,7 +237,7 @@ def applicability_rules(protocol):
     """protocol v3.2 crossingApplicability parameters, or None for a protocol without that section (v3, v3.1 run unchanged)."""
     spec = protocol.get('crossingApplicability')
     if spec is None:
-        require(protocol.get('protocolRevision') != '3.2', 'Protocol v3.2 needs its crossingApplicability section')
+        require(protocol.get('protocolRevision') not in ('3.2', '3.3', '3.4'), 'Protocol v3.2 (and v3.3, v3.4) needs its crossingApplicability section')
         return None
     require(isinstance(spec, dict) and spec.get('parameters') == APPLICABILITY_PARAMETERS and spec.get('refusalCodes') == list(REFUSAL_CODES),
             'crossingApplicability must carry exactly the parameters and refusal codes this script implements')
@@ -488,6 +492,11 @@ def along_ray_limitation(spec):
 
 def document(scene, ground, terrain, positions, eligible, protocol, inputs):
     objects = suggest(scene, ground, terrain, positions, eligible, protocol)
+    if ground["schemaVersion"] == 3:  # protocol v3.3 and v3.4: the car shape exists exactly for the annotated vehicle, same track
+        shape, vehicle = ground['carShape'], objects['vehicle']
+        require((vehicle['status'] == 'annotated') == (shape is not None) and (shape is None or shape['track'] == vehicle['track']),
+                f"ground.json carShape does not match the suggested vehicle (status {vehicle['status']}): rebuild ground.json with "
+                '--car-shape-dir for an annotated stationary vehicle, or --no-car-shape otherwise')
     doc = {'schemaVersion': 3, 'sceneId': scene['id'], 'sourceClass': 'mappedGround', 'generatedUtc': generated_utc(),
             'generator': {'script': 'scripts/california/suggest_av2_placements.py', 'sha256': digest(Path(__file__).read_bytes()),
                           'sharedScript': 'scripts/california/prepare_av2_ground.py', 'sharedSha256': digest((HERE / 'prepare_av2_ground.py').read_bytes()),
