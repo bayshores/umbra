@@ -237,6 +237,20 @@ test('answers fail on withheld claims and on numbers absent from computed facts'
   assert.deepEqual(allowedNumbersFrom({label:'van 2'},{label:'4.33'}),[]);
 });
 
+test('a number written to 2 decimals matches only that computed value, not a neighbour at one decimal',()=>{
+  // Held-out audit (October 16, site 88f47a10): vehicle height 1.68 m and setback 1.72 m both round to 1.7, so the height
+  // passed as the setback in all three wrong-quantity sentences.
+  const allowed=allowedNumbersFrom({current:{vehicle_m:{width:1.9,height:1.68,length:4.6},setback_m:1.72}});
+  for(const bad of ['The stationary vehicle is 1.68 m from the intersection.','It is set back 1.68 m.','The setback is 1.68 m.'])
+    assert.deepEqual([checkAnswer(bad,allowed).ok,checkAnswer(bad,allowed).kind],[false,'role'],bad);
+  assert.equal(checkAnswer('It is set back 1.72 m.',allowed).ok,true);
+  assert.equal(checkAnswer('The vehicle is 1.68 m tall.',allowed).ok,true);
+  // Written to one decimal, a number still matches any computed value it rounds from; extra places must be computed.
+  assert.equal(checkAnswer('It is set back 1.7 m.',allowed).ok,true);
+  assert.equal(checkAnswer('It is set back 1.720 m.',allowed).ok,true);
+  assert.deepEqual([checkAnswer('It is set back 1.73 m.',allowed).ok,checkAnswer('It is set back 1.724 m.',allowed).kind],[false,'number']);
+});
+
 test('sweep stays under 100 ms per vehicle on the legacy scene',t=>{
   // The low trailer is the worst case: it blocks no row, so its unknown run is confirmed by a full classification.
   for(const vehicle of vehicles) {

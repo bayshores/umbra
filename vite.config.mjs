@@ -32,8 +32,9 @@ export default defineConfig({
     host: "127.0.0.1",
     allowedHosts: ["terminal.local"],
     fs: {
-      deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "*.key", `${ROOT}/.local/**`, "**/.handoffs/**", "**/.agents/**",
-        "**/.claude/**", "**/.openai/**", "AGENTS.md", "CLAUDE.md", "design-qa.md", ".npmrc", "rulesync.jsonc", "**/.rulesync/**"],
+      // Agent folders are matched below ROOT only, so a checkout inside .claude/worktrees/ still serves its own files.
+      deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "*.key", `${ROOT}/.local/**`, `${ROOT}/**/.handoffs/**`, `${ROOT}/**/.agents/**`,
+        `${ROOT}/**/.claude/**`, `${ROOT}/**/.openai/**`, "AGENTS.md", "CLAUDE.md", "design-qa.md", ".npmrc", "rulesync.jsonc", "**/.rulesync/**"],
     },
     warmup: {
       clientFiles: ["./src/main.jsx"],

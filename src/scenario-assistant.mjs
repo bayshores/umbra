@@ -296,7 +296,20 @@ export function sweepFacts(results) {
 }
 
 const NUMBER=/\d*\.?\d+/g;
-const key=n=>Math.round(n*10);
+// A written number matches a computed one at the precision it is written with, one decimal at least (the facts carry 2):
+// "1.7" matches 1.72 and 1.68, "1.68" matches only 1.68, and "1.684" matches nothing. Held-out audit (October 16): at
+// one decimal for every number, a 1.68 m vehicle height passed as the 1.72 m setback.
+function numberIndex(values) {
+  const index={1:new Set(),2:new Set()};
+  for(const v of values)if(Number.isFinite(v)){index[1].add(Math.round(v*10));index[2].add(Math.round(v*100));}
+  return index;
+}
+function computed(index,raw) {
+  const places=(raw.split('.')[1]??'').length,value=Number(raw);
+  if(places<=1)return index[1].has(Math.round(value*10));
+  const k=Math.round(value*100);
+  return index[2].has(k)&&(places===2||k/100===value);
+}
 // Which quantity a computed number measures, from its fact key: vehicle sizes, the person's height, the eye height, and
 // distances from the crossing in metres or feet (setbacks, stop distances, tested and blocked ranges). Other numbers
 // (step, turn angle) only ground an answer through the plain number check.
@@ -314,15 +327,15 @@ function roleOf(name,parent) {
 // number used for another quantity ("1.4 m wide" from a 1.41 degree turn, "1.49 m from the crossing" from a height),
 // and (as notBlocked) where "not blocked by the vehicle" holds, so it can refuse that claim anywhere else.
 export function allowedNumbersFrom(...facts) {
-  const out=new Set(),roles=Object.fromEntries(Object.keys(ROLE_NAMES).filter(k=>!['height','distance'].includes(k)).map(k=>[k,new Set()]));
+  const out=new Set(),roles=Object.fromEntries(Object.keys(ROLE_NAMES).filter(k=>!['height','distance'].includes(k)).map(k=>[k,[]]));
   const walk=(v,name,parent)=>{
-    if(typeof v==='number'){if(Number.isFinite(v)){out.add(v);const role=roleOf(name,parent);if(role)roles[role].add(key(v));}}
+    if(typeof v==='number'){if(Number.isFinite(v)){out.add(v);const role=roleOf(name,parent);if(role)roles[role].push(v);}}
     else if(Array.isArray(v))v.forEach(x=>walk(x,name,parent));
     else if(v&&typeof v==='object')for(const [k,x] of Object.entries(v))walk(x,k,name);
   };
   facts.forEach(f=>walk(f));
   const list=[...out];
-  Object.defineProperty(list,'roles',{value:roles});
+  Object.defineProperty(list,'roles',{value:Object.fromEntries(Object.entries(roles).map(([k,v])=>[k,numberIndex(v)]))});
   Object.defineProperty(list,'notBlocked',{value:notBlockedFacts(facts)});
   return list;
 }
@@ -332,7 +345,7 @@ export function allowedNumbersFrom(...facts) {
 // that position is a plain Unknown (null when absent); unnamed: whether a claim with no distance and no position name is
 // true of everything computed (every position plain, or with no positions some swept vehicle plain).
 function notBlockedFacts(facts) {
-  const nb={at:new Set(),current:null,proposed:null,anyTestedDistance:false},add=(...n)=>n.forEach(x=>{if(Number.isFinite(x))nb.at.add(key(x));});
+  const nb={at:[],current:null,proposed:null,anyTestedDistance:false},add=(...n)=>nb.at.push(...n);
   let positions=0,plain=0,sweepPlain=false;
   const scan=(v,name)=>{
     if(Array.isArray(v)){v.forEach(x=>scan(x,name));return;}
@@ -352,6 +365,7 @@ function notBlockedFacts(facts) {
   };
   facts.forEach(f=>scan(f));
   nb.unnamed=positions?plain===positions:sweepPlain;
+  nb.at=numberIndex(nb.at);
   return nb;
 }
 // A number tied to a quantity by the words around it: "1.4 m wide", "2 m tall", "4 m long", "0.7 m (2.3 ft) from the
@@ -384,12 +398,12 @@ function numberRoles(text) {
   });
 }
 function roleMismatch(text,roles) {
-  for(const {raw,value,role,unit} of numberRoles(text)) {
+  for(const {raw,role,unit} of numberRoles(text)) {
     if(!role)continue;
     const sets=role==='distance'?(unit==='ft'?[roles.distance_ft]:unit==='m'?[roles.distance_m]:[roles.distance_m,roles.distance_ft])
       // Sizes and heights are computed in metres only, so a size written in feet never matches.
       :unit==='ft'?[]:role==='height'?[roles.vehicleHeight,roles.person,roles.eye]:[roles[role]];
-    if(!sets.some(set=>set.has(key(value))))return `Number ${raw} is not umbra's computed ${ROLE_NAMES[role==='distance'&&unit?`distance_${unit}`:role]}.`;
+    if(!sets.some(index=>computed(index,raw)))return `Number ${raw} is not umbra's computed ${ROLE_NAMES[role==='distance'&&unit?`distance_${unit}`:role]}.`;
   }
 }
 // A claim that the vehicle does not block the line, in any wording the other checks let through.
@@ -411,7 +425,7 @@ function notBlockedMismatch(text,nb) {
     if(proposed&&nb.proposed!==true)return 'Calls the proposed position not blocked by the vehicle; umbra did not compute that.';
     if(current&&nb.current!==true)return 'Calls the current position not blocked by the vehicle; umbra did not compute that.';
     const distances=numbers.filter(n=>n.index>=a&&n.index<b&&n.distanceLike);
-    const bad=distances.find(n=>!nb.at.has(key(n.value)));
+    const bad=distances.find(n=>!computed(nb.at,n.raw));
     if(bad)return `Says not blocked by the vehicle at ${bad.raw} ${bad.unit??'m'}, where umbra did not compute that.`;
     if(!distances.length&&!proposed&&!current&&!(/\bat\s+any\s+tested\s+distance\b/i.test(clause)?nb.anyTestedDistance:nb.unnamed))
       return 'Says not blocked by the vehicle without a distance, but not every computed result says so.';
@@ -425,8 +439,8 @@ export function checkAnswer(text,allowedNumbers=[],{mapped=false}={}) {
   if(text.length>MAX_ANSWER)return {ok:false,kind:'length',reason:'Answer is longer than two short sentences.'};
   const word=withheld(text,mapped);
   if(word)return {ok:false,kind:'wording',reason:`Uses withheld wording "${word}".`};
-  const allowed=new Set(allowedNumbers.filter(Number.isFinite).map(key));
-  const stray=(text.match(NUMBER)??[]).find(n=>!allowed.has(key(Number(n))));
+  const allowed=numberIndex(allowedNumbers);
+  const stray=(text.match(NUMBER)??[]).find(n=>!computed(allowed,n));
   if(stray)return {ok:false,kind:'number',reason:`Number ${stray} is not in umbra's computed facts.`};
   // Lists from allowedNumbersFrom know each number's quantity and where "not blocked" holds; a plain list is checked by
   // value only.
