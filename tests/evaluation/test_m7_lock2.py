@@ -276,9 +276,10 @@ class Lock2(unittest.TestCase):
         for key in ('H measured-shape rows', 'H 50%', 'B all three hard', 'D/no minimum', 'band 0.075 m', 'declared-default', '"None"'):
             self.assertIn(key, lock2['authority'])
         self.assertIn(common.SUPERSEDED_LOCK_SHA, lock2['history'])
-        self.assertEqual(lock2['revision'], 8)
+        self.assertEqual(lock2['revision'], 9)
         self.assertIn('b483a5d394fc198d881b650b755b01598e0915c758b97fa788b5b19669b05296', lock2['history'])
         self.assertIn('311388c4d2e89de4273e6a6800f8b78a6ee8ce19efb66152c84cb44b93a8bcb0', lock2['history'])
+        self.assertIn('6eda5ac7882b5c5296bdbd866ef21a59e2b432c4c1629aba50dafc43223959d8', lock2['history'])
 
     def test_driver_builder_protocol_pin_and_actual_invocation_match_writer_and_disk(self):
         driver = load_driver()

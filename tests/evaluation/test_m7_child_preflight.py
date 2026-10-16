@@ -255,6 +255,42 @@ def test_authorized_http_helper_receives_the_same_lock_context(fixture, monkeypa
     f.fetch.assert_not_called()
 
 
+def test_url_guard_checks_the_requested_log_not_a_query_prefix(fixture, monkeypatch):
+    """lock-2 review r8 F5: a held-out object URL carrying a development listing prefix in its query reached urlopen."""
+    f = fixture
+    network = mock.Mock(side_effect=AssertionError('network reached'))
+    monkeypatch.setattr(f.shape.urllib.request, 'urlopen', network)
+    dev = next(s['logId'] for s in f.sites if s['role'] in f.m7.DEVELOPMENT_ROLES)
+    dev_prefix = f.shape.lidar_prefix(dev).replace('/', '%2F')
+    for log in sorted({s['logId'] for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES}):
+        sweep = f.shape.BUCKET_URL + f.shape.lidar_prefix(log) + '1.feather'
+        listing = f.shape.listing_url(log)
+        bypasses = [
+            sweep + '?prefix=' + dev_prefix,
+            sweep + '?list-type=2&prefix=' + dev_prefix + '&delimiter=%2F&max-keys=1000',
+            sweep + '?',
+            sweep + '#' + dev_prefix,
+            sweep.replace('/sensors/', '%2Fsensors/'),
+            f.shape.BUCKET_URL + f.shape.lidar_prefix(dev) + '../../../../' + log + '/sensors/lidar/1.feather',
+            listing.replace('list-type=2&', '') + '&list-type=2',
+            listing + '&prefix=' + dev_prefix,
+            f.shape.listing_url(dev) + '&prefix=' + f.shape.lidar_prefix(log).replace('/', '%2F'),
+            f.shape.BUCKET_URL + '?list-type=2&prefix=' + f.shape.lidar_prefix(log) + '&delimiter=%2F&max-keys=1000',
+        ]
+        for url in bypasses:
+            for call in (lambda u: f.helpers['http_fetch'](u),
+                         lambda u: f.helpers['fetch_with_rule'](u, bool, f.helpers['http_fetch'], f.fetch)):
+                with pytest.raises((SystemExit, ValueError)):  # refused before any held-out guard or network
+                    call(url)
+        for url in (sweep, listing):  # the canonical forms still reach the held-out guard
+            with pytest.raises(ValueError, match='--held-out-run'):
+                f.shape.guard_url(url)
+    for url in (f.shape.BUCKET_URL + f.shape.lidar_prefix(dev) + '1.feather', f.shape.listing_url(dev)):
+        assert f.shape.guard_url(url) is None  # development URLs need no lock
+    network.assert_not_called()
+    f.fetch.assert_not_called()
+
+
 def test_no_fetch_preflight_accepts_current_synthetic_marker_and_output(fixture):
     f = fixture
     f.m7.RUN_MARKERS.mkdir()

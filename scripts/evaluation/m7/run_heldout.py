@@ -50,7 +50,7 @@ from common import ROOT, SiteStop, fetch, now, read_listing, rel, sha, sha_file,
 VARIANT = 'v4-18.5'
 BUILDER = 'scripts/evaluation/m7/build_scene.py'  # unchanged v4.3 builder, fixed lock-2 path
 BUILDER_PROTOCOL = '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json'
-BUILDER_PROTOCOL_SHA = '0758a3b0039b534584d35876276d6b0287229fd06012cd225681000b30f4e395'
+BUILDER_PROTOCOL_SHA = '1d2d5b6d0bbc81aa08cc6c5b6d0c722c78d2396b658255dba36d5189e1a07c53'
 V34 = '.local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json'
 V34_SHA = '330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22'
 SHAPE_PROTOCOL_SHA = '70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a'

@@ -43,7 +43,6 @@ import sys
 import tempfile
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -223,16 +222,24 @@ def guard_plan_dir(plan_dir, log=None, *, held_out_run=False, lock_sha256=None, 
     return named_log
 
 
+SWEEP_URL_RE = re.compile(re.escape(BUCKET_URL) + r'datasets/av2/sensor/(train|val)/([0-9a-f-]+)/sensors/lidar/[0-9]{1,32}\.feather')
+LISTING_URL_RE = re.compile(re.escape(BUCKET_URL) + r'\?list-type=2&prefix=datasets%2Fav2%2Fsensor%2F(train|val)%2F([0-9a-f-]+)'
+                            r'%2Fsensors%2Flidar%2F&delimiter=%2F&max-keys=1000')
+
+
 def guard_url(url, *, held_out_run=False, lock_sha256=None):
-    """Guard the log in an object URL or listing prefix, including direct network-helper calls."""
-    require(url.startswith(BUCKET_URL), 'Only the public Argoverse bucket is fetched')
-    parts = urllib.parse.urlsplit(url)
-    key = urllib.parse.parse_qs(parts.query).get('prefix', [''])[0] if parts.query else parts.path.lstrip('/')
-    match = re.match(r'datasets/av2/sensor/(train|val)/([^/]+)/', key)
-    require(match is not None, 'An AV2 sensor log URL or listing prefix is required')
+    """Guard the log of the only two URL forms fetched, including direct network-helper calls: a lidar sweep object
+    (BUCKET_URL + lidar_prefix(log) + <timestamp>.feather, no query) or the exact listing_url(log). Any other form (an
+    object path with a query, a reordered or extra query field, a fragment, percent-encoding in an object path) is
+    refused, so the log checked is the log requested."""
+    require(isinstance(url, str) and url.startswith(BUCKET_URL), 'Only the public Argoverse bucket is fetched')
+    match = SWEEP_URL_RE.fullmatch(url) or LISTING_URL_RE.fullmatch(url)
+    require(match is not None, 'Only an AV2 lidar sweep URL or the exact lidar listing URL is fetched')
     log = check_log(match[2])
     check_held_out(log, held_out_run, lock_sha256)
     require(match[1] == av2_split(log), 'URL is for another publisher split')
+    require(url == listing_url(log) if match.re is LISTING_URL_RE else url.startswith(BUCKET_URL + lidar_prefix(log)),
+            'URL differs from the canonical URL for its log')
 
 
 # ------------------------------------------------------------------ listing and downloads (protocol 6.3)
