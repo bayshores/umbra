@@ -85,12 +85,26 @@ REFUSALS = {'too-few-sweeps': 'fewer than 2 LiDAR sweeps of it were available',
 # Held-out tests, controls and reserve of the frozen Palo Alto split (same tuple as prepare_av2_ground.py).
 HELD_OUT_LOG_PREFIXES = ('88f47a10', '3153b5b3', 'd33f667d', 'fd5c6932', '25e5c600', 'e1d68dde', 'a91d4c7b', '4a60c567', 'b6c4361a')
 DATA_ROOT = REPO / '.local/data/av2'
-LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/protocol-lock.json'
+SPLIT_PATH = REPO / '.local/evaluation/pao-accuracy/split.json'
+SPLIT_SHA256 = '47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4'
+RUNNABLE_ROLES = ('development', 'development-optional', 'held-out-blocked-test', 'held-out-left-side-case',
+                  'held-out-control', 'held-out-control-declared-only')
+LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.json'
+SUPERSEDED_LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/protocol-lock.json'
+SUPERSEDED_LOCK_SHA256 = '7aa2945e61e676ffc3a2a207895ca5639e4d9b4405893b648f4412891c00a475'
 APPROACH_DIR = REPO / '.local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split'
 PLAN_NAME, RECEIPT_NAME, LISTING_NAME, SWEEP_DIR = 'sweep-plan.json', 'receipt.json', 'listing.xml', 'sweeps'
 BUCKET_URL = 'https://argoverse.s3.amazonaws.com/'
-LIDAR_PREFIX = 'datasets/av2/sensor/train/{log}/sensors/lidar/'
-LISTING_URL = ('https://argoverse.s3.amazonaws.com/?list-type=2&prefix=datasets%2Fav2%2Fsensor%2Ftrain%2F{log}'
+
+
+class SensorTemplate(str):
+    """Preserve .format(log=...) for existing callers; the frozen split supplies the publisher folder."""
+    def format(self, *, log):
+        return super().format(split=av2_split(log), log=log)
+
+
+LIDAR_PREFIX = SensorTemplate('datasets/av2/sensor/{split}/{log}/sensors/lidar/')
+LISTING_URL = SensorTemplate('https://argoverse.s3.amazonaws.com/?list-type=2&prefix=datasets%2Fav2%2Fsensor%2F{split}%2F{log}'
                '%2Fsensors%2Flidar%2F&delimiter=%2F&max-keys=1000')
 S3_NS = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
 MAX_JSON = 2_000_000
@@ -121,6 +135,34 @@ def check_log(log):
     return log
 
 
+def av2_split(log):
+    """Same sha-checked split lookup as M7, without importing evaluation code into the scene builder."""
+    check_log(log)
+    raw = SPLIT_PATH.read_bytes()
+    if digest(raw) != SPLIT_SHA256:
+        raise SystemExit('split.json differs from its frozen sha256')
+    entries = [s for s in parse(raw)['sites'] if s['logId'] == log]
+    if not entries:
+        raise SystemExit(f'{log[:8]} is not a log of split.json')
+    for entry in entries:
+        if entry['role'] not in RUNNABLE_ROLES:
+            raise SystemExit(f"{log[:8]} is {entry['role']}: reserve and other non-runnable roles stay unopened")
+        if entry.get('av2Split') not in ('train', 'val'):
+            raise SystemExit(f"{log[:8]} has unsupported av2Split {entry.get('av2Split')!r}; expected train or val")
+    splits = {s['av2Split'] for s in entries}
+    if len(splits) != 1:
+        raise SystemExit(f'{log[:8]} has conflicting av2Split entries in split.json')
+    return splits.pop()
+
+
+def lidar_prefix(log):
+    return LIDAR_PREFIX.format(log=log)
+
+
+def listing_url(log):
+    return LISTING_URL.format(log=log)
+
+
 def plan_dir_for(log, out_root=None):
     return Path(out_root if out_root is not None else DATA_ROOT) / f'shape-v2-{check_log(log)}'
 
@@ -131,12 +173,15 @@ def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_pat
     naming the frozen shape-v2 protocol (pipeline.shapeProtocol.sha256), for the approach split also the split addendum
     (pipeline.shapeSplitAddendum.sha256), and an approval (approval.by, approval.utc). Development logs need nothing."""
     check_log(log)
+    av2_split(log)  # metadata only; refuse reserve/test before any log file is read
     if not log.startswith(HELD_OUT_LOG_PREFIXES):
         return None
     require(held_out_run, 'Held-out, control or reserve logs run only in M7 with --held-out-run and a valid protocol-lock.json')
     require(isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256),
             'Held-out runs need --protocol-lock-sha256 (the sha256 of protocol-lock.json recorded at the lock)')
     path = Path(lock_path) if lock_path is not None else LOCK_PATH
+    if lock_sha256 == SUPERSEDED_LOCK_SHA256 or path.resolve() == SUPERSEDED_LOCK_PATH.resolve():
+        raise SystemExit('Lock 1 is superseded; use lock-2/protocol-lock.json')
     require(path.is_file(), f'Held-out runs need {path.name} at {path} (written at the lock); it does not exist')
     lock = parse(snapshot(path, lock_sha256))
     pipeline = lock.get('pipeline') if isinstance(lock.get('pipeline'), dict) else {}
@@ -161,7 +206,7 @@ def _text(node, name):
 def parse_listing(data, log):
     """Public S3 ListBucketResult of sensors/lidar/ for this log -> {timestamp: {key, bytes, etag}}. Complete listings
     only (not truncated, KeyCount equal to the entries); every key must be <prefix><timestamp>.feather."""
-    prefix = LIDAR_PREFIX.format(log=check_log(log))
+    prefix = lidar_prefix(log)
     doc = ET.fromstring(data)
     require(doc.tag == '{%s}ListBucketResult' % S3_NS['s3'], 'S3 ListBucketResult required')
     require(_text(doc, 'Prefix') == prefix, 'Listing is for another log or sensor')
@@ -233,7 +278,7 @@ def fetch_listing(log, fetch, sleep):
             return True
         except (ValueError, ET.ParseError):
             return False
-    result = fetch_with_rule(LISTING_URL.format(log=check_log(log)), accept, fetch, sleep)
+    result = fetch_with_rule(listing_url(log), accept, fetch, sleep)
     return result['data'], {'status': 'ok' if result['ok'] else 'failed', 'attempts': result['attempts']}
 
 
@@ -408,13 +453,14 @@ def check_plan(plan):
     require(isinstance(plan, dict) and plan.get('schema') == PLAN_SCHEMA, 'Not a shape-v2 sweep plan')
     require(plan.get('shapeProtocol', {}).get('sha256') == SHAPE_PROTOCOL_SHA256, 'Sweep plan made under another shape protocol')
     require(plan.get('rule') == RULE, 'Sweep plan rule numbers differ from shape-v2')
-    check_log(plan['log'])
+    prefix = lidar_prefix(plan['log'])
+    require(plan['inputs']['listing']['url'] == listing_url(plan['log']), 'Sweep plan listing URL for another log or split')
     sweeps = plan['sweeps']
     require(isinstance(sweeps, list) and len(sweeps) == plan['kept'] <= RULE['maxKept'], 'Sweep plan kept count mismatch')
     stamps = [int(s['timestampNs']) for s in sweeps]
     require(stamps == sorted(set(stamps)) and all(s['timestampNs'] == str(int(s['timestampNs'])) for s in sweeps), 'Sweep plan timestamps must increase')
     require([s['set'] for s in sweeps] == ['shape' if k % 2 == 0 else 'scoring' for k in range(len(sweeps))], 'Sweep plan split is not alternating')
-    require(all(s['key'] == LIDAR_PREFIX.format(log=plan['log']) + f"{s['timestampNs']}.feather" for s in sweeps), 'Sweep plan key for another log')
+    require(all(s['key'] == prefix + f"{s['timestampNs']}.feather" for s in sweeps), 'Sweep plan key for another log or split')
     return plan
 
 
@@ -422,7 +468,7 @@ def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha
               listing_path=None, listing_sha256=None, out_root=None, fetch=http_fetch, sleep=time.sleep):
     """Write <out_root>/shape-v2-<log>/sweep-plan.json (exclusive) plus listing.xml; returns (plan_dir, plan sha256).
     Reads metadata only. The vehicle is the single averaged stationary vehicle (poseAverage cuboid) of ground.json."""
-    check_log(log)
+    url = listing_url(log)  # validate the frozen publisher split before any log file is read
     for path in (annotations_path, poses_path):
         require(Path(path).resolve().parent.name == log, 'Annotations and poses must come from the log directory of this log')
     ground_raw = snapshot(ground_path, ground_sha256, 1024 * 1024); ground = parse(ground_raw)
@@ -439,11 +485,11 @@ def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha
     if listing_path is not None:
         listing_raw = snapshot(listing_path, listing_sha256, MAX_JSON)
         listing_status = {'status': 'ok', 'attempts': 0}
-        listing_input = {'source': 'saved file', 'file': LISTING_NAME, 'sha256': digest(listing_raw), 'url': LISTING_URL.format(log=log)}
+        listing_input = {'source': 'saved file', 'file': LISTING_NAME, 'sha256': digest(listing_raw), 'url': url}
     else:
         listing_raw, listing_status = fetch_listing(log, fetch, sleep)
         listing_input = {'source': 'fetched', 'file': LISTING_NAME if listing_raw is not None else None,
-                         'sha256': digest(listing_raw) if listing_raw is not None else None, 'url': LISTING_URL.format(log=log)}
+                         'sha256': digest(listing_raw) if listing_raw is not None else None, 'url': url}
     listing = parse_listing(listing_raw, log) if listing_raw is not None else {}
     require(listing_raw is None or listing, 'The lidar listing of this log is empty (wrong log or split)')
     inputs = {'ground': {'sha256': ground_sha256}, 'annotations': {'sha256': annotations_sha256}, 'poses': {'sha256': poses_sha256}}
@@ -792,12 +838,12 @@ def main():
                              'bytesOnDisk': receipt['bytesOnDisk']}).decode())
         else:
             require(re.fullmatch('[A-Za-z0-9][A-Za-z0-9._-]{0,80}', args.name) is not None, 'Plain file name required for --name')
-            ground_raw = snapshot(args.ground, args.ground_sha256, 1024 * 1024); ground = parse(ground_raw)
-            shape = ground.get('carShape')
-            require(isinstance(shape, dict), 'This scene has no annotated stationary vehicle: the approach split does not apply')
             log = Path(args.annotations).resolve().parent.name
             require(Path(args.poses).resolve().parent.name == log, 'Annotations and poses must come from the same log directory')
             check_held_out(log, args.held_out_run, args.protocol_lock_sha256, need_addendum=True)
+            ground_raw = snapshot(args.ground, args.ground_sha256, 1024 * 1024); ground = parse(ground_raw)
+            shape = ground.get('carShape')
+            require(isinstance(shape, dict), 'This scene has no annotated stationary vehicle: the approach split does not apply')
             ann_raw = snapshot(args.annotations, args.annotations_sha256, MAX_META); poses_raw = snapshot(args.poses, args.poses_sha256, MAX_META)
             doc, data = approach_split_document(ground_raw, plan_dir_for(log, args.out_root), ann_raw, poses_raw, Path(args.ground).name)
             folder = Path(args.output_dir) if args.output_dir else APPROACH_DIR

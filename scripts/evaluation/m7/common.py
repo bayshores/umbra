@@ -30,18 +30,20 @@ import xml.etree.ElementTree as ET
 ROOT = Path(__file__).resolve().parents[3]
 SPLIT = ROOT / '.local/evaluation/pao-accuracy/split.json'
 SPLIT_SHA = '47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4'
-LOCK_PATH = ROOT / '.local/evaluation/pao-accuracy/protocol-lock.json'
-LOCK_RECORD = ROOT / '.local/evaluation/pao-accuracy/lock/protocol-lock.record.json'  # written by write_protocol_lock.py approve
+LOCK_PATH = ROOT / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.json'
+LOCK_RECORD = ROOT / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.record.json'  # written by write_protocol_lock.py approve
+SUPERSEDED_LOCK_REL = '.local/evaluation/pao-accuracy/protocol-lock.json'
+SUPERSEDED_LOCK_SHA = '7aa2945e61e676ffc3a2a207895ca5639e4d9b4405893b648f4412891c00a475'
 CANDIDATE_STATUS = 'CANDIDATE (not approved; no held-out run may use it)'  # the candidate's status, as Sean was shown it
-ANCHOR_REL = 'scripts/evaluation/pao-lock-anchor.json'
-ANCHOR_DIR = 'scripts/evaluation/m7/anchors'  # tracked: lost-site list, labels addendum anchor, held-out label manifest, runs list
+ANCHOR_REL = 'scripts/evaluation/m7/anchors-2/pao-lock-anchor.json'
+ANCHOR_DIR = 'scripts/evaluation/m7/anchors-2'  # tracked: lock, lost-site list, labels addendum, held-out label manifest, runs list
 LOST_SITES_REL = f'{ANCHOR_DIR}/lost-sites.json'  # protocol-lock statistics.lostSiteRule: {"lostSites": [{logId, crossingId, evidence}]}
 LABELS_ADDENDUM = ROOT / '.local/evaluation/pao-accuracy/lock/labels-addendum.json'  # protocol-lock labels.scoringCondition (4)
 ADDENDUM_ANCHOR_REL = f'{ANCHOR_DIR}/labels-addendum-anchor.json'  # {"labelsAddendumSha256": <sha256> or null (D/E not scored)}
 RUNS_REL = f'{ANCHOR_DIR}/runs.json'  # {"runs": [{logId, crossingId, siteRecordSha256, paintRecordSha256}]}: score.py runs-list
 LABELS_MANIFEST_REL = f'{ANCHOR_DIR}/labels-manifest.json'  # {"labelsAddendumSha256", "sites": [{logId, crossingId, labelsSha256, reason}]}
 HEX64 = re.compile('[0-9a-f]{64}')
-RUN_MARKERS = ROOT / '.local/evaluation/pao-accuracy/m7/run-markers'  # held-out: <step>-<log8>-<crossing>.json, one per run
+RUN_MARKERS = ROOT / '.local/evaluation/pao-accuracy/m7/lock-2/run-markers'  # held-out: <step>-<log8>-<crossing>.json, one per run
 COORDINATOR_ENV = 'PAO_LABELS_COORDINATOR_DIR'  # the coordinator-only labels folder: never written into any file
 DE_CODE = ROOT / '.local/evaluation/pao-accuracy/lock/de-code'  # ignored: the D/E code, every file pinned by the labels addendum
 FETCH_TRIES = 3  # preflight's git fetch of origin/main: a dropped connection is tried again, at most 3 times in all
@@ -49,7 +51,7 @@ FETCH_SECONDS = 120  # each git fetch try is stopped after this long (git has no
 DEVELOPMENT_ROLES = ('development', 'development-optional')
 HELD_OUT_ROLES = ('held-out-blocked-test', 'held-out-left-side-case', 'held-out-control', 'held-out-control-declared-only')
 BUCKET = 'https://argoverse.s3.amazonaws.com/'
-LOG_PREFIX = 'datasets/av2/sensor/train/{log}/'
+LOG_PREFIX = 'datasets/av2/sensor/{split}/{log}/'
 S3 = '{http://s3.amazonaws.com/doc/2006-03-01/}'
 RETRIES = 3  # protocol-lock dataAccess: at most 3 retries, each into a new empty folder
 CURL_SECONDS = 300
@@ -251,6 +253,26 @@ def split_sites():
     if sha(raw) != SPLIT_SHA:
         raise SystemExit('split.json differs from its frozen sha256')
     return json.loads(raw)['sites']
+
+
+def av2_split(log):
+    """The publisher folder of a runnable log, from sha-checked split.json; reserve and test stay unopened."""
+    entries = [s for s in split_sites() if s['logId'] == log]
+    if not entries:
+        raise SystemExit(f'{log[:8]} is not a log of split.json')
+    for entry in entries:
+        if entry['role'] not in DEVELOPMENT_ROLES + HELD_OUT_ROLES:
+            raise SystemExit(f"{log[:8]} is {entry['role']}: reserve and other non-runnable roles stay unopened")
+        if entry.get('av2Split') not in ('train', 'val'):
+            raise SystemExit(f"{log[:8]} has unsupported av2Split {entry.get('av2Split')!r}; expected train or val")
+    splits = {s['av2Split'] for s in entries}
+    if len(splits) != 1:
+        raise SystemExit(f'{log[:8]} has conflicting av2Split entries in split.json')
+    return splits.pop()
+
+
+def log_prefix(log):
+    return LOG_PREFIX.format(split=av2_split(log), log=log)
 
 
 def committed(relative, what):
@@ -500,11 +522,15 @@ def wait_for_origin(limit=3600, pause=60):
 
 def preflight(lock_sha256):
     """Held-out only. Returns the lock. Raises SystemExit before any held-out file is touched."""
+    if lock_sha256 == SUPERSEDED_LOCK_SHA or LOCK_PATH.resolve() == (ROOT / SUPERSEDED_LOCK_REL).resolve():
+        raise SystemExit(f'Lock 1 ({SUPERSEDED_LOCK_REL}, sha256 {SUPERSEDED_LOCK_SHA}) is superseded; use lock 2')
     if not (isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256)):
         raise SystemExit('Held-out runs need --protocol-lock-sha256')
     if not LOCK_PATH.is_file():
         raise SystemExit(f'{rel(LOCK_PATH)} does not exist (no approved lock)')
     raw = LOCK_PATH.read_bytes()
+    if sha(raw) == SUPERSEDED_LOCK_SHA:
+        raise SystemExit(f'Lock 1 ({SUPERSEDED_LOCK_REL}) is superseded; use lock 2')
     if sha(raw) != lock_sha256:
         raise SystemExit('protocol-lock.json differs from the given sha256')
     lock = json.loads(raw)
@@ -552,6 +578,7 @@ def preflight(lock_sha256):
 def guard(log, crossing, rehearse, lock_sha256):
     """The split role decides the mode: development logs only in rehearsal, held-out only after preflight, reserve never."""
     entry = site(log, crossing)
+    av2_split(log)  # refuse unsupported publisher folders before a marker or any data access
     role = entry['role']
     if rehearse:
         if role not in DEVELOPMENT_ROLES:
@@ -607,7 +634,7 @@ def fetch(url, folder, name, max_bytes, listing=None):
 
 
 def listing_url(log, sub):
-    prefix = (LOG_PREFIX.format(log=log) + sub).replace('/', '%2F')
+    prefix = (log_prefix(log) + sub).replace('/', '%2F')
     return f'{BUCKET}?list-type=2&delimiter=%2F&max-keys=1000&prefix={prefix}'
 
 
@@ -617,8 +644,8 @@ LISTINGS = {'root': '', 'calibration': 'calibration/', 'map': 'map/', 'lidar': '
 
 def read_listing(path, log, sub):
     """Keys of one saved listing as {relative name: {key, bytes, etag}}; refuses a truncated or foreign listing."""
+    prefix = log_prefix(log) + sub
     root = ET.fromstring(Path(path).read_bytes())
-    prefix = LOG_PREFIX.format(log=log) + sub
     if root.findtext(f'{S3}Prefix') != prefix or root.findtext(f'{S3}IsTruncated') != 'false':
         raise SiteStop('listings', f'{Path(path).name}: unexpected prefix or a truncated listing')
     out = {}

@@ -160,7 +160,7 @@ def main():
             raise SiteStop('config', 'the lidar listing differs from its site receipt')
         sources['lidarListing'] = {'path': os.path.relpath(listing_path, out), 'sha256': listing[0]['sha256'], 'bytes': listing[0]['bytes']}
         config = {'schemaVersion': 1, 'logId': log, 'crossingId': str(crossing), 'split': entry['role'], 'sources': sources,
-                  'provenance': (f'M7 ({"rehearsal" if args.rehearse else "held-out"}): public AV2 Sensor train objects downloaded by '
+                  'provenance': (f'M7 ({"rehearsal" if args.rehearse else "held-out"}): public AV2 Sensor {common.av2_split(log)} objects downloaded by '
                                  f'run_heldout.py ({rel(record_path)}, sha256 {sha_file(record_path)}); each matched the public listing '
                                  'size and ETag (MD5 for single-part objects).')}
         write_new(out / 'config.json', config)

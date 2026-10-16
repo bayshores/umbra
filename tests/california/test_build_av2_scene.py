@@ -1021,6 +1021,7 @@ class RealDataTests(unittest.TestCase):
     FROZEN_V41 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.1/builder-protocol-v4.1.json'
     FROZEN_V42 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.2/builder-protocol-v4.2.json'
     FROZEN_V43 = BASE / 'evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json'
+    LOCK2_V43 = BASE / 'evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json'  # lock 2: car_shape.py pin only
     V4_COMMIT = '772fdce'  # builder v4 runs only from these committed files (v4.1 changed the builder and shared scripts)
     V41_COMMIT = '37bf84d'  # builder v4.1 runs only from these committed files (v4.2 changed the builder and shared scripts)
     V42_COMMIT = '8ec75f8'  # builder v4.2 (shape-v1) runs only from these committed files (v4.3 changed car_shape.py and the builder)
@@ -1040,8 +1041,14 @@ class RealDataTests(unittest.TestCase):
             self.assertEqual(sha(raw), json.loads(freeze.read_bytes())['sha256'])
             self.assertEqual(protocol['builderVersion'], version)
             self.assertEqual(set(protocol['code']), set(tool.RUNTIME_CODE_BY_VERSION[version]))
-            if version == 4.3:  # this builder file and every shared module are the frozen v4.3 ones
-                self.assertEqual(protocol['code'], tool.runtime_code_hashes(4.3))
+            if version == 4.3:  # lock 2 changed only car_shape.py (AV2 train/val folder); every other file is the frozen v4.3 one
+                current = tool.runtime_code_hashes(4.3); shape_file = 'scripts/california/car_shape.py'
+                self.assertEqual({k: v for k, v in protocol['code'].items() if k != shape_file}, {k: v for k, v in current.items() if k != shape_file})
+                self.assertNotEqual(protocol['code'][shape_file], current[shape_file])
+                if self.LOCK2_V43.exists():  # the lock-2 copy differs from the source protocol only in the car_shape.py pin
+                    copy = json.loads(self.LOCK2_V43.read_bytes())
+                    self.assertEqual(copy['code'], current)
+                    self.assertEqual({k: v for k, v in copy.items() if k != 'code'}, {k: v for k, v in protocol.items() if k != 'code'})
                 for name, params in protocol['parametersByVariant'].items():
                     self.assertEqual(params, tool.v43_parameters(params['frame']['target']), name)
                 self.assertEqual({n: p['frame']['target'] for n, p in protocol['parametersByVariant'].items()}, tool.V4_VARIANTS)

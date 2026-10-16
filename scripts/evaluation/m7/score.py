@@ -34,7 +34,7 @@ manifest lists with labels whose D or E is not scored, and every crossing whose 
 result.json (A not scored there; A is fail-only).
 
 runs-list (held-out, once, after every build and paint run has its record and before any evaluate_site.py run) writes the
-tracked anchor scripts/evaluation/m7/anchors/runs.json: each held-out site minus the lost-site list with the sha256 of the
+tracked anchor scripts/evaluation/m7/anchors-2/runs.json: each held-out site minus the lost-site list with the sha256 of the
 one site record and one paint record in the folders its build and paint markers name. Committed and pushed, it is
 written once like the other anchors, so a site run again after a marker was removed cannot be scored.
 

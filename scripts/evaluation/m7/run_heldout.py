@@ -48,9 +48,9 @@ import common  # noqa: E402
 from common import ROOT, SiteStop, fetch, now, read_listing, rel, sha, sha_file, write_new  # noqa: E402
 
 VARIANT = 'v4-18.5'
-BUILDER = 'scripts/california/build_av2_scene.py'
-BUILDER_PROTOCOL = '.local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json'
-BUILDER_PROTOCOL_SHA = '5dc0ab06ac1af4f57aa96b9cea4e451e62801d4084f9b3fbc011a2ccdd11bebe'
+BUILDER = 'scripts/evaluation/m7/build_scene.py'  # unchanged v4.3 builder, fixed lock-2 path
+BUILDER_PROTOCOL = '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json'
+BUILDER_PROTOCOL_SHA = 'a1486d67422224f0b35eb0dddaa693136ff381ad48f2032587e4f0c5167530cc'
 V34 = '.local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json'
 V34_SHA = '330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22'
 SHAPE_PROTOCOL_SHA = '70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a'
@@ -71,7 +71,8 @@ MAP_PATTERNS = (r'log_map_archive_{log}____[A-Z]+_city_[0-9]+\.json', r'{log}_gr
 MAX_METADATA = 16_000_000  # the builder's MAX_FILE
 MAX_SENSOR = 4_000_000
 MAX_LISTING = 2_000_000
-CODE = ('scripts/evaluation/m7/run_heldout.py', 'scripts/evaluation/m7/common.py', BUILDER, 'scripts/california/prepare_av2.py',
+CODE = ('scripts/evaluation/m7/run_heldout.py', 'scripts/evaluation/m7/common.py', BUILDER,
+        'scripts/california/build_av2_scene.py', 'scripts/california/prepare_av2.py',
         'scripts/california/assemble_av2_scene.py', 'scripts/california/prepare_av2_ground.py',
         'scripts/california/suggest_av2_placements.py', 'scripts/california/car_shape.py', 'scripts/sponsors/common.py',
         'scripts/remap_support.py', 'scripts/prepare-stereo-crop.py', 'scripts/rectified_calibration.py')
@@ -171,7 +172,7 @@ class Build:
         for missing in selection['missingSources']:
             listed = missing['listing'] or {}
             key = listed.get('key', '')
-            prefix = common.LOG_PREFIX.format(log=self.log)
+            prefix = common.log_prefix(self.log)
             if not key.startswith(prefix + 'sensors/'):
                 raise SiteStop('sensors', f'unexpected key {key!r}')
             relative = key[len(prefix):]

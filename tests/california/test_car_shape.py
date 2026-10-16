@@ -296,7 +296,7 @@ class SweepRuleTests(unittest.TestCase):
         parsed = shape.parse_listing(listing_xml(entries), LOG)
         self.assertEqual(parsed[T0 + STEP], {'key': shape.LIDAR_PREFIX.format(log=LOG) + f'{T0 + STEP}.feather', 'bytes': 11, 'etag': 'b' * 32 + '-2'})
         for bad, message in ((listing_xml(entries, truncated=True), 'Truncated'), (listing_xml(entries, count=3), 'count'),
-                             (listing_xml(entries, log='c780d53a-0000-4000-8000-000000000000'), 'another log'),
+                             (listing_xml(entries, log='c780d53a-2d37-3cd8-9e89-530966aef53e'), 'another log'),
                              (listing_xml([(T0, 10, 'xyz')]), 'ETag'), (listing_xml(entries + entries[:1]), 'Duplicate')):
             with self.assertRaisesRegex(ValueError, message):
                 shape.parse_listing(bad, LOG)
@@ -684,7 +684,7 @@ class BlockTests(unittest.TestCase):
                          (shape.MIN_HEIGHT_M, shape.OTHER_GROW_M, shape.MAX_CELL_M, shape.CEIL_TOLERANCE))
 
     def test_held_out_logs_need_the_lock(self):
-        held = '88f47a10-0000-4000-8000-000000000000'
+        held = '88f47a10-87b4-3ea8-a0c7-a07d825b647d'  # a real held-out id: split.json is read, no log file
         self.assertIsNone(shape.check_held_out(LOG, False, None))
         with self.assertRaisesRegex(ValueError, 'held-out-run'):
             shape.check_held_out(held, False, None)
