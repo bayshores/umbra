@@ -342,6 +342,147 @@ class PlanAndDownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'listing of this log is empty'):
             empty.plan()
 
+    def test_make_plan_refuses_foreign_input_paths_before_any_snapshot(self):
+        site = Site(self.root / 'a', approach_drive())
+        logs = {s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']} - {LOG}
+        self.assertTrue(any(log.startswith(shape.HELD_OUT_LOG_PREFIXES) for log in logs))
+        for log in sorted(logs):
+            for token in (log, log[:8]):
+                for key in ('ground_path', 'listing_path', 'annotations_path', 'poses_path'):
+                    for lexical in (False, True):
+                        args = site.plan_args()
+                        folder = self.root / f'input-{token}'
+                        # Even a component removed by resolve() must be refused; no foreign file exists.
+                        args[key] = folder / ('..' if lexical else 'payload') / LOG / Path(args[key]).name
+                        with self.subTest(log=log[:8], key=key, token=token, lexical=lexical), \
+                                mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                                mock.patch.object(shape, 'write_exclusive', side_effect=AssertionError('output')) as write, \
+                                self.assertRaisesRegex(ValueError, 'another split.json log'):
+                            shape.make_plan(**args, fetch=no_network, sleep=no_network)
+                        read.assert_not_called(); write.assert_not_called()
+
+    def test_make_plan_refuses_resolved_foreign_inputs_before_any_snapshot(self):
+        site = Site(self.root / 'a', approach_drive())
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        alias = self.root / 'alias'
+        alias.symlink_to(self.root / f'{held[:8]}-2659268', target_is_directory=True)
+        for key in ('ground_path', 'listing_path', 'annotations_path', 'poses_path'):
+            args = site.plan_args(); args[key] = alias / LOG / Path(args[key]).name
+            with self.subTest(key=key), mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                    self.assertRaisesRegex(ValueError, 'another split.json log'):
+                shape.make_plan(**args, fetch=no_network, sleep=no_network)
+            read.assert_not_called()
+
+    def test_approach_cli_refuses_foreign_inputs_before_any_snapshot(self):
+        site = Site(self.root / 'a', approach_drive())
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        for token in (held, held[:8]):
+            for key in ('ground', 'annotations', 'poses'):
+                args = site.plan_args()
+                paths = {name: args[name + '_path'] for name in ('ground', 'annotations', 'poses')}
+                paths[key] = self.root / f'input-{token}' / LOG / paths[key].name
+                argv = ['car_shape', 'approach-split', '--name', 'synthetic', '--out-root', str(site.out_root)]
+                for name, path in paths.items():
+                    argv += ['--' + name, str(path), '--' + name + '-sha256', args[name + '_sha256']]
+                with self.subTest(key=key, token=token), mock.patch.object(sys, 'argv', argv), \
+                        mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                        mock.patch.object(shape, 'write_exclusive', side_effect=AssertionError('output')) as write, \
+                        self.assertRaisesRegex(SystemExit, '1'):
+                    shape.main()
+                read.assert_not_called(); write.assert_not_called()
+
+    def test_plan_consumers_refuse_foreign_directory_components_before_reads(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        target = self.root / f'{held[:8]}-2659268' / f'shape-v2-{LOG}'
+        alias = self.root / f'shape-v2-{LOG}'
+        alias.symlink_to(target, target_is_directory=True)
+        for folder in (target, alias):
+            calls = {
+                'download': lambda: shape.download_sweeps(folder, 'a' * 64, fetch=no_network, sleep=no_network),
+                'build': lambda: shape.build_car_shape(folder, 'a' * 64, BOX, ORIGIN, b'', b'', PLACEMENT_SHA),
+                'receipt': lambda: shape.load_receipted(folder, 'a' * 64, {}, BOX, ORIGIN, b'', b''),
+                'approach': lambda: shape.approach_split_document(b'{}', folder, b'', b''),
+            }
+            for name, call in calls.items():
+                with self.subTest(folder=folder, helper=name), \
+                        mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                        self.assertRaisesRegex(ValueError, 'another split.json log'):
+                    call()
+                read.assert_not_called()
+
+    def test_plan_consumers_refuse_foreign_file_symlinks_before_reads(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        folder = self.root / f'shape-v2-{LOG}'; folder.mkdir()
+        for name in (shape.PLAN_NAME, shape.RECEIPT_NAME, shape.LISTING_NAME):
+            path = folder / name
+            path.symlink_to(self.root / f'{held[:8]}-2659268' / name)
+            calls = {
+                'download': lambda: shape.download_sweeps(folder, 'a' * 64, fetch=no_network, sleep=no_network),
+                'build': lambda: shape.build_car_shape(folder, 'a' * 64, BOX, ORIGIN, b'', b'', PLACEMENT_SHA),
+                'receipt': lambda: shape.load_receipted(folder, 'a' * 64, {}, BOX, ORIGIN, b'', b''),
+                'approach': lambda: shape.approach_split_document(b'{}', folder, b'', b''),
+            }
+            for helper, call in calls.items():
+                with self.subTest(file=name, helper=helper), \
+                        mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                        self.assertRaisesRegex(ValueError, 'another split.json log'):
+                    call()
+                read.assert_not_called()
+            path.unlink()
+
+    def test_log_guard_runs_before_input_path_binding(self):
+        site = Site(self.root / 'a', approach_drive())
+        with mock.patch.object(shape, 'check_held_out', side_effect=RuntimeError('log guard first')), \
+                mock.patch.object(shape, 'guard_input_paths', side_effect=AssertionError('path binding first')) as bind, \
+                mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                self.assertRaisesRegex(RuntimeError, 'log guard first'):
+            site.plan()
+        bind.assert_not_called(); read.assert_not_called()
+
+    def test_lock_metadata_path_cannot_name_another_split_log(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        with mock.patch.object(shape, 'snapshot', side_effect=AssertionError('lock read')) as read, \
+                self.assertRaisesRegex(ValueError, 'another split.json log'):
+            shape.check_held_out(held, True, 'a' * 64, lock_path=self.root / LOG / 'protocol-lock.json')
+        read.assert_not_called()
+
+    def test_split_logs_have_distinct_prefixes_and_collisions_are_refused(self):
+        _sites, logs = shape.split_metadata()
+        self.assertEqual(len(logs), len({log[:8] for log in logs}))
+        raw = json.dumps({'sites': [{'logId': LOG}, {'logId': LOG[:-1] + '5'}]}).encode()
+        split = mock.Mock(); split.read_bytes.return_value = raw
+        with mock.patch.object(shape, 'SPLIT_PATH', split), mock.patch.object(shape, 'SPLIT_SHA256', sha(raw)), \
+                mock.patch.object(shape, 'snapshot', side_effect=AssertionError('input read')) as read, \
+                self.assertRaisesRegex(ValueError, 'share an 8-hex prefix'):
+            shape.av2_split(LOG)
+        read.assert_not_called()
+
+    def test_development_m7_site_prefix_preserves_plan_shape_and_approach(self):
+        site = Site(self.root / f'{LOG[:8]}-2658849', approach_drive())
+        site.out_root = site.root / 'shape'
+        folder, plan_sha, block = site.measured()
+        other = Site(self.root / 'plain', approach_drive())
+        _, other_sha, other_block = other.measured()
+        self.assertEqual(plan_sha, other_sha); self.assertEqual(block, other_block)
+        doc, _ = shape.approach_split_document(site.ground_with(block), folder, site.ann_raw, site.pose_raw)
+        self.assertEqual(doc['approachSplit']['K'], 40)
+        ground = site.root / 'ground.json'
+        ground.write_bytes(site.ground_with(block))
+        args = site.plan_args(); args['ground_sha256'] = sha(ground.read_bytes())
+        output = site.root / 'approach'
+        argv = ['car_shape', 'approach-split', '--name', 'synthetic', '--out-root', str(site.out_root),
+                '--output-dir', str(output)]
+        for name in ('ground', 'annotations', 'poses'):
+            argv += ['--' + name, str(args[name + '_path']), '--' + name + '-sha256', args[name + '_sha256']]
+        with mock.patch.object(sys, 'argv', argv):
+            shape.main()
+        self.assertEqual(json.loads((output / 'synthetic.json').read_bytes())['carShape'], doc['carShape'])
+
     def test_development_cli_log_cannot_download_a_held_out_plan(self):
         held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
                     if s['role'] == 'held-out-blocked-test')

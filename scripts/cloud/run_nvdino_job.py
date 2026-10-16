@@ -24,6 +24,7 @@ import stat
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -42,6 +43,8 @@ MAX_LABEL_BYTES = 1 << 20
 MAX_ANNOTATED_BYTES = 4 << 20
 MAX_BUNDLE_BYTES = 8 << 20
 MAX_BLOCK_BYTES = 256 << 10
+MODEL_URL_PREFIXES = {'weights': 'https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/grounding_dino/',
+                      'bert': 'https://huggingface.co/'}
 WRAPPER_SECONDS = 1800
 SID = re.compile(r'[0-9a-f]{32}\Z')
 HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -142,6 +145,14 @@ def abs_path(value):
 
 
 # ------------------------------------------------------------------ plan
+def refuse_av2_url(url):
+    require(isinstance(url, str), 'download url')
+    decoded = urllib.parse.unquote(url).lower()
+    parsed = urllib.parse.urlsplit(decoded)
+    require('argoverse' not in (parsed.hostname or '') and parsed.path.lstrip('/').split('/', 1)[0] != 'argoverse'
+            and 'datasets/av2' not in decoded, 'AV2 downloads refused')
+
+
 def validate_plan(plan, submission_id=None, output=None):
     """Structure and internal consistency of a plan; raises Refused. Returns the plan."""
     require(plan.get('schemaVersion') == 1 and plan.get('kind') == KIND_PLAN, 'plan kind')
@@ -193,7 +204,10 @@ def validate_plan(plan, submission_id=None, output=None):
         url = d['url']
         require(isinstance(url, str) and len(url) <= 1024 and not any(c in url for c in ' \n\r\t"\'<>\\'),
                 'download url')
+        refuse_av2_url(url)
         require(url.startswith('https://') or (test and url.startswith('file:///')), 'https only (file:// in test plans)')
+        if not test:
+            require(url.startswith(MODEL_URL_PREFIXES[d['group']]), 'download outside pinned model resource')
     weights = next(d for d in downloads if d['group'] == 'weights')
     require(weights['sha256'] == m['weightsSha256'] and weights['bytes'] == m['weightsBytes']
             and os.path.basename(weights['path']) == m['weightsFile'], 'weights pin differs from model block')
@@ -422,26 +436,29 @@ def assemble_image(plan):
 
 class HttpsOnly(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        refuse_av2_url(newurl)
         require(newurl.startswith('https://'), 'redirect leaves https')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def download(item, deadline):
     """Stream once to a fresh partial file, checking size and sha256; no retry, no resume."""
-    os.makedirs(os.path.dirname(item['path']), exist_ok=True)
+    refuse_av2_url(item['url'])
     partial = item['path'] + '.partial'
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), HttpsOnly)
     request = urllib.request.Request(item['url'], headers={'User-Agent': 'sightline-nvdino-job/1'})
     h, size = hashlib.sha256(), 0
-    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'wb') as stream:
-        with opener.open(request, timeout=max(1.0, min(60.0, deadline - time.monotonic()))) as response:
-            final = response.geturl()
-            require(final.startswith('https://') or item['url'].startswith('file:///'), 'final url not https')
-            status = getattr(response, 'status', None)
-            require(status in (None, 200), 'HTTP status %s' % status)
-            length = response.headers.get('Content-Length')
-            require(length is None or int(length) == item['bytes'], 'Content-Length differs from the pin')
+    with opener.open(request, timeout=max(1.0, min(60.0, deadline - time.monotonic()))) as response:
+        final = response.geturl()
+        refuse_av2_url(final)
+        require(final.startswith('https://') or item['url'].startswith('file:///'), 'final url not https')
+        status = getattr(response, 'status', None)
+        require(status in (None, 200), 'HTTP status %s' % status)
+        length = response.headers.get('Content-Length')
+        require(length is None or int(length) == item['bytes'], 'Content-Length differs from the pin')
+        os.makedirs(os.path.dirname(item['path']), exist_ok=True)
+        descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'wb') as stream:
             while True:
                 require(time.monotonic() < deadline, 'download deadline: ' + os.path.basename(item['path']))
                 block = response.read(1 << 20)
@@ -451,8 +468,8 @@ def download(item, deadline):
                 require(size <= item['bytes'], 'download larger than its pin')
                 h.update(block)
                 stream.write(block)
-        stream.flush()
-        os.fsync(stream.fileno())
+            stream.flush()
+            os.fsync(stream.fileno())
     require(size == item['bytes'] and h.hexdigest() == item['sha256'],
             'download hash/size differs: ' + os.path.basename(item['path']))
     os.rename(partial, item['path'])

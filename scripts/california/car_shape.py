@@ -139,13 +139,20 @@ def check_log(log):
     return log
 
 
-def av2_split(log):
-    """Same sha-checked split lookup as M7, without importing evaluation code into the scene builder."""
-    check_log(log)
+def split_metadata():
     raw = SPLIT_PATH.read_bytes()
     if digest(raw) != SPLIT_SHA256:
         raise SystemExit('split.json differs from its frozen sha256')
-    entries = [s for s in parse(raw)['sites'] if s['logId'] == log]
+    logs = set(re.findall(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', raw.decode('utf-8')))
+    require(len({log[:8] for log in logs}) == len(logs), 'split.json logs share an 8-hex prefix')
+    return parse(raw)['sites'], logs
+
+
+def av2_split(log):
+    """Same sha-checked split lookup as M7, without importing evaluation code into the scene builder."""
+    check_log(log)
+    sites, _logs = split_metadata()
+    entries = [s for s in sites if s['logId'] == log]
     if not entries:
         raise SystemExit(f'{log[:8]} is not a log of split.json')
     for entry in entries:
@@ -171,6 +178,17 @@ def plan_dir_for(log, out_root=None):
     return Path(out_root if out_root is not None else DATA_ROOT) / f'shape-v2-{check_log(log)}'
 
 
+def guard_input_paths(log, *paths):
+    """After the log guard, reject another split log in either the supplied path or its resolved components."""
+    _sites, logs = split_metadata()
+    foreign = {token for other in logs if other != log for token in (other, other[:8])}
+    for value in paths:
+        if value is not None:
+            path = Path(value)
+            require(not any(token in part.lower() for part in (*path.parts, *path.resolve().parts) for token in foreign),
+                    'Input path names another split.json log')
+
+
 # ------------------------------------------------------------------ held-out guard (before any file of the log is read)
 def load_m7_common():
     # Never bind M7 helpers to "common": the builder verifies that name belongs to scripts/sponsors/common.py.
@@ -193,6 +211,7 @@ def check_held_out(log, held_out_run=False, lock_sha256=None, need_addendum=Fals
     path = Path(lock_path) if lock_path is not None else LOCK_PATH
     if lock_sha256 == SUPERSEDED_LOCK_SHA256 or path.resolve() == SUPERSEDED_LOCK_PATH.resolve():
         raise SystemExit('Lock 1 is superseded; use lock-2/protocol-lock.json')
+    guard_input_paths(log, path)
     require(path.is_file(), f'Held-out runs need {path.name} at {path} (written at the lock); it does not exist')
     lock = parse(snapshot(path, lock_sha256))
     pipeline = lock.get('pipeline') if isinstance(lock.get('pipeline'), dict) else {}
@@ -219,6 +238,7 @@ def guard_plan_dir(plan_dir, log=None, *, held_out_run=False, lock_sha256=None, 
     require(log is None or log == named_log, 'Plan directory is for another log')
     check_held_out(named_log, held_out_run, lock_sha256, need_addendum=need_addendum)
     require(folder.resolve().name == folder.name, 'Plan directory resolves to another log or directory')
+    guard_input_paths(named_log, folder, *(folder / name for name in (PLAN_NAME, RECEIPT_NAME, LISTING_NAME)))
     return named_log
 
 
@@ -523,6 +543,7 @@ def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha
     Reads metadata only. The vehicle is the single averaged stationary vehicle (poseAverage cuboid) of ground.json."""
     plan_dir = plan_dir_for(log, out_root)
     guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256)
+    guard_input_paths(log, ground_path, annotations_path, poses_path, listing_path)
     url = listing_url(log)
     for path in (annotations_path, poses_path):
         require(Path(path).resolve().parent.name == log, 'Annotations and poses must come from the log directory of this log')
@@ -567,6 +588,7 @@ def download_sweeps(plan_dir, plan_sha256, fetch=http_fetch, sleep=time.sleep, *
     started = utc_now(); records, dropped = [], []
     for entry in plan['sweeps']:
         ts = entry['timestampNs']; path = folder / f'{ts}.feather'; url = BUCKET_URL + entry['key']
+        guard_input_paths(log, path)
         base = {'timestampNs': ts, 'set': entry['set'], 'file': f'{SWEEP_DIR}/{ts}.feather', 'key': entry['key'], 'url': url, 'etag': entry['etag']}
         if path.is_file():
             data = path.read_bytes(); check = byte_check(entry, data)
@@ -760,6 +782,7 @@ def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, p
                 r['sizeMatches'] is True and r['md5MatchesEtag'] is (True if re.fullmatch('[0-9a-f]{32}', entry['etag']) else None),
                 'A receipt record does not pass the download success test')
         path = plan_dir / SWEEP_DIR / f"{r['timestampNs']}.feather"
+        guard_input_paths(log, path)
         require(path.is_file(), f"A planned and receipted sweep is missing: {r['timestampNs']}")
         data = snapshot(path, max_bytes=MAX_SWEEP)
         require(digest(data) == r['sha256'], f"A receipted sweep changed on disk: {r['timestampNs']}")
@@ -838,6 +861,7 @@ def approach_split_document(ground_raw, plan_dir, annotations_data, poses_data, 
     data_by_ts = {}
     for e in used:  # every sweep used must be present with its listed sha256, else no output at all
         path = Path(plan_dir) / SWEEP_DIR / f"{e['timestampNs']}.feather"
+        guard_input_paths(log, path)
         require(path.is_file(), f"Approach split sweep missing: {e['timestampNs']}")
         data = snapshot(path, max_bytes=MAX_SWEEP)
         require(digest(data) == e['sha256'], f"Approach split sweep changed on disk: {e['timestampNs']}")
@@ -913,6 +937,7 @@ def main():
             log = Path(args.annotations).resolve().parent.name
             require(Path(args.poses).resolve().parent.name == log, 'Annotations and poses must come from the same log directory')
             check_held_out(log, args.held_out_run, args.protocol_lock_sha256, need_addendum=True)
+            guard_input_paths(log, args.ground, args.annotations, args.poses, plan_dir_for(log, args.out_root))
             ground_raw = snapshot(args.ground, args.ground_sha256, 1024 * 1024); ground = parse(ground_raw)
             shape = ground.get('carShape')
             require(isinstance(shape, dict), 'This scene has no annotated stationary vehicle: the approach split does not apply')

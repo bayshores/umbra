@@ -22,6 +22,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from io import StringIO
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -378,6 +379,114 @@ class LogBlock(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_SOURCES, 'local NV-DINO job sources (.local) are not present')
+class DownloadGuards(unittest.TestCase):
+    AV2_URLS = (
+        'https://argoverse.s3.amazonaws.com/datasets/av2/sensor/val/example/annotations.feather',
+        'https://ARGOVERSE.s3.amazonaws.com/?prefix=x',
+        'https://argoverse.s3.us-west-2.amazonaws.com/x',
+        'https://s3.amazonaws.com/argoverse/x',
+        'https://s3.us-west-2.amazonaws.com/argoverse/x',
+        'https://other.example/datasets/av2/sensor/val/x',
+        'https://huggingface.co/x?prefix=datasets%2Fav2%2Fsensor',
+        'https://other.example/%61rgoverse/x',
+        'file:///tmp/datasets/av2/x',
+    )
+
+    def real_plan(self):
+        injected = [{'path': '/workload/input/run_nvdino_job.py', 'role': 'wrapper', 'bytes': 10, 'sha256': 'a' * 64},
+                    {'path': '/workload/input/infer.yaml', 'role': 'spec', 'bytes': 10, 'sha256': 'b' * 64}]
+        injected += [{'path': '/workload/input/' + n, 'role': 'chunk', 'index': i, 'bytes': b, 'sha256': h}
+                     for i, (n, b, h) in enumerate(prepare.CHUNKS)]
+        return prepare.build_plan(SID, injected)
+
+    def test_pinned_model_urls_and_test_files_still_validate(self):
+        plan = self.real_plan()
+        self.assertIs(job.validate_plan(plan), plan)
+        plan['testOnly'] = True
+        for item in plan['downloads']:
+            item['url'] = 'file:///tmp/model/' + os.path.basename(item['path'])
+        self.assertIs(job.validate_plan(plan), plan)
+        self.assertLessEqual(Path(job.__file__).stat().st_size, 65536)
+
+    def test_non_test_plans_refuse_unpinned_model_urls(self):
+        for group in ('weights', 'bert'):
+            for url in ('https://other.example/model', 'https://huggingface.co.attacker.example/model',
+                        'https://huggingface.co@attacker.example/model',
+                        'https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/other/model'):
+                plan = self.real_plan()
+                next(d for d in plan['downloads'] if d['group'] == group)['url'] = url
+                with self.subTest(group=group, url=url), self.assertRaisesRegex(job.Refused, 'model resource'):
+                    job.validate_plan(plan)
+
+    def test_plan_refuses_av2_urls_before_injected_reads_or_output(self):
+        for url in self.AV2_URLS:
+            for test in (False, True):
+                plan = self.real_plan(); plan['testOnly'] = test
+                plan['downloads'][0]['url'] = url
+                raw = job.pretty(plan)
+                args = SimpleNamespace(execute=True, submission_id=SID, plan_sha256=sha(raw), plan='synthetic-plan.json',
+                                       output=plan['paths']['output'], retrieval_window_seconds=0)
+                with self.subTest(url=url, test=test), \
+                        mock.patch.object(job, 'read_regular', side_effect=[raw, AssertionError('injected read')]) as read, \
+                        mock.patch.object(job.os, 'makedirs', side_effect=AssertionError('folder created')) as mkdir, \
+                        mock.patch.object(job.os, 'open', side_effect=AssertionError('file opened')) as opened, \
+                        mock.patch.object(job.urllib.request, 'build_opener', side_effect=AssertionError('request')) as request, \
+                        self.assertRaisesRegex(job.Refused, 'AV2'):
+                    job.run_job(args, None, {})
+                read.assert_called_once_with(args.plan, job.MAX_PLAN_BYTES)
+                mkdir.assert_not_called(); opened.assert_not_called(); request.assert_not_called()
+
+    def test_download_refuses_av2_before_request_or_files(self):
+        for url in self.AV2_URLS:
+            item = {'url': url, 'path': '/synthetic/model', 'bytes': 3, 'sha256': sha(b'abc')}
+            with self.subTest(url=url), \
+                    mock.patch.object(job.os, 'makedirs', side_effect=AssertionError('folder created')) as mkdir, \
+                    mock.patch.object(job.os, 'open', side_effect=AssertionError('file opened')) as opened, \
+                    mock.patch.object(job.urllib.request, 'Request', side_effect=AssertionError('request')) as request, \
+                    self.assertRaisesRegex(job.Refused, 'AV2'):
+                job.download(item, time.monotonic() + 30)
+            mkdir.assert_not_called(); opened.assert_not_called(); request.assert_not_called()
+
+    def test_redirect_refuses_av2_before_constructing_the_next_request(self):
+        request = job.urllib.request.Request('https://huggingface.co/model')
+        for url in self.AV2_URLS:
+            with self.subTest(url=url), \
+                    mock.patch.object(job.urllib.request.HTTPRedirectHandler, 'redirect_request',
+                                      side_effect=AssertionError('redirect followed')) as redirect, \
+                    self.assertRaisesRegex(job.Refused, 'AV2'):
+                job.HttpsOnly().redirect_request(request, None, 302, 'Found', {}, url)
+            redirect.assert_not_called()
+        redirected = job.HttpsOnly().redirect_request(request, None, 302, 'Found', {}, 'https://cdn.example/model')
+        self.assertEqual(redirected.full_url, 'https://cdn.example/model')
+
+    def test_final_av2_url_refused_before_body_read_or_files(self):
+        item = {'url': 'https://huggingface.co/model', 'path': '/synthetic/model', 'bytes': 3, 'sha256': sha(b'abc')}
+        for url in self.AV2_URLS:
+            response = mock.MagicMock()
+            response.__enter__.return_value = response
+            response.geturl.return_value = url
+            response.read.side_effect = AssertionError('body read')
+            opener = mock.Mock(); opener.open.return_value = response
+            with self.subTest(url=url), mock.patch.object(job.urllib.request, 'build_opener', return_value=opener), \
+                    mock.patch.object(job.os, 'makedirs', side_effect=AssertionError('folder created')) as mkdir, \
+                    mock.patch.object(job.os, 'open', side_effect=AssertionError('file opened')) as opened, \
+                    self.assertRaisesRegex(job.Refused, 'AV2'):
+                job.download(item, time.monotonic() + 30)
+            opener.open.assert_called_once()
+            self.assertEqual(opener.open.call_args.args[0].full_url, item['url'])
+            response.read.assert_not_called(); mkdir.assert_not_called(); opened.assert_not_called()
+
+    def test_file_download_still_checks_and_writes_the_pin(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            source = root / 'source'; source.write_bytes(b'abc')
+            target = root / 'output' / 'model'
+            item = {'url': source.as_uri(), 'path': str(target), 'bytes': 3, 'sha256': sha(b'abc')}
+            result = job.download(item, time.monotonic() + 30)
+            self.assertEqual(target.read_bytes(), b'abc')
+            self.assertEqual(result['finalHost'], 'file')
+
+
 class PlanSpecPrepare(unittest.TestCase):
     def real_plan(self):
         paths = prepare.real_paths(SID)
