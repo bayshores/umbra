@@ -353,7 +353,8 @@ def site_score(name, e='not scored', d='not scored', mode='rehearsal (developmen
     metrics = {m: {'outcome': 'not scored', 'reason': 'test'} for m in ('A', 'B', 'C', 'F', 'F0', 'FApproachSplit', 'H', 'I', 'J', 'K')}
     metrics['D'] = {'outcome': d, **({'errors': [{'feature': 'L', 'errorPx': 2.0}]} if d != 'not scored' else {})}
     metrics['E'] = {'outcome': e}
-    doc = {'mode': mode, 'site': {'logId': log + '-0000', 'crossingId': crossing, 'role': role}, 'protocolLockSha256': None,
+    doc = {'mode': mode, 'site': {'logId': log + '-0000', 'crossingId': crossing, 'role': role},
+           'protocolLockSha256': LOCK if mode.startswith('held-out') else None,
            'labelsAddendumSha256': None, 'build': {'outcome': 'built-shape'}, 'metrics': metrics,
            'inputs': {'failedSteps': []}, 'scorer': {'sha256': 'ab' * 32}}
     doc.update(extra)
@@ -362,7 +363,7 @@ def site_score(name, e='not scored', d='not scored', mode='rehearsal (developmen
 
 class Summary(Tmp):
     def summarize(self, *docs):
-        return score.summarize(argparse.Namespace(scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
+        return score.summarize(argparse.Namespace(rehearse=True, scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
 
     def test_false_blocked_bound_and_d_each_site(self):
         got = self.summarize(site_score('aaaaaaaa/1', e='pass', d='pass'), site_score('bbbbbbbb/2', e='fail', d='fail'),
@@ -411,7 +412,8 @@ class HeldOutSummary(Tmp):
                 mock.patch.object(common, 'labels_manifest', return_value=(manifest or {}, '99' * 32)), \
                 mock.patch.object(common, 'runs_list', return_value=(listed, 'aa' * 32)), \
                 mock.patch.object(score, 'one_run', side_effect=runs or (lambda path, doc: [])):
-            return score.summarize(argparse.Namespace(scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
+            return score.summarize(argparse.Namespace(rehearse=False, protocol_lock_sha256=LOCK,
+                                                     scores=[self.write(f'{i}.json', d) for i, d in enumerate(docs)]))
 
     def doc(self, name, labels=None, failed=(), paint=True, anchors=None):
         inputs = {'failedSteps': list(failed), 'siteRecord': {'file': 's', 'sha256': '22' * 32},
@@ -727,9 +729,11 @@ class HeldOutSiteScore(Tmp):
     def test_a_site_built_under_another_addendum_is_refused(self):
         site = self.dir / 'site'
         site.mkdir()
-        (site / 'site-stopped.json').write_text(json.dumps({'mode': HELD, 'site': SITE, 'outcome': 'stopped', 'labelsAddendumSha256': None,
+        (site / 'site-stopped.json').write_text(json.dumps({'mode': HELD, 'site': SITE, 'outcome': 'stopped', 'protocolLockSha256': LOCK,
+                                                            'labelsAddendumSha256': None,
                                                             'lostSiteList': LOST, 'stopped': {'step': 'download', 'reason': 'test'}}))
-        args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
+        args = argparse.Namespace(rehearse=False, protocol_lock_sha256=LOCK,
+                                  site=str(site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
                                   metric_k=None, paint=None, evaluation_stopped=None, approach_split_results=None)
         listed = {NAME: (common.sha_file(site / 'site-stopped.json'), '00' * 32)}
         with mock.patch.object(common, 'preflight', return_value={}), \
@@ -781,7 +785,8 @@ class StoppedSiteScore(Tmp):
                                              'siteRecord': {'file': common.rel(record), 'sha256': common.sha_file(record)}})
 
     def score(self, addendum=None, **over):
-        args = argparse.Namespace(**{**dict(site=str(self.site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
+        args = argparse.Namespace(**{**dict(rehearse=False, protocol_lock_sha256=LOCK,
+                                            site=str(self.site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
                                             metric_k=None, paint=None, evaluation_stopped=str(self.stop), approach_split_results=None), **over})
         listed = (common.sha_file(self.site / 'build-receipt.json'),
                   common.sha_file(score.paint_record(Path(args.paint))) if args.paint else '00' * 32)
@@ -847,6 +852,7 @@ class HeldOutDriver(Tmp):
         self.addendum = self.write('addendum.json', {'deCode': {}})
         self.site, self.paint, self.out = self.dir / 'site', self.dir / 'paint', self.dir / '.local' / 'eval'
         patches = [mock.patch.object(common, 'RUN_MARKERS', self.dir / 'markers'),
+                   mock.patch.object(common, 'preflight', return_value={}),
                    mock.patch.object(common, 'guard', return_value=({'role': SITE['role']}, {})),
                    mock.patch.object(common, 'labels_addendum', return_value=ADDENDUM_SHA),
                    mock.patch.object(common, 'labels_manifest', return_value=({NAME: common.sha_file(self.labels)}, '99' * 32)),
@@ -1357,7 +1363,7 @@ class ApproachSplitScore(Tmp):
         return self.write('f/approach-split/results.json', doc)
 
     def score(self, **over):
-        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
+        args = argparse.Namespace(**{**dict(rehearse=True, site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
                                             metric_f_results=str(self.results), metric_k=None, paint=None, evaluation_stopped=None,
                                             approach_split_results=None), **over})
         with mock.patch.object(common, 'labels_addendum', return_value=None), mock.patch.object(score, 'F_PROTOCOL', self.protocol):
@@ -1408,7 +1414,7 @@ class ApproachSplitScore(Tmp):
 
     def test_the_summary_lists_it_apart_from_the_targets(self):
         reported = {'outcome': 'reported', 'reason': 'report only', 'K': 30}
-        got = score.summarize(argparse.Namespace(scores=[
+        got = score.summarize(argparse.Namespace(rehearse=True, scores=[
             self.write('s1.json', site_score('aaaaaaaa/1')),
             self.write('s2.json', {**site_score('bbbbbbbb/2'), 'metrics': {**site_score('bbbbbbbb/2')['metrics'], 'FApproachSplit': reported}})]))
         self.assertEqual(got['outcomes']['FApproachSplit'], {'aaaaaaaa/1': 'not scored', 'bbbbbbbb/2': 'reported'})
@@ -1445,7 +1451,7 @@ class EGridScore(Tmp):
         return str(self.write('de.json', de_doc(e_rows=rows, groundSha256=self.ground)))
 
     def score(self, **over):
-        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
+        args = argparse.Namespace(**{**dict(rehearse=True, site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
                                             metric_f_results=str(self.results), metric_k=None, paint=None, evaluation_stopped=None,
                                             approach_split_results=None), **over})
         with mock.patch.object(score, 'metric_f', return_value={'outcome': 'not scored'}), \
@@ -1657,11 +1663,91 @@ class RunsList(Tmp):
         self.assertIn('made from another site record', str(stop.exception))
 
 
+class OutputPreflight(Tmp):
+    def test_score_checks_before_opening_any_receipt_or_score(self):
+        args = argparse.Namespace(rehearse=False, protocol_lock_sha256=LOCK, site='unopened', scores=['unopened'])
+        for fn in (score.score_site, score.summarize):
+            for missing in ('lock record missing', 'anchor not on origin/main'):
+                with self.subTest(fn=fn.__name__, missing=missing), \
+                        mock.patch.object(common, 'preflight', side_effect=SystemExit(missing)) as guard, \
+                        mock.patch.object(score, 'site_record', side_effect=AssertionError('receipt opened before preflight')), \
+                        mock.patch.object(score, 'load', side_effect=AssertionError('score opened before preflight')), \
+                        self.assertRaisesRegex(SystemExit, missing):
+                    fn(args)
+                guard.assert_called_once_with(LOCK)
+
+    def test_evaluation_checks_before_looking_for_a_build_record(self):
+        driver = load_driver('evaluate_site')
+        args = argparse.Namespace(rehearse=False, protocol_lock_sha256=LOCK)
+        with mock.patch.object(common, 'preflight', side_effect=SystemExit('lock record missing')) as guard, \
+                mock.patch.object(Path, 'is_file', side_effect=AssertionError('input inspected before preflight')), \
+                self.assertRaisesRegex(SystemExit, 'lock record missing'):
+            driver.site_record(argparse.ArgumentParser(), args, self.dir / 'unopened')
+        guard.assert_called_once_with(LOCK)
+
+    def test_paint_checks_before_opening_a_build_record(self):
+        driver = load_driver('paint_heldout')
+        argv = ['paint_heldout.py', '--site', str(self.dir / 'unopened'), '--out', str(self.dir / '.local' / 'new'),
+                '--protocol-lock-sha256', LOCK]
+        with mock.patch.object(driver, 'ROOT', self.dir.resolve()), mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(common, 'preflight', side_effect=SystemExit('anchor not on origin/main')) as guard, \
+                mock.patch.object(driver, 'site_record', side_effect=AssertionError('receipt opened before preflight')), \
+                self.assertRaisesRegex(SystemExit, 'anchor not on origin/main'):
+            driver.main()
+        guard.assert_called_once_with(LOCK)
+
+    def test_rehearsal_cannot_read_marked_held_out_outputs(self):
+        markers, held = self.dir / 'markers', self.dir / 'held'
+        markers.mkdir()
+        held.mkdir()
+        (markers / 'synthetic.json').write_text(json.dumps({'folder': str(held)}))
+        alias = self.dir / 'alias'
+        alias.symlink_to(held, target_is_directory=True)
+        driver, paint = load_driver('evaluate_site'), load_driver('paint_heldout')
+        args = argparse.Namespace(rehearse=True, site=str(alias), scores=[str(alias / 'score.json')])
+        argv = ['paint_heldout.py', '--rehearse', '--site', str(alias), '--out', str(self.dir / '.local' / 'new')]
+        calls = (lambda: score.score_site(args), lambda: score.summarize(args),
+                 lambda: driver.site_record(argparse.ArgumentParser(), args, alias), paint.main)
+        with mock.patch.object(common, 'RUN_MARKERS', markers), mock.patch.object(paint, 'ROOT', self.dir.resolve()), \
+                mock.patch.object(sys, 'argv', argv), \
+                mock.patch.object(common, 'preflight', side_effect=AssertionError('development needs no lock')), \
+                mock.patch.object(score, 'load', side_effect=AssertionError('protected output opened')), \
+                mock.patch.object(score, 'site_record', side_effect=AssertionError('protected receipt opened')), \
+                mock.patch.object(paint, 'site_record', side_effect=AssertionError('protected receipt opened')):
+            common.rehearsal_inputs(self.dir / 'development')
+            for call in calls:
+                with self.subTest(call=call), self.assertRaisesRegex(SystemExit, '--rehearse cannot open a held-out run folder'):
+                    call()
+
+    def test_rehearsal_cannot_read_a_receipt_file_alias_into_a_held_out_folder(self):
+        markers, held, site = self.dir / 'markers', self.dir / 'held', self.dir / 'development'
+        for folder in (markers, held, site):
+            folder.mkdir()
+        marker = markers / 'synthetic.json'
+        data = json.dumps({'folder': str(held)}).encode()
+        marker.write_bytes(data)
+        (held / 'build-receipt.json').touch()
+        (site / 'build-receipt.json').symlink_to(held / 'build-receipt.json')
+        driver, paint = load_driver('evaluate_site'), load_driver('paint_heldout')
+        args = argparse.Namespace(rehearse=True)
+
+        def read_bytes(path):
+            self.assertEqual(path, marker, 'protected receipt opened before its resolved path was checked')
+            return data
+
+        calls = (lambda: score.site_record(site, rehearse=True), lambda: paint.site_record(site, rehearse=True),
+                 lambda: driver.site_record(argparse.ArgumentParser(), args, site))
+        with mock.patch.object(common, 'RUN_MARKERS', markers), mock.patch.object(Path, 'read_bytes', read_bytes):
+            for call in calls:
+                with self.subTest(call=call), self.assertRaisesRegex(SystemExit, '--rehearse cannot open a held-out run folder'):
+                    call()
+
+
 class OutCannotEscapeLocal(unittest.TestCase):
     def test_dot_dot_is_refused_by_every_driver(self):
         cases = {'run_heldout.py': ['--log', 'x', '--crossing', '1', '--rehearse', '--out', '.local/../scripts/m7-test-out'],
                  'evaluate_site.py': ['--site', 'nowhere', '--rehearse', '--out', '.local/../scripts/m7-test-out'],
-                 'score.py': ['summary', '--scores', 'nowhere', '--out', '.local/../scripts/m7-test-out']}
+                 'score.py': ['summary', '--rehearse', '--scores', 'nowhere', '--out', '.local/../scripts/m7-test-out']}
         for tool, argv in cases.items():
             with self.subTest(tool):
                 result = subprocess.run([sys.executable, '-I', '-B', str(M7_DIR / tool), *argv], cwd=ROOT, capture_output=True, text=True)

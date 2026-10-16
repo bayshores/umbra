@@ -70,17 +70,23 @@ F_PROTOCOL = ['--protocol', f'{F_DIR}/protocol-v4.json', '--protocol-lock', f'{F
 BUILT = ('built-shape', 'built-box')
 
 def site_record(parser, args, site):
-    """The site's single record, built in this mode under this lock; then the guard (held-out: preflight)."""
+    """Preflight before opening the site's record, then validate its mode, lock and split role."""
+    if not args.rehearse:
+        common.preflight(args.protocol_lock_sha256)
+    else:
+        common.rehearsal_inputs(site, getattr(args, 'paint', None), getattr(args, 'labels', None))
     found = [p for p in (site / 'build-receipt.json', site / 'site-stopped.json') if p.is_file()]
     if len(found) != 1:
         parser.error(f'{site} has no single site record (build-receipt.json or site-stopped.json)')
+    if args.rehearse:
+        common.rehearsal_inputs(found[0])
     record = json.loads(found[0].read_bytes())
     log, crossing = record['site']['logId'], record['site']['crossingId']
     if record['mode'].startswith('held-out') == bool(args.rehearse):
         parser.error('the site folder was built in the other mode')
     if not args.rehearse and record['protocolLockSha256'] != args.protocol_lock_sha256:
         parser.error('the site folder was built under another lock')
-    common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256)
+    common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256, fetch=False)
     if not args.rehearse and common.marked_folder('build', log, crossing) != rel(site):
         parser.error('--site must be the folder the build marker names')
     return record, found[0], log, crossing
@@ -184,6 +190,7 @@ def record_stopped(parser, args):
         folder.mkdir(parents=True, exist_ok=True)
         write_new(stop_path, {**stop, 'finishedUtc': now()})
     result = subprocess.run(NICE + [sys.executable, '-I', '-B', 'scripts/evaluation/m7/score.py', 'site', '--site', str(site),
+                                    '--protocol-lock-sha256', args.protocol_lock_sha256,
                                     '--paint', str(ROOT / paint), '--evaluation-stopped', str(stop_path), '--out', str(score_path)],
                             cwd=ROOT, capture_output=True, text=True, env=common.child_env())
     print(common.masked(result.stdout.strip() or result.stderr.strip()[-400:]))
@@ -355,6 +362,7 @@ def main():
         start = time.time()
         origin = {'gitFetchWorks': common.wait_for_origin(), 'waitedSeconds': round(time.time() - start, 2)}
     scored = run('score', py + ['scripts/evaluation/m7/score.py', 'site', '--site', str(site), '--out', str(out / 'score.json'),
+                                *(['--rehearse'] if args.rehearse else ['--protocol-lock-sha256', args.protocol_lock_sha256]),
                                 *[x for k, v in inputs.items() for x in (f'--{k}', str(v))], *failed])
     doc = {'kind': 'pao-m7-site-evaluation', 'mode': record['mode'], 'site': record['site'],
            'siteRecord': {'file': rel(found[0]), 'sha256': sha_file(found[0])},

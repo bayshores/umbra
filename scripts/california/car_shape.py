@@ -22,7 +22,7 @@ the same shape rules on the far half of the sweep list. That shape is a report f
 
 Nothing here invents geometry: a cell without returns from two sweeps stays null (not proven), a refused shape has no
 tops at all, and integrity failures (a changed plan, a changed or missing receipted sweep) stop with no output.
-AV2 vehicles are called stationary. This file imports nothing from scripts/evaluation/.
+AV2 vehicles are called stationary. Held-out access loads M7's lock checks by path under a unique module name.
 
 Commands (one at a time; the download is the only network step and reads only public, $0 files):
   plan            write .local/data/av2/shape-v2-<log>/sweep-plan.json from metadata and print its sha256
@@ -33,6 +33,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import http.client
+import importlib.util
 import json
 import math
 import os
@@ -168,10 +169,17 @@ def plan_dir_for(log, out_root=None):
 
 
 # ------------------------------------------------------------------ held-out guard (before any file of the log is read)
+def load_m7_common():
+    # Never bind M7 helpers to "common": the builder verifies that name belongs to scripts/sponsors/common.py.
+    spec = importlib.util.spec_from_file_location('_pao_lock2_m7_common', REPO / 'scripts/evaluation/m7/common.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_path=None):
-    """A held-out, control or reserve log runs only with held_out_run AND protocol-lock.json (read by its pinned sha256)
-    naming the frozen shape-v2 protocol (pipeline.shapeProtocol.sha256), for the approach split also the split addendum
-    (pipeline.shapeSplitAddendum.sha256), and an approval (approval.by, approval.utc). Development logs need nothing."""
+    """Held-out/control access requires the full lock-2 preflight and the shape pins; reserve stays unopened.
+    No child fetches: origin/main must already hold the pushed anchors. Development logs need no lock."""
     check_log(log)
     av2_split(log)  # metadata only; refuse reserve/test before any log file is read
     if not log.startswith(HELD_OUT_LOG_PREFIXES):
@@ -193,6 +201,9 @@ def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_pat
     approval = lock.get('approval') if isinstance(lock.get('approval'), dict) else {}
     require(all(isinstance(approval.get(k), str) and approval[k].strip() for k in ('by', 'utc')),
             'protocol-lock.json needs an approval block (approval.by and approval.utc)')
+    m7 = load_m7_common()
+    require(path.resolve() == m7.LOCK_PATH.resolve(), 'Held-out runs require the fixed lock-2/protocol-lock.json path')
+    m7.preflight(lock_sha256, fetch=False)
     return {'path': str(path), 'sha256': lock_sha256}
 
 

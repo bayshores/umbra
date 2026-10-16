@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import pyarrow as pa
@@ -659,7 +660,6 @@ class BlockTests(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(shape.REFUSALS, {'too-few-sweeps': match.group(1), 'not-stationary': match.group(2)})
         source = (ROOT / 'scripts/california/car_shape.py').read_text()
-        self.assertNotIn('scripts/evaluation', source.replace('imports nothing from scripts/evaluation/', ''))
         self.assertNotRegex(source, r'(?m)^\s*(import|from)\s+metric_f')
         # The banned word appears once: in the constant every writer checks its output against.
         self.assertEqual([line for line in source.splitlines() if 'park' in line.lower()], ["BANNED = b'park'"])
@@ -689,6 +689,11 @@ class BlockTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'held-out-run'):
             shape.check_held_out(held, False, None)
         lock_path = self.root / 'protocol-lock.json'
+        # Shape-pin unit cases use a stub; full preflight and child rejection have separate synthetic-checkout tests.
+        m7 = mock.Mock(LOCK_PATH=lock_path)
+        patcher = mock.patch.object(shape, 'load_m7_common', return_value=m7)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with self.assertRaisesRegex(ValueError, 'does not exist'):
             shape.check_held_out(held, True, 'e' * 64, lock_path=lock_path)
         def lock(pipeline, approval=True):
@@ -709,6 +714,7 @@ class BlockTests(unittest.TestCase):
             shape.check_held_out(held, True, digest, need_addendum=True, lock_path=lock_path)
         digest = lock(pins)
         self.assertIsNotNone(shape.check_held_out(held, True, digest, need_addendum=True, lock_path=lock_path))
+        m7.preflight.assert_called_with(digest, fetch=False)
         with self.assertRaisesRegex(ValueError, 'SHA256 mismatch'):
             shape.check_held_out(held, True, 'f' * 64, lock_path=lock_path)
 

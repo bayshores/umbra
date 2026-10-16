@@ -9,6 +9,9 @@
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py summary --scores <site score> ... --out <new file>
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py runs-list --protocol-lock-sha256 <sha256>   (held-out, once)
 
+site and summary require --rehearse for development, or --protocol-lock-sha256 for held-out inputs, so the full
+fetching preflight runs before any build receipt or score is opened.
+
 Every target is written as pass, fail or not scored (with its reason), using the locked rules (protocol-lock.json
 metrics, referenceBlocked and statistics). Each input is checked against the site: its ground.json sha256 (baseline,
 metric F rows, metric E grid, metric K; ground.json against the build receipt) or its site record sha256 (paint). A failed or missing
@@ -122,10 +125,12 @@ def upper_bound(errors, n):
     return hi
 
 
-def site_record(site):
+def site_record(site, *, rehearse=False):
     found = [p for p in (site / 'build-receipt.json', site / 'site-stopped.json') if p.is_file()]
     if len(found) != 1:
         raise SystemExit(f'{site} has no single site record (build-receipt.json or site-stopped.json)')
+    if rehearse:
+        common.rehearsal_inputs(found[0])
     return load(found[0]), found[0]
 
 
@@ -498,10 +503,20 @@ def metric_e(doc, grid, missing='no metric E grid'):
 
 
 def score_site(args):
+    if not args.rehearse:
+        common.preflight(args.protocol_lock_sha256)
+    else:
+        common.rehearsal_inputs(args.site, *(getattr(args, key, None) for key in
+                                ('baseline', 'metric_f_results', 'metric_k', 'paint', 'labels_de', 'e_grid',
+                                 'approach_split_results', 'evaluation_stopped')))
     site = Path(args.site).resolve()
-    record, record_path = site_record(site)
+    record, record_path = site_record(site, rehearse=args.rehearse)
     role, built = record['site']['role'], record['outcome'] in BUILT
     held_out = record['mode'].startswith('held-out')
+    if held_out == bool(args.rehearse):
+        raise SystemExit('the site folder was built in the other mode')
+    if held_out and record.get('protocolLockSha256') != args.protocol_lock_sha256:
+        raise SystemExit('the site folder was built under another lock')
     test_site = role == BLOCKED_TEST or role in DEVELOPMENT_ROLES
     failed = sorted(set(args.failed_step or []))
     name = f"{record['site']['logId'][:8]}/{record['site']['crossingId']}"
@@ -511,8 +526,6 @@ def score_site(args):
                                     or args.e_grid or args.approach_split_results):
         raise SystemExit('--evaluation-stopped takes only --site, --paint and --out: the stopped evaluation\'s outputs are not used')
     stopped = evaluation_stopped(args.evaluation_stopped, record, record_path) if args.evaluation_stopped else None
-    if held_out:
-        common.preflight(record.get('protocolLockSha256'))  # the approved lock, with this score.py pinned in it
     # Held-out: the committed anchor, the addendum file and the site's build receipt must name the same addendum (or none).
     addendum_sha = common.labels_addendum(held_out, LABELS_ADDENDUM)
     if held_out and record.get('labelsAddendumSha256', 'missing') != addendum_sha:
@@ -698,6 +711,10 @@ def one_run(path, doc):
 
 
 def summarize(args):
+    if not args.rehearse:
+        common.preflight(args.protocol_lock_sha256)
+    else:
+        common.rehearsal_inputs(*args.scores)
     scores = [(Path(p), load(p)) for p in args.scores]
     modes = {d['mode'] for _, d in scores}
     if len(modes) != 1:
@@ -713,9 +730,12 @@ def summarize(args):
     if len(set(names)) != len(names):
         raise SystemExit('a site is scored twice')
     held_out = next(iter(modes)).startswith('held-out')
+    if held_out == bool(args.rehearse):
+        raise SystemExit('the scores were made in the other mode')
+    if held_out and locks != {args.protocol_lock_sha256}:
+        raise SystemExit('the scores were made under another lock')
     site_set, labels_info = None, None
     if held_out:
-        common.preflight(next(iter(locks)))  # the approved lock, with this score.py pinned in it
         if {d['scorer']['sha256'] for _, d in scores} != {sha_file(__file__)}:
             raise SystemExit('held-out site scores made by another score.py than the locked one')
         # Exactly the split.json held-out sites minus the committed lost-site list (statistics.lostSiteRule).
@@ -870,6 +890,10 @@ def main():
     m = sub.add_parser('summary')
     m.add_argument('--scores', nargs='+', required=True)
     m.add_argument('--out', required=True)
+    for command in (s, m):
+        mode = command.add_mutually_exclusive_group(required=True)
+        mode.add_argument('--rehearse', action='store_true')
+        mode.add_argument('--protocol-lock-sha256')
     r = sub.add_parser('runs-list', help=f'held-out: write {common.RUNS_REL} (then commit and push it)')
     r.add_argument('--protocol-lock-sha256', required=True)
     args = parser.parse_args()

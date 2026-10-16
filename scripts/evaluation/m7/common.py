@@ -404,6 +404,15 @@ def marked_folder(step, log, crossing):
     return json.loads(path.read_bytes())['folder'] if path.is_file() else None
 
 
+def rehearsal_inputs(*paths):
+    """Reject held-out run folders before a rehearsal opens an input. Markers are operational metadata only."""
+    inputs = [Path(p).resolve() for p in paths if p is not None]
+    for marker in RUN_MARKERS.glob('*.json'):
+        folder = (ROOT / json.loads(marker.read_bytes())['folder']).resolve()
+        if any(path.is_relative_to(folder) for path in inputs):
+            raise SystemExit('--rehearse cannot open a held-out run folder')
+
+
 def ended_run(step, log, crossing):
     """Held-out: the output folder (a Path) the run marker of this step names for this site, once that run has ended (the
     process the marker names is gone, or its id now belongs to a process that started after the marker was written). Used
@@ -520,8 +529,9 @@ def wait_for_origin(limit=3600, pause=60):
             time.sleep(pause)
 
 
-def preflight(lock_sha256):
-    """Held-out only. Returns the lock. Raises SystemExit before any held-out file is touched."""
+def preflight(lock_sha256, *, fetch=True):
+    """Held-out only. Returns the lock before data access. Children use fetch=False: all checks still run against
+    local origin/main, which must already contain the pushed anchors. Current run markers and outputs are allowed."""
     if lock_sha256 == SUPERSEDED_LOCK_SHA or LOCK_PATH.resolve() == (ROOT / SUPERSEDED_LOCK_REL).resolve():
         raise SystemExit(f'Lock 1 ({SUPERSEDED_LOCK_REL}, sha256 {SUPERSEDED_LOCK_SHA}) is superseded; use lock 2')
     if not (isinstance(lock_sha256, str) and re.fullmatch('[0-9a-f]{64}', lock_sha256)):
@@ -554,7 +564,8 @@ def preflight(lock_sha256):
     extra = [p for p in changed if p != ANCHOR_REL and not p.startswith(ANCHOR_DIR + '/')]
     if extra:
         raise SystemExit('Tracked files differ from pipeline.commit: ' + ', '.join(extra))
-    fetch_origin()
+    if fetch:
+        fetch_origin()
     anchor, _ = committed(ANCHOR_REL, 'the lock anchor (write_protocol_lock.py approve)')  # pushed and written once
     if anchor.get('protocolLockSha256') != lock_sha256:
         raise SystemExit('The anchor on origin/main names another lock')
@@ -575,7 +586,7 @@ def preflight(lock_sha256):
     return lock
 
 
-def guard(log, crossing, rehearse, lock_sha256):
+def guard(log, crossing, rehearse, lock_sha256, *, fetch=True):
     """The split role decides the mode: development logs only in rehearsal, held-out only after preflight, reserve never."""
     entry = site(log, crossing)
     av2_split(log)  # refuse unsupported publisher folders before a marker or any data access
@@ -586,7 +597,7 @@ def guard(log, crossing, rehearse, lock_sha256):
         return entry, None
     if role not in HELD_OUT_ROLES:
         raise SystemExit(f'{log[:8]} is {role}: M7 runs held-out sites only (reserve sites stay unopened)')
-    return entry, preflight(lock_sha256)
+    return entry, preflight(lock_sha256, fetch=fetch)
 
 
 # ------------------------------------------------------------------ public downloads

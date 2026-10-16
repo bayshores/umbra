@@ -249,7 +249,7 @@ class Lock2(unittest.TestCase):
         for key in ('H measured-shape rows', 'H 50%', 'B all three hard', 'D/no minimum', 'band 0.075 m', 'declared-default', '"None"'):
             self.assertIn(key, lock2['authority'])
         self.assertIn(common.SUPERSEDED_LOCK_SHA, lock2['history'])
-        self.assertEqual(lock2['revision'], 5)
+        self.assertEqual(lock2['revision'], 6)
 
     def test_adapter_preserves_builder_rule_and_code_checks(self):
         # A separate interpreter preserves the builder's module-origin checks, without importing either generic common here.

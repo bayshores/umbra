@@ -45,12 +45,14 @@ SOURCES = {'poses': 'city_SE3_egovehicle.feather', 'extrinsics': 'calibration/eg
 MAP_SOURCES = {'map': 'log_map_archive_', 'groundRaster': '_ground_height_surface____', 'groundTransform': '___img_Sim2_city.json'}
 
 
-def site_record(site):
+def site_record(site, *, rehearse=False):
     """The site's build-receipt.json or site-stopped.json; its metadata downloads must be complete."""
     paths = [site / 'build-receipt.json', site / 'site-stopped.json']
     found = [p for p in paths if p.is_file()]
     if len(found) != 1:
         raise SystemExit(f'{site} has no single site record (build-receipt.json or site-stopped.json)')
+    if rehearse:
+        common.rehearsal_inputs(found[0])
     return json.loads(found[0].read_bytes()), found[0]
 
 
@@ -86,13 +88,17 @@ def main():
     out = None if args.record_interrupted else Path(args.out).resolve()
     if out and (not out.is_relative_to(ROOT / '.local') or os.path.lexists(out)):
         parser.error('--out must be a new folder under .local/')
-    record, record_path = site_record(site_dir)
+    if not args.rehearse:
+        common.preflight(args.protocol_lock_sha256)
+    else:
+        common.rehearsal_inputs(site_dir)
+    record, record_path = site_record(site_dir, rehearse=args.rehearse)
     log, crossing = record['site']['logId'], record['site']['crossingId']
     if record['mode'].startswith('held-out') == bool(args.rehearse):
         parser.error('the site folder was built in the other mode')
     if not args.rehearse and record['protocolLockSha256'] != args.protocol_lock_sha256:
         parser.error('the site folder was built under another lock')
-    entry, _ = common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256)  # before any network access
+    entry, _ = common.guard(log, crossing, args.rehearse, args.protocol_lock_sha256, fetch=False)
     site = {'logId': log, 'crossingId': str(crossing), 'role': entry['role']}
     lost = None
     if not args.rehearse:
