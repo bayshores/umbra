@@ -436,6 +436,60 @@ class DownloadGuards(unittest.TestCase):
                 read.assert_called_once_with(args.plan, job.MAX_PLAN_BYTES)
                 mkdir.assert_not_called(); opened.assert_not_called(); request.assert_not_called()
 
+    def command_plans(self, test):
+        """Plans that each swap one child command for another program (lock-2 review r11 F11)."""
+        url = self.AV2_URLS[0]
+        edits = (lambda p: p['preflight'].update(nvidiaSmi=['curl', url]),
+                 lambda p: p['preflight'].update(nvidiaSmi=list(job.NVIDIA_SMI_ARGV) + [url]),
+                 lambda p: p['preflight'].update(python='curl'),
+                 lambda p: p['preflight'].update(python='/usr/bin/python3'),
+                 lambda p: p['tao'].update(argv=['curl', url, '-e', p['spec']['path']]),
+                 lambda p: p['tao'].update(argv=['sh', '-c', 'curl ' + url, '-e', p['spec']['path']]),
+                 lambda p: p['tao'].update(argv=['grounding_dino', 'inference', url, '-e', p['spec']['path']]))
+        for edit in edits:
+            plan = self.real_plan(); plan['testOnly'] = test
+            edit(plan)
+            yield plan
+
+    def test_plan_accepts_only_the_fixed_child_commands(self):
+        plan = self.real_plan()
+        self.assertEqual(plan['preflight']['nvidiaSmi'], list(job.NVIDIA_SMI_ARGV))
+        self.assertEqual(plan['preflight']['python'], job.PREFLIGHT_PYTHON)
+        self.assertEqual(plan['tao']['argv'], ['grounding_dino', 'inference', '-e', plan['spec']['path']])
+        for test in (False, True):
+            for plan in self.command_plans(test):
+                with self.subTest(test=test, pre=plan['preflight'], tao=plan['tao']['argv']), \
+                        self.assertRaisesRegex(job.Refused, 'preflight|tao argv'):
+                    job.validate_plan(plan)
+
+    def test_command_plans_refused_before_any_child_or_file(self):
+        for test in (False, True):
+            for plan in self.command_plans(test):
+                raw = job.pretty(plan)
+                args = SimpleNamespace(execute=True, submission_id=SID, plan_sha256=sha(raw), plan='synthetic-plan.json',
+                                       output=plan['paths']['output'], retrieval_window_seconds=0)
+                with self.subTest(test=test, pre=plan['preflight'], tao=plan['tao']['argv']), \
+                        mock.patch.object(job, 'read_regular', side_effect=[raw, AssertionError('injected read')]), \
+                        mock.patch.object(job.subprocess, 'Popen', side_effect=AssertionError('child started')) as popen, \
+                        mock.patch.object(job.os, 'makedirs', side_effect=AssertionError('folder created')) as mkdir, \
+                        mock.patch.object(job.os, 'open', side_effect=AssertionError('file opened')) as opened, \
+                        self.assertRaisesRegex(job.Refused, 'preflight|tao argv'):
+                    job.run_job(args, None, {})
+                popen.assert_not_called(); mkdir.assert_not_called(); opened.assert_not_called()
+
+    def test_child_runner_refuses_other_commands_before_a_process(self):
+        url = self.AV2_URLS[0]
+        for argv in (['curl', url], ['python3', '-c', 'print(1)'], list(job.NVIDIA_SMI_ARGV) + [url],
+                     ['grounding_dino', 'inference', '-e', 'relative/infer.yaml'], ('nvidia-smi',), []):
+            with self.subTest(argv=argv), \
+                    mock.patch.object(job.subprocess, 'Popen', side_effect=AssertionError('child started')) as popen, \
+                    self.assertRaisesRegex(job.Refused, 'child command refused'):
+                job.run_child(argv, 5)
+            popen.assert_not_called()
+        for argv in (list(job.NVIDIA_SMI_ARGV), ['python3', '-B', '-c', job.TORCH_CHECK],
+                     ['grounding_dino', 'inference', '-e', '/workload/input/infer.yaml']):
+            self.assertTrue(job.allowed_command(argv), argv)
+
     def test_download_refuses_av2_before_request_or_files(self):
         for url in self.AV2_URLS:
             item = {'url': url, 'path': '/synthetic/model', 'bytes': 3, 'sha256': sha(b'abc')}

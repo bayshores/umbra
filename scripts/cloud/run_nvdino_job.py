@@ -45,6 +45,9 @@ MAX_BUNDLE_BYTES = 8 << 20
 MAX_BLOCK_BYTES = 256 << 10
 MODEL_URL_PREFIXES = {'weights': 'https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/grounding_dino/',
                       'bert': 'https://huggingface.co/'}
+PREFLIGHT_PYTHON = 'python3'
+NVIDIA_SMI_ARGV = ('nvidia-smi', '--query-gpu=name,driver_version,memory.total', '--format=csv,noheader')
+TAO_COMMAND = ('grounding_dino', 'inference', '-e')
 WRAPPER_SECONDS = 1800
 SID = re.compile(r'[0-9a-f]{32}\Z')
 HEX = re.compile(r'[0-9a-f]{64}\Z')
@@ -215,14 +218,13 @@ def validate_plan(plan, submission_id=None, output=None):
     require(type(timeouts['weights']) is int and type(timeouts['bert']) is int
             and 0 < timeouts['weights'] <= 900 and 0 < timeouts['bert'] <= 300, 'download timeouts')
     pre = plan['preflight']
-    require(type(pre['minFreeBytes']) is int and pre['minFreeBytes'] > 0 and isinstance(pre['python'], str)
-            and isinstance(pre['nvidiaSmi'], list) and all(isinstance(a, str) for a in pre['nvidiaSmi'])
+    require(type(pre['minFreeBytes']) is int and pre['minFreeBytes'] > 0 and pre['python'] == PREFLIGHT_PYTHON
+            and pre['nvidiaSmi'] == list(NVIDIA_SMI_ARGV)
             and type(pre['timeoutSeconds']) is int and 0 < pre['timeoutSeconds'] <= 300, 'preflight')
     if not test:
         require(pre['minFreeBytes'] >= sum(d['bytes'] for d in downloads), 'free-disk floor below downloads')
     tao = plan['tao']
-    require(isinstance(tao['argv'], list) and tao['argv'][-2:] == ['-e', spec['path']]
-            and all(isinstance(a, str) for a in tao['argv']), 'tao argv')
+    require(tao['argv'] == [*TAO_COMMAND, spec['path']], 'tao argv')
     require(tao['env'] == {'TELEMETRY_OPT_OUT': 'yes', 'HF_HUB_OFFLINE': '1', 'TRANSFORMERS_OFFLINE': '1'},
             'tao env')
     require(type(tao['timeoutSeconds']) is int and 0 < tao['timeoutSeconds'] <= 900, 'tao timeout')
@@ -369,8 +371,16 @@ class Clock:
         self.marks[name] = round(time.monotonic() - started, 3)
 
 
+def allowed_command(argv):
+    """Only the three fixed child commands: the GPU query, the torch check and TAO inference on an absolute spec."""
+    return (argv == list(NVIDIA_SMI_ARGV) or argv == [PREFLIGHT_PYTHON, '-B', '-c', TORCH_CHECK]
+            or (isinstance(argv, list) and len(argv) == 4 and argv[:3] == list(TAO_COMMAND)
+                and isinstance(argv[3], str) and argv[3].startswith('/')))
+
+
 def run_child(argv, timeout, env=None, stdout=None):
     """One child in its own process group; the whole group is killed on timeout. Returns (code, bytes)."""
+    require(allowed_command(argv), 'child command refused')
     proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout or subprocess.PIPE,
                             stderr=subprocess.STDOUT, env=env, start_new_session=True)
     try:
