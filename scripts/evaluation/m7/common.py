@@ -471,12 +471,17 @@ def git(*args):
 
 
 def pinned_files(node, out=None):
-    """Every {path, sha256} pair in the lock (the coordinator-only folder is skipped: M7 never opens it)."""
+    """Every {path, sha256} pair and every <name>Path/<name>Sha256 pair (sceneBuilder.protocolPath) in the lock (the
+    coordinator-only folder is skipped: M7 never opens it)."""
     out = [] if out is None else out
     if isinstance(node, dict):
         if isinstance(node.get('path'), str) and isinstance(node.get('sha256'), str) and re.fullmatch('[0-9a-f]{64}', node['sha256']):
             if not node['path'].startswith('$'):
                 out.append((node['path'], node['sha256']))
+        for key, value in node.items():
+            digest = node.get(key[:-4] + 'Sha256') if key.endswith('Path') else None
+            if isinstance(value, str) and isinstance(digest, str) and re.fullmatch('[0-9a-f]{64}', digest) and not value.startswith('$'):
+                out.append((value, digest))
         for value in node.values():
             pinned_files(value, out)
     elif isinstance(node, list):

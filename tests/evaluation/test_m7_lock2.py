@@ -235,6 +235,19 @@ class Lock2(unittest.TestCase):
                         common.preflight(common.sha_file(path))
                     self.assertIn('reached anchor check' if allowed else 'Tracked files differ from pipeline.commit', str(error.exception))
 
+    def test_preflight_pins_include_the_builder_protocol(self):
+        # r7 review F4: a changed builder protocol must stop preflight, not the builder after a run has started.
+        candidate = json.loads((ROOT / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.candidate.json').read_bytes())
+        builder = candidate['sceneBuilder']
+        self.assertIn((builder['protocolPath'], builder['protocolSha256']), common.pinned_files(candidate))
+        self.assertEqual(common.pinned_files({'xPath': '$HIDDEN/a', 'xSha256': 'b' * 64, 'yPath': 'a', 'ySha256': 'short'}), [])
+        with tempfile.TemporaryDirectory() as folder:
+            pinned = Path(folder) / 'builder-protocol.json'
+            pinned.write_bytes(b'{"changed": true}\n')
+            lock = {'sceneBuilder': {'protocolPath': str(pinned), 'protocolSha256': 'c' * 64}}
+            mismatched = [p for p, v in common.pinned_files(lock) if common.sha_file(Path(p)) != v]
+            self.assertEqual(mismatched, [str(pinned)])
+
     def test_writer_is_blocked_until_coordinator_sets_commit(self):
         with mock.patch.object(writer, 'COMMIT', None), \
                 mock.patch.object(writer, 'check_pins', side_effect=AssertionError('must stop before reading pins')), \
@@ -263,8 +276,9 @@ class Lock2(unittest.TestCase):
         for key in ('H measured-shape rows', 'H 50%', 'B all three hard', 'D/no minimum', 'band 0.075 m', 'declared-default', '"None"'):
             self.assertIn(key, lock2['authority'])
         self.assertIn(common.SUPERSEDED_LOCK_SHA, lock2['history'])
-        self.assertEqual(lock2['revision'], 7)
+        self.assertEqual(lock2['revision'], 8)
         self.assertIn('b483a5d394fc198d881b650b755b01598e0915c758b97fa788b5b19669b05296', lock2['history'])
+        self.assertIn('311388c4d2e89de4273e6a6800f8b78a6ee8ce19efb66152c84cb44b93a8bcb0', lock2['history'])
 
     def test_driver_builder_protocol_pin_and_actual_invocation_match_writer_and_disk(self):
         driver = load_driver()
