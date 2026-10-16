@@ -342,6 +342,109 @@ class PlanAndDownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'listing of this log is empty'):
             empty.plan()
 
+    def test_development_cli_log_cannot_download_a_held_out_plan(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        # The reviewer's substitution: --held-out-run, no lock hash, a development --log and a held-out plan.
+        raw = json.dumps({'schema': shape.PLAN_SCHEMA, 'log': held}).encode()
+        argv = ['car_shape', 'download', '--log', LOG, '--held-out-run', '--plan-sha256', sha(raw),
+                '--out-root', str(self.root)]
+        with mock.patch.object(sys, 'argv', argv), mock.patch.object(shape, 'snapshot', return_value=raw) as read, \
+                mock.patch.object(shape, 'fetch_with_rule', side_effect=AssertionError('download boundary reached')) as fetch, \
+                mock.patch.object(shape, 'write_exclusive', side_effect=AssertionError('output boundary reached')), \
+                self.assertRaisesRegex(SystemExit, '1'):
+            shape.main()
+        self.assertEqual(read.call_count, 1)  # manifest only; no listing, receipt or sensor file
+        self.assertEqual(Path(read.call_args.args[0]), shape.plan_dir_for(LOG, self.root) / shape.PLAN_NAME)
+        fetch.assert_not_called()
+
+    def test_direct_io_helpers_refuse_unlocked_held_out_control_and_reserve_before_io(self):
+        logs = {s['logId']: s for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                if s['logId'].startswith(shape.HELD_OUT_LOG_PREFIXES)}
+        self.assertTrue(any('control' in s['role'] for s in logs.values()))
+        self.assertTrue(any(s['role'] == 'reserve' for s in logs.values()))
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(shape, 'snapshot', side_effect=AssertionError('log file read')) as read, \
+                mock.patch.object(shape.urllib.request, 'urlopen', side_effect=AssertionError('network reached')) as network, \
+                mock.patch.object(shape, 'write_exclusive', side_effect=AssertionError('output reached')):
+            for log in logs:
+                folder = self.root / f'shape-v2-{log}'
+                url = shape.BUCKET_URL + f'datasets/av2/sensor/train/{log}/sensors/lidar/1.feather'
+                calls = {
+                    'make_plan': lambda: shape.make_plan(log, 'absent', '', self.root / log / 'annotations', '',
+                                                        self.root / log / 'poses', '', out_root=self.root),
+                    'download': lambda: shape.download_sweeps(folder, 'a' * 64, fetch=no_network, sleep=no_network),
+                    'build': lambda: shape.build_car_shape(folder, 'a' * 64, BOX, ORIGIN, b'', b'', PLACEMENT_SHA),
+                    'receipt': lambda: shape.load_receipted(folder, 'a' * 64, {'log': log}, BOX, ORIGIN, b'', b''),
+                    'approach': lambda: shape.approach_split_document(b'{}', folder, b'', b''),
+                    'listing': lambda: shape.fetch_listing(log, no_network, no_network),
+                    'http': lambda: shape.http_fetch(url),
+                    'retry': lambda: shape.fetch_with_rule(url, no_network, no_network, no_network),
+                }
+                for name, call in calls.items():
+                    with self.subTest(log=log[:8], helper=name), \
+                            self.assertRaisesRegex((ValueError, SystemExit), 'Held-out|reserve|non-runnable'):
+                        call()
+            read.assert_not_called()
+            network.assert_not_called()
+
+    def test_mismatched_directory_log_is_refused_before_manifest_read(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        folder = self.root / f'shape-v2-{held}'
+        with mock.patch.object(shape, 'snapshot', side_effect=AssertionError('manifest read')), \
+                self.assertRaisesRegex(ValueError, 'Plan directory is for another log'):
+            shape.download_sweeps(folder, 'a' * 64, log=LOG)
+        target = self.root / f'shape-v2-{held}'
+        alias = self.root / f'shape-v2-{LOG}'
+        alias.symlink_to(target, target_is_directory=True)
+        with mock.patch.object(shape, 'snapshot', side_effect=AssertionError('aliased manifest read')), \
+                self.assertRaisesRegex(ValueError, 'resolves to another log'):
+            shape.download_sweeps(alias, 'a' * 64)
+
+    def test_receipt_log_mismatch_is_refused_before_listing_or_sweep_reads(self):
+        site = Site(self.root / 'a', approach_drive())
+        folder, plan_sha, _ = site.measured()
+        path = folder / shape.RECEIPT_NAME
+        receipt = json.loads(path.read_bytes())
+        receipt['log'] = '88f47a10' + LOG[8:]  # synthetic mismatched metadata only
+        path.chmod(0o644)
+        path.write_bytes(json.dumps(receipt).encode())
+        with mock.patch.object(shape, 'snapshot', wraps=shape.snapshot) as read, \
+                self.assertRaisesRegex(ValueError, 'receipt is for another log'):
+            site.build(folder, plan_sha)
+        self.assertEqual([Path(c.args[0]).name for c in read.call_args_list], [shape.PLAN_NAME, shape.RECEIPT_NAME])
+
+    def test_every_plan_consumer_binds_its_log_before_payload_reads(self):
+        site = Site(self.root / 'a', approach_drive())
+        folder, plan_sha, block = site.measured()
+        plan = json.loads((folder / shape.PLAN_NAME).read_bytes())
+        plan['log'] = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                           if s['role'] == 'held-out-blocked-test')
+        raw = json.dumps(plan).encode()
+        calls = {
+            'download': lambda: shape.download_sweeps(folder, sha(raw), fetch=no_network, sleep=no_network),
+            'build': lambda: site.build(folder, sha(raw)),
+            'receipt': lambda: shape.load_receipted(folder, sha(raw), plan, site.box, ORIGIN, site.ann_raw, site.pose_raw),
+            'approach': lambda: shape.approach_split_document(site.ground_with(block), folder, site.ann_raw, site.pose_raw),
+        }
+        for name, call in calls.items():
+            with self.subTest(helper=name), mock.patch.object(shape, 'snapshot', return_value=raw) as read, \
+                    self.assertRaisesRegex(ValueError, 'Sweep plan is for another log'):
+                call()
+            self.assertTrue(all(Path(c.args[0]).name == shape.PLAN_NAME for c in read.call_args_list))
+
+    def test_ground_child_context_is_revalidated_before_plan_read(self):
+        held = next(s['logId'] for s in json.loads(shape.SPLIT_PATH.read_bytes())['sites']
+                    if s['role'] == 'held-out-blocked-test')
+        folder = self.root / f'shape-v2-{held}'
+        with mock.patch.dict(os.environ, {shape.GROUND_LOCK_ENV: 'a' * 64}, clear=True), \
+                mock.patch.object(shape, 'check_held_out', side_effect=RuntimeError('full preflight required')) as guard, \
+                mock.patch.object(shape, 'snapshot', side_effect=AssertionError('plan read before preflight')), \
+                self.assertRaisesRegex(RuntimeError, 'full preflight required'):
+            shape.build_car_shape(folder, 'b' * 64, BOX, ORIGIN, b'', b'', PLACEMENT_SHA)
+        guard.assert_called_once_with(held, True, 'a' * 64, need_addendum=False)
+
     def test_listing_is_fetched_under_the_same_attempt_rule(self):
         site = Site(self.root / 'a', approach_drive())
         url = shape.LISTING_URL.format(log=LOG); waits = []

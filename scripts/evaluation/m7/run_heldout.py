@@ -50,7 +50,7 @@ from common import ROOT, SiteStop, fetch, now, read_listing, rel, sha, sha_file,
 VARIANT = 'v4-18.5'
 BUILDER = 'scripts/evaluation/m7/build_scene.py'  # unchanged v4.3 builder, fixed lock-2 path
 BUILDER_PROTOCOL = '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json'
-BUILDER_PROTOCOL_SHA = 'a1486d67422224f0b35eb0dddaa693136ff381ad48f2032587e4f0c5167530cc'
+BUILDER_PROTOCOL_SHA = '0758a3b0039b534584d35876276d6b0287229fd06012cd225681000b30f4e395'
 V34 = '.local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json'
 V34_SHA = '330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22'
 SHAPE_PROTOCOL_SHA = '70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a'
@@ -265,13 +265,15 @@ class Build:
         only feeds car_shape.py plan, and the frozen suggester refuses a box ground.json for an annotated stationary
         vehicle (found by the 2026-10-14 rehearsal)."""
         annotations = self.data / 'annotations.feather'
+        # Pass the explicit parent lock to the frozen ground builder's in-process shape helper.
+        env = common.child_env(**({} if self.args.rehearse else {'PAO_M7_GROUND_PROTOCOL_LOCK_SHA256': self.args.protocol_lock_sha256}))
         self.must(step, self.py + ['scripts/california/prepare_av2_ground.py',
                                    '--scene', str(self.out / 'assembled/scene.json'), '--scene-sha256', sha_file(self.out / 'assembled/scene.json'),
                                    '--prepared', str(self.out / 'prepared/manifest.json'),
                                    '--prepared-sha256', sha_file(self.out / 'prepared/manifest.json'),
                                    '--protocol', str(protocol), '--protocol-sha256', protocol_sha,
                                    '--annotations', str(annotations), '--annotations-sha256', sha_file(annotations),
-                                   '--output', str(self.out / folder), *shape_args])
+                                   '--output', str(self.out / folder), *shape_args], env)
         if not suggest:
             return
         env = common.child_env(SOURCE_DATE_EPOCH=SOURCE_DATE_EPOCH)

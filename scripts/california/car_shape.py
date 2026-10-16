@@ -43,6 +43,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -93,6 +94,9 @@ RUNNABLE_ROLES = ('development', 'development-optional', 'held-out-blocked-test'
 LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/lock-2/protocol-lock.json'
 SUPERSEDED_LOCK_PATH = REPO / '.local/evaluation/pao-accuracy/protocol-lock.json'
 SUPERSEDED_LOCK_SHA256 = '7aa2945e61e676ffc3a2a207895ca5639e4d9b4405893b648f4412891c00a475'
+# The frozen ground builder cannot accept new flags. M7 passes its explicit lock hash to this child only;
+# build_car_shape still runs the full preflight, rather than trusting the environment as approval.
+GROUND_LOCK_ENV = 'PAO_M7_GROUND_PROTOCOL_LOCK_SHA256'
 APPROACH_DIR = REPO / '.local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split'
 PLAN_NAME, RECEIPT_NAME, LISTING_NAME, SWEEP_DIR = 'sweep-plan.json', 'receipt.json', 'listing.xml', 'sweeps'
 BUCKET_URL = 'https://argoverse.s3.amazonaws.com/'
@@ -177,7 +181,7 @@ def load_m7_common():
     return module
 
 
-def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_path=None):
+def check_held_out(log, held_out_run=False, lock_sha256=None, need_addendum=False, lock_path=None):
     """Held-out/control access requires the full lock-2 preflight and the shape pins; reserve stays unopened.
     No child fetches: origin/main must already hold the pushed anchors. Development logs need no lock."""
     check_log(log)
@@ -205,6 +209,30 @@ def check_held_out(log, held_out_run, lock_sha256, need_addendum=False, lock_pat
     require(path.resolve() == m7.LOCK_PATH.resolve(), 'Held-out runs require the fixed lock-2/protocol-lock.json path')
     m7.preflight(lock_sha256, fetch=False)
     return {'path': str(path), 'sha256': lock_sha256}
+
+
+def guard_plan_dir(plan_dir, log=None, *, held_out_run=False, lock_sha256=None, need_addendum=False):
+    """Identify and guard a plan directory before opening its manifest or any payload. No ambient cached approval."""
+    folder = Path(plan_dir)
+    prefix = SCHEMA + '-'
+    require(folder.name.startswith(prefix), 'A shape-v2-<log> plan directory is required before reading inputs')
+    named_log = check_log(folder.name[len(prefix):])
+    require(log is None or log == named_log, 'Plan directory is for another log')
+    check_held_out(named_log, held_out_run, lock_sha256, need_addendum=need_addendum)
+    require(folder.resolve().name == folder.name, 'Plan directory resolves to another log or directory')
+    return named_log
+
+
+def guard_url(url, *, held_out_run=False, lock_sha256=None):
+    """Guard the log in an object URL or listing prefix, including direct network-helper calls."""
+    require(url.startswith(BUCKET_URL), 'Only the public Argoverse bucket is fetched')
+    parts = urllib.parse.urlsplit(url)
+    key = urllib.parse.parse_qs(parts.query).get('prefix', [''])[0] if parts.query else parts.path.lstrip('/')
+    match = re.match(r'datasets/av2/sensor/(train|val)/([^/]+)/', key)
+    require(match is not None, 'An AV2 sensor log URL or listing prefix is required')
+    log = check_log(match[2])
+    check_held_out(log, held_out_run, lock_sha256)
+    require(match[1] == av2_split(log), 'URL is for another publisher split')
 
 
 # ------------------------------------------------------------------ listing and downloads (protocol 6.3)
@@ -237,10 +265,10 @@ def parse_listing(data, log):
     return entries
 
 
-def http_fetch(url, timeout=120):
+def http_fetch(url, timeout=120, *, held_out_run=False, lock_sha256=None):
     """GET one public Argoverse URL -> (status, Content-Length or None, ETag header or None, body bytes).
     An HTTP error status is returned; a network error raises OSError."""
-    require(url.startswith(BUCKET_URL), 'Only the public Argoverse bucket is fetched')
+    guard_url(url, held_out_run=held_out_run, lock_sha256=lock_sha256)
     request = urllib.request.Request(url, headers={'User-Agent': 'umbra-car-shape/1'})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -253,14 +281,18 @@ def http_fetch(url, timeout=120):
         raise OSError(str(error)) from error
 
 
-def fetch_with_rule(url, accept, fetch, sleep):
+def fetch_with_rule(url, accept, fetch, sleep, *, held_out_run=False, lock_sha256=None):
     """The frozen attempt rule: at most RULE['downloadAttempts'] attempts, waiting retryWaitsS between them. An attempt
     succeeds only with status 200 and accept(body) true; a network error, any other status or a rejected body is a
     failed attempt (its bytes are discarded). Returns {ok, attempts, status, contentLength, data}."""
+    guard_url(url, held_out_run=held_out_run, lock_sha256=lock_sha256)
     last = {'status': None, 'contentLength': None}
     for attempt in range(1, RULE['downloadAttempts'] + 1):
         try:
-            status, length, _etag, body = fetch(url)
+            if fetch is http_fetch:
+                status, length, _etag, body = fetch(url, held_out_run=held_out_run, lock_sha256=lock_sha256)
+            else:
+                status, length, _etag, body = fetch(url)
         except OSError:
             status, length, body = None, None, None
         last = {'status': status, 'contentLength': length}
@@ -281,15 +313,16 @@ def byte_check(entry, data):
     return {'ok': size_ok and md5_ok is not False, 'sizeMatches': size_ok, 'md5': md5, 'md5MatchesEtag': md5_ok}
 
 
-def fetch_listing(log, fetch, sleep):
+def fetch_listing(log, fetch, sleep, *, held_out_run=False, lock_sha256=None):
     """The lidar listing under the same attempt rule. Returns (data or None, {status 'ok' | 'failed', attempts})."""
+    check_held_out(log, held_out_run, lock_sha256)
     def accept(body):
         try:
             parse_listing(body, log)
             return True
         except (ValueError, ET.ParseError):
             return False
-    result = fetch_with_rule(listing_url(log), accept, fetch, sleep)
+    result = fetch_with_rule(listing_url(log), accept, fetch, sleep, held_out_run=held_out_run, lock_sha256=lock_sha256)
     return result['data'], {'status': 'ok' if result['ok'] else 'failed', 'attempts': result['attempts']}
 
 
@@ -460,8 +493,9 @@ def plan_document(log, box, origin, listing, listing_status, listing_input, ann,
     return plan, data
 
 
-def check_plan(plan):
+def check_plan(plan, log=None):
     require(isinstance(plan, dict) and plan.get('schema') == PLAN_SCHEMA, 'Not a shape-v2 sweep plan')
+    require(log is None or plan.get('log') == log, 'Sweep plan is for another log')
     require(plan.get('shapeProtocol', {}).get('sha256') == SHAPE_PROTOCOL_SHA256, 'Sweep plan made under another shape protocol')
     require(plan.get('rule') == RULE, 'Sweep plan rule numbers differ from shape-v2')
     prefix = lidar_prefix(plan['log'])
@@ -476,10 +510,13 @@ def check_plan(plan):
 
 
 def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha256, poses_path, poses_sha256,
-              listing_path=None, listing_sha256=None, out_root=None, fetch=http_fetch, sleep=time.sleep):
+              listing_path=None, listing_sha256=None, out_root=None, fetch=http_fetch, sleep=time.sleep, *,
+              held_out_run=False, lock_sha256=None):
     """Write <out_root>/shape-v2-<log>/sweep-plan.json (exclusive) plus listing.xml; returns (plan_dir, plan sha256).
     Reads metadata only. The vehicle is the single averaged stationary vehicle (poseAverage cuboid) of ground.json."""
-    url = listing_url(log)  # validate the frozen publisher split before any log file is read
+    plan_dir = plan_dir_for(log, out_root)
+    guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256)
+    url = listing_url(log)
     for path in (annotations_path, poses_path):
         require(Path(path).resolve().parent.name == log, 'Annotations and poses must come from the log directory of this log')
     ground_raw = snapshot(ground_path, ground_sha256, 1024 * 1024); ground = parse(ground_raw)
@@ -491,14 +528,13 @@ def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha
     require(len(averaged) == 1, 'No single averaged stationary vehicle in ground.json: the car shape does not apply (no sweep plan, no download)')
     box = averaged[0]; origin = np.asarray(ground['frame']['cityOrigin'], float)
     require(origin.shape == (3,) and np.isfinite(origin).all(), 'ground.json city origin required')
-    plan_dir = plan_dir_for(log, out_root)
     require(not os.path.lexists(plan_dir / PLAN_NAME), 'Existing sweep plan retained (a new plan needs a new directory)')
     if listing_path is not None:
         listing_raw = snapshot(listing_path, listing_sha256, MAX_JSON)
         listing_status = {'status': 'ok', 'attempts': 0}
         listing_input = {'source': 'saved file', 'file': LISTING_NAME, 'sha256': digest(listing_raw), 'url': url}
     else:
-        listing_raw, listing_status = fetch_listing(log, fetch, sleep)
+        listing_raw, listing_status = fetch_listing(log, fetch, sleep, held_out_run=held_out_run, lock_sha256=lock_sha256)
         listing_input = {'source': 'fetched', 'file': LISTING_NAME if listing_raw is not None else None,
                          'sha256': digest(listing_raw) if listing_raw is not None else None, 'url': url}
     listing = parse_listing(listing_raw, log) if listing_raw is not None else {}
@@ -512,11 +548,13 @@ def make_plan(log, ground_path, ground_sha256, annotations_path, annotations_sha
     return plan_dir, digest(data)
 
 
-def download_sweeps(plan_dir, plan_sha256, fetch=http_fetch, sleep=time.sleep):
+def download_sweeps(plan_dir, plan_sha256, fetch=http_fetch, sleep=time.sleep, *, log=None,
+                    held_out_run=False, lock_sha256=None):
     """Download the planned sweeps one at a time under the frozen attempt rule and write receipt.json (exclusive).
     A sweep already on disk is reused only when it passes the same success test."""
     plan_dir = Path(plan_dir)
-    plan = check_plan(parse(snapshot(plan_dir / PLAN_NAME, plan_sha256, MAX_JSON)))
+    log = guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256)
+    plan = check_plan(parse(snapshot(plan_dir / PLAN_NAME, plan_sha256, MAX_JSON)), log)
     require(not os.path.lexists(plan_dir / RECEIPT_NAME), 'Downloads already receipted for this plan')
     folder = plan_dir / SWEEP_DIR; folder.mkdir(exist_ok=True)
     started = utc_now(); records, dropped = [], []
@@ -529,7 +567,8 @@ def download_sweeps(plan_dir, plan_sha256, fetch=http_fetch, sleep=time.sleep):
                 records.append({**base, 'source': 'disk', 'attempts': 0, 'status': None, 'contentLength': None, 'bytes': len(data),
                                 'sha256': digest(data), **{k: check[k] for k in ('md5', 'md5MatchesEtag', 'sizeMatches')}})
                 continue
-        result = fetch_with_rule(url, lambda body, e=entry: byte_check(e, body)['ok'], fetch, sleep)
+        result = fetch_with_rule(url, lambda body, e=entry: byte_check(e, body)['ok'], fetch, sleep,
+                                 held_out_run=held_out_run, lock_sha256=lock_sha256)
         if not result['ok']:
             dropped.append({'timestampNs': ts, 'set': entry['set'], 'reason': 'download-failed', 'attempts': RULE['downloadAttempts']})
             continue
@@ -671,11 +710,19 @@ def validate_block(s, box):
     require(keys(s['code'], ['path', 'sha256']) and s['code']['path'] == CODE_PATH and hex64(s['code']['sha256']), 'car shape code record')
 
 
-def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, poses_data):
+def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, poses_data, *, log=None,
+                  held_out_run=False, lock_sha256=None):
     """Integrity checks shared by the app shape and the approach split: the plan (by its sha256) was made for this box,
     these annotations and poses, and re-applying the frozen selection to its saved listing gives the same lists; every
     receipted sweep is on disk with its receipted sha256. Returns (ann, poses, receipted {ts: (entry, data)}, dropped)."""
     plan_dir = Path(plan_dir)
+    log = guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256)
+    check_plan(plan, log)
+    require((plan_dir / RECEIPT_NAME).is_file(), 'The planned sweeps have no download receipt (run the download first)')
+    receipt = parse(snapshot(plan_dir / RECEIPT_NAME, max_bytes=MAX_JSON))
+    require(receipt.get('log') == log, 'The download receipt is for another log')
+    require(receipt.get('schema') == RECEIPT_SCHEMA and receipt.get('planSha256') == plan_sha256, 'The download receipt is for another sweep plan')
+    require(receipt.get('track') == plan['track'] and receipt.get('rule') == RULE, 'The download receipt names another track or rule')
     require(plan['track'] == box['track'] and plan['box'] == box_record(box) and plan['cityOrigin'] == [float(v) for v in origin],
             'The sweep plan was made for another averaged box')
     require(plan['inputs']['annotations']['sha256'] == digest(annotations_data) and plan['inputs']['poses']['sha256'] == digest(poses_data),
@@ -692,9 +739,6 @@ def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, p
             all(s['key'] == listing[int(s['timestampNs'])]['key'] and s['bytes'] == listing[int(s['timestampNs'])]['bytes'] and
                 s['etag'] == listing[int(s['timestampNs'])]['etag'] for s in plan['sweeps']),
             'The sweep plan differs from the frozen selection rule applied to its own inputs')
-    require((plan_dir / RECEIPT_NAME).is_file(), 'The planned sweeps have no download receipt (run the download first)')
-    receipt = parse(snapshot(plan_dir / RECEIPT_NAME, max_bytes=MAX_JSON))
-    require(receipt.get('schema') == RECEIPT_SCHEMA and receipt.get('planSha256') == plan_sha256, 'The download receipt is for another sweep plan')
     planned = {s['timestampNs']: s for s in plan['sweeps']}
     dropped = receipt['downloadDropped']; records = receipt['sweeps']
     names = [r['timestampNs'] for r in records] + [d['timestampNs'] for d in dropped]
@@ -716,12 +760,18 @@ def load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, p
     return ann, poses, receipted, dropped
 
 
-def build_car_shape(plan_dir, plan_sha256, box, origin, annotations_data, poses_data, placement_protocol_sha256):
+def build_car_shape(plan_dir, plan_sha256, box, origin, annotations_data, poses_data, placement_protocol_sha256, *, log=None,
+                    held_out_run=False, lock_sha256=None):
     """The carShape block for ground.json (placement protocol v3.4) from a hashed plan and its receipted sweeps.
     Integrity failures stop with ValueError; not-stationary and too-few-sweeps are refusals (a block is returned)."""
+    if not held_out_run and lock_sha256 is None:
+        lock_sha256 = os.environ.get(GROUND_LOCK_ENV)
+        held_out_run = lock_sha256 is not None
+    log = guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256)
     origin = np.asarray(origin, float)
-    plan = check_plan(parse(snapshot(Path(plan_dir) / PLAN_NAME, plan_sha256, MAX_JSON)))
-    ann, poses, receipted, dropped = load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, poses_data)
+    plan = check_plan(parse(snapshot(Path(plan_dir) / PLAN_NAME, plan_sha256, MAX_JSON)), log)
+    ann, poses, receipted, dropped = load_receipted(plan_dir, plan_sha256, plan, box, origin, annotations_data, poses_data,
+                                                 log=log, held_out_run=held_out_run, lock_sha256=lock_sha256)
     listed = lambda name: [{'timestampNs': str(ts), 'sha256': r['sha256']} for ts, (r, _d) in sorted(receipted.items()) if r['set'] == name]  # noqa: E731
     record = {'rule': dict(RULE), 'planSha256': plan_sha256, 'listing': {'status': plan['listing']['status'], 'attempts': plan['listing']['attempts']},
               'candidates': plan['candidates'], 'thinned': plan['thinned'], 'kept': plan['kept'],
@@ -745,9 +795,11 @@ def approach_halves(entries):
     return {'K': count, 'h': half, 'far': ordered[:half], 'near': ordered[count - half:], 'unused': ordered[half:count - half]}
 
 
-def approach_split_document(ground_raw, plan_dir, annotations_data, poses_data, ground_name=None):
+def approach_split_document(ground_raw, plan_dir, annotations_data, poses_data, ground_name=None, *, log=None,
+                            held_out_run=False, lock_sha256=None):
     """The evaluation-only approach-half shape of one scene (split addendum). Returns (document, bytes). Never part of
     ground.json; the app never loads it."""
+    log = guard_plan_dir(plan_dir, log, held_out_run=held_out_run, lock_sha256=lock_sha256, need_addendum=True)
     ground = parse(ground_raw); shape = ground.get('carShape')
     require(ground.get('schemaVersion') == 3 and 'carShape' in ground, 'A placement protocol v3.4 ground layer (schemaVersion 3) is required')
     require(shape is not None, 'This scene has no annotated stationary vehicle: the approach split does not apply')
@@ -755,7 +807,7 @@ def approach_split_document(ground_raw, plan_dir, annotations_data, poses_data, 
     box = next(c for c in ground['cuboids']['items'] if 'poseAverage' in c and c['track'] == shape['track'])
     origin = np.asarray(ground['frame']['cityOrigin'], float)
     plan_sha = shape['sweeps']['planSha256']
-    plan = check_plan(parse(snapshot(Path(plan_dir) / PLAN_NAME, plan_sha, MAX_JSON)))
+    plan = check_plan(parse(snapshot(Path(plan_dir) / PLAN_NAME, plan_sha, MAX_JSON)), log)
     ann, poses = load_annotations(annotations_data), load_poses(poses_data)
     require(plan['inputs']['annotations']['sha256'] == digest(annotations_data) and plan['inputs']['poses']['sha256'] == digest(poses_data),
             'The sweep plan was made from other annotations or poses')
@@ -837,14 +889,16 @@ def main():
             require((args.listing_file is None) == (args.listing_sha256 is None), '--listing-file and --listing-sha256 go together')
             check_held_out(args.log, args.held_out_run, args.protocol_lock_sha256)
             plan_dir, sha = make_plan(args.log, args.ground, args.ground_sha256, args.annotations, args.annotations_sha256, args.poses,
-                                      args.poses_sha256, args.listing_file, args.listing_sha256, args.out_root)
+                                      args.poses_sha256, args.listing_file, args.listing_sha256, args.out_root,
+                                      held_out_run=args.held_out_run, lock_sha256=args.protocol_lock_sha256)
             summary = json.loads(snapshot(plan_dir / PLAN_NAME, sha, MAX_JSON))
             print(canonical({'planSha256': sha, 'plan': str(plan_dir / PLAN_NAME), 'candidates': summary['candidates'],
                              'thinned': summary['thinned'], 'kept': summary['kept'], 'shape': len(summary['shape']),
                              'scoring': len(summary['scoring']), 'listing': summary['listing']}).decode())
         elif args.command == 'download':
             check_held_out(args.log, args.held_out_run, args.protocol_lock_sha256)
-            receipt = download_sweeps(plan_dir_for(args.log, args.out_root), args.plan_sha256)
+            receipt = download_sweeps(plan_dir_for(args.log, args.out_root), args.plan_sha256, log=args.log,
+                                       held_out_run=args.held_out_run, lock_sha256=args.protocol_lock_sha256)
             print(canonical({'receipted': len(receipt['sweeps']), 'dropped': len(receipt['downloadDropped']),
                              'bytesOnDisk': receipt['bytesOnDisk']}).decode())
         else:
@@ -855,8 +909,12 @@ def main():
             ground_raw = snapshot(args.ground, args.ground_sha256, 1024 * 1024); ground = parse(ground_raw)
             shape = ground.get('carShape')
             require(isinstance(shape, dict), 'This scene has no annotated stationary vehicle: the approach split does not apply')
+            plan_dir = plan_dir_for(log, args.out_root)
+            guard_plan_dir(plan_dir, log, held_out_run=args.held_out_run, lock_sha256=args.protocol_lock_sha256, need_addendum=True)
+            check_plan(parse(snapshot(plan_dir / PLAN_NAME, shape['sweeps']['planSha256'], MAX_JSON)), log)
             ann_raw = snapshot(args.annotations, args.annotations_sha256, MAX_META); poses_raw = snapshot(args.poses, args.poses_sha256, MAX_META)
-            doc, data = approach_split_document(ground_raw, plan_dir_for(log, args.out_root), ann_raw, poses_raw, Path(args.ground).name)
+            doc, data = approach_split_document(ground_raw, plan_dir, ann_raw, poses_raw, Path(args.ground).name,
+                                                log=log, held_out_run=args.held_out_run, lock_sha256=args.protocol_lock_sha256)
             folder = Path(args.output_dir) if args.output_dir else APPROACH_DIR
             folder.mkdir(parents=True, exist_ok=True)
             write_exclusive(folder / f'{args.name}.json', data)

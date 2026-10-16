@@ -59,6 +59,7 @@ def fixture(tmp_path, monkeypatch):
             for name, value in values.items():
                 monkeypatch.setattr(module, name, value)
         monkeypatch.setattr(shape, 'load_m7_common', lambda: m7)
+        monkeypatch.setattr(adapter, 'load_m7_common', lambda: m7)
         real_labels_addendum = m7.labels_addendum
         monkeypatch.setattr(m7, 'labels_addendum', lambda held: real_labels_addendum(held, path=addendum))
         for path in ('score.py', 'driver.py', 'builder.py', 'asset.json'):
@@ -111,6 +112,9 @@ def fixture(tmp_path, monkeypatch):
         fetch = mock.Mock(side_effect=AssertionError('child must never fetch'))
         monkeypatch.setattr(m7, 'fetch_origin', fetch)
         monkeypatch.setattr(m7.subprocess, 'Popen', mock.Mock(side_effect=AssertionError('no child process')))
+        helpers = {name: getattr(shape, name) for name in ('make_plan', 'download_sweeps', 'approach_split_document',
+                                                          'build_car_shape', 'load_receipted', 'fetch_listing',
+                                                          'http_fetch', 'fetch_with_rule')}
         for module, names in ((m7, ('curl', 'write_new', 'run_marker')),
                               (shape, ('http_fetch', 'write_exclusive', 'make_plan', 'download_sweeps', 'approach_split_document')),
                               (builder, ('snapshot', 'publish', 'find_sources', 'load_poses', 'load_annotations'))):
@@ -125,7 +129,7 @@ def fixture(tmp_path, monkeypatch):
         monkeypatch.setattr(shape, 'snapshot', snapshot)
         yield SimpleNamespace(m7=m7, shape=shape, adapter=adapter, builder=builder, root=tmp_path,
                               lock=lock, digest=digest, record=record, anchor=anchor, addendum=addendum,
-                              sites=sites, state=state, calls=calls, fetch=fetch)
+                              sites=sites, state=state, calls=calls, fetch=fetch, helpers=helpers)
 
 
 def child_argv(f, command, site):
@@ -172,6 +176,82 @@ def test_children_refuse_before_protected_io(fixture, entry, failure, reason):
     for site in sites.values():
         with pytest.raises(SystemExit, match=reason):
             invoke(f, entry, site)
+    f.fetch.assert_not_called()
+
+
+@pytest.mark.parametrize('helper', ['make_plan', 'download_sweeps', 'approach_split_document', 'build_car_shape',
+                                  'load_receipted', 'fetch_listing', 'http_fetch', 'fetch_with_rule'])
+@pytest.mark.parametrize('failure,reason', [('record', 'missing or names another lock'),
+                                         ('anchor', 'does not exist'), ('unpushed', 'differs from origin/main')])
+def test_direct_shape_helpers_require_full_preflight(fixture, helper, failure, reason):
+    f = fixture
+    if failure == 'record':
+        f.record.unlink()
+    elif failure == 'anchor':
+        f.anchor.unlink()
+    else:
+        f.state['unpushed'] = f.m7.ANCHOR_REL
+    for site in {s['logId']: s for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES}.values():
+        log = site['logId']
+        folder = f.root / f'shape-v2-{log}'
+        auth = {'held_out_run': True, 'lock_sha256': f.digest}
+        url = f.shape.BUCKET_URL + f.shape.lidar_prefix(log) + '1.feather'
+        args = {
+            'make_plan': (log, 'absent', 'b' * 64, f.root / log / 'annotations', 'b' * 64,
+                          f.root / log / 'poses', 'b' * 64),
+            'download_sweeps': (folder, 'b' * 64),
+            'approach_split_document': (b'{}', folder, b'', b''),
+            'build_car_shape': (folder, 'b' * 64, {}, [], b'', b'', 'b' * 64),
+            'load_receipted': (folder, 'b' * 64, {'log': log}, {}, [], b'', b''),
+            'fetch_listing': (log, f.fetch, f.fetch),
+            'http_fetch': (url,),
+            'fetch_with_rule': (url, f.fetch, f.fetch, f.fetch),
+        }[helper]
+        with pytest.raises(SystemExit, match=reason):
+            f.helpers[helper](*args, **auth)
+    f.fetch.assert_not_called()
+
+
+def test_cached_r5_shape_guard_cannot_bypass_adapter_preflight(fixture, monkeypatch):
+    f = fixture
+    f.record.unlink()
+    old_guard = mock.Mock(return_value={'path': str(f.m7.LOCK_PATH), 'sha256': f.digest})
+    monkeypatch.setattr(f.shape, 'check_held_out', old_guard)
+    monkeypatch.setattr(f.shape, 'load_m7_common', mock.Mock(side_effect=AssertionError('cached shape loader used')))
+    f.builder.check_module_origins()  # The cached module still has the expected source path, as in the review probe.
+    site = next(s for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES)
+    with pytest.raises(SystemExit, match='missing or names another lock'):
+        invoke(f, 'adapter-build', site)
+    old_guard.assert_not_called()
+    f.fetch.assert_not_called()
+
+
+def test_ground_environment_context_does_not_bypass_full_preflight(fixture, monkeypatch):
+    f = fixture
+    f.record.unlink()
+    site = next(s for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES)
+    monkeypatch.setenv(f.shape.GROUND_LOCK_ENV, f.digest)
+    with pytest.raises(SystemExit, match='missing or names another lock'):
+        f.helpers['build_car_shape'](f.root / f"shape-v2-{site['logId']}", 'b' * 64, {}, [], b'', b'', 'b' * 64)
+    f.fetch.assert_not_called()
+
+
+def test_authorized_http_helper_receives_the_same_lock_context(fixture, monkeypatch):
+    f = fixture
+    site = next(s for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES)
+    http = f.helpers['http_fetch']
+    monkeypatch.setattr(f.shape, 'http_fetch', http)
+    response = mock.MagicMock()
+    response.__enter__.return_value = response
+    response.status, response.headers = 200, {'Content-Length': '3', 'ETag': 'synthetic'}
+    response.read.return_value = b'abc'
+    network = mock.Mock(return_value=response)
+    monkeypatch.setattr(f.shape.urllib.request, 'urlopen', network)
+    url = f.shape.BUCKET_URL + f.shape.lidar_prefix(site['logId']) + '1.feather'
+    result = f.helpers['fetch_with_rule'](url, lambda data: data == b'abc', http, f.fetch,
+                                         held_out_run=True, lock_sha256=f.digest)
+    assert result['ok'] and result['attempts'] == 1
+    assert network.call_count == 1  # A synthetic HTTP response; no network operation.
     f.fetch.assert_not_called()
 
 
@@ -244,6 +324,12 @@ assert Path(sponsor.__file__).resolve() == root / 'scripts/sponsors/common.py'
 m7 = tool.car_shape.load_m7_common()
 assert m7.__name__ == '_pao_lock2_m7_common'
 assert Path(m7.__file__).resolve() == root / 'scripts/evaluation/m7/common.py'
+assert sys.modules['common'] is sponsor
+sys.modules['_pao_lock2_builder_common'] = type('OldCommon', (), {'preflight': lambda *_: None})()
+fresh = adapter.load_m7_common()
+assert fresh is not sys.modules['_pao_lock2_builder_common']
+assert fresh is not adapter.load_m7_common()
+assert Path(fresh.__file__).resolve() == root / 'scripts/evaluation/m7/common.py'
 assert sys.modules['common'] is sponsor
 tool.check_module_origins()
 '''

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -32,6 +33,18 @@ def load_shape():
         for name in ('common', 'prepare_av2'):
             sys.modules.pop(name, None)
         sys.modules.update(saved)
+        sys.path[:] = saved_path
+
+
+def load_driver():
+    saved_path = sys.path[:]
+    saved_common = sys.modules.pop('common', None)
+    try:
+        return load('r7_driver', 'scripts/evaluation/m7/run_heldout.py')
+    finally:
+        sys.modules.pop('common', None)
+        if saved_common is not None:
+            sys.modules['common'] = saved_common
         sys.path[:] = saved_path
 
 
@@ -153,7 +166,8 @@ class SplitRouting(unittest.TestCase):
                     'sweeps': [{'timestampNs': '1', 'set': 'shape', 'key': key, 'bytes': len(payload), 'etag': etag}]}
             raw = json.dumps(plan).encode()
             with tempfile.TemporaryDirectory() as folder, mock.patch.object(shape, 'utc_now', return_value=clock):
-                path = Path(folder)
+                path = Path(folder) / f'shape-v2-{log}'
+                path.mkdir()
                 (path / shape.PLAN_NAME).write_bytes(raw)
                 def fetch(url):
                     self.assertEqual(url, shape.BUCKET_URL + key)
@@ -249,7 +263,50 @@ class Lock2(unittest.TestCase):
         for key in ('H measured-shape rows', 'H 50%', 'B all three hard', 'D/no minimum', 'band 0.075 m', 'declared-default', '"None"'):
             self.assertIn(key, lock2['authority'])
         self.assertIn(common.SUPERSEDED_LOCK_SHA, lock2['history'])
-        self.assertEqual(lock2['revision'], 6)
+        self.assertEqual(lock2['revision'], 7)
+        self.assertIn('b483a5d394fc198d881b650b755b01598e0915c758b97fa788b5b19669b05296', lock2['history'])
+
+    def test_driver_builder_protocol_pin_and_actual_invocation_match_writer_and_disk(self):
+        driver = load_driver()
+        path, digest = writer.PINS['builderProtocol']
+        self.assertEqual((driver.BUILDER_PROTOCOL, driver.BUILDER_PROTOCOL_SHA), (path, digest))
+        self.assertEqual(common.sha_file(ROOT / path), digest)
+        writer.check_driver_protocol({'builderProtocol': {'path': path, 'sha256': digest}})
+        build = driver.Build.__new__(driver.Build)
+        build.py, build.log, build.crossing = ['python3', '-I', '-B'], 'synthetic', '1'
+        build.data, build.out, build.held = Path('data'), Path('out'), []
+        build.listing_files = {key: Path(key) for key in ('stereo_front_left', 'stereo_front_right', 'lidar')}
+        with mock.patch.object(build, 'run', side_effect=RuntimeError('invocation captured')) as run, \
+                self.assertRaisesRegex(RuntimeError, 'invocation captured'):
+            build.builder('builder-pass1')
+        argv = run.call_args.args[1]
+        self.assertEqual(argv[argv.index('--protocol') + 1], path)
+        self.assertEqual(argv[argv.index('--protocol-sha256') + 1], digest)
+
+    def test_ground_child_gets_only_the_explicit_held_out_lock_context(self):
+        driver = load_driver()
+        build = driver.Build.__new__(driver.Build)
+        build.data, build.out, build.py = Path('data'), Path('out'), ['python3', '-I', '-B']
+        for rehearse in (False, True):
+            build.args = SimpleNamespace(rehearse=rehearse, protocol_lock_sha256='a' * 64)
+            with mock.patch.object(driver, 'sha_file', return_value='b' * 64), \
+                    mock.patch.object(driver.common, 'child_env', return_value={'synthetic': 'environment'}) as env, \
+                    mock.patch.object(build, 'must') as run:
+                build.ground('ground', 'grounded', 'protocol.json', 'c' * 64, [], suggest=False)
+            env.assert_called_once_with(**({} if rehearse else {shape.GROUND_LOCK_ENV: 'a' * 64}))
+            self.assertEqual(run.call_args.args[2], {'synthetic': 'environment'})
+
+    def test_writer_refuses_a_stale_committed_driver_pin(self):
+        path, digest = writer.PINS['builderProtocol']
+        with self.assertRaisesRegex(SystemExit, 'committed run_heldout.py names another builder-protocol'):
+            writer.check_driver_protocol({'builderProtocol': {'path': path, 'sha256': '0' * 64}})
+        with self.assertRaisesRegex(SystemExit, 'committed run_heldout.py names another builder-protocol'):
+            writer.check_driver_protocol({'builderProtocol': {'path': 'another-protocol.json', 'sha256': digest}})
+        pins = {'builderProtocol': {'path': path, 'sha256': '0' * 64}}
+        with mock.patch.object(writer, 'COMMIT', 'a' * 40), mock.patch.object(writer, 'check_pins', return_value=pins), \
+                mock.patch.object(writer, 'builder_code', return_value={}), mock.patch.object(writer, 'committed_code', return_value={}), \
+                self.assertRaisesRegex(SystemExit, 'committed run_heldout.py names another builder-protocol'):
+            writer.gather()
 
     def test_adapter_preserves_builder_rule_and_code_checks(self):
         # A separate interpreter preserves the builder's module-origin checks, without importing either generic common here.
