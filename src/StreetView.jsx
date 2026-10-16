@@ -5,6 +5,7 @@ import { planCamera } from './plan-camera.mjs';
 import { driverViewport, comparisonScissors, calibrationCamera } from './driver-viewport.mjs';
 import { renderGeometry } from './scene.mjs';
 import { mapLayers, rulerDots, rulerPoint, setbackAt } from './map-layers.mjs';
+import { mapSurface, mapObjectPointIndices, cameraViewEdges } from './map-surface.mjs';
 
 // Person marker colour per result: only Blocked carries the accent; Unknown stays neutral.
 const STATES = { clear: 0xf4f2ff, blocked: 0xff7a9a, unknown: 0xf4f2ff };
@@ -319,6 +320,36 @@ function buildMapBase(layers) {
   }
   return group;
 }
+function addMapSurface(surface, group) {
+  if (!surface?.triangles.length) return;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(surface.positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(surface.triangles, 1));
+  geometry.computeVertexNormals();
+  const normals = geometry.getAttribute('normal'), colors = new Float32Array(surface.positions.length);
+  const light = new THREE.Vector3(-.3, 1, .2).normalize(), normal = new THREE.Vector3();
+  for (let i = 0; i < normals.count; i++) {
+    const shade = .94 + .06 * Math.max(0, normal.fromBufferAttribute(normals, i).dot(light));
+    colors.set([shade, shade, shade], i * 3);
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const material = flatMaterial(0x28292c);
+  material.vertexColors = true;
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = -19.5;
+  group.add(mesh);
+}
+function addMapCameraView(scene, layers, group) {
+  const { origin, directions, length } = cameraViewEdges(scene);
+  const y = layers ? layers.crossing.reduce((sum, p) => sum + p[1], 0) / layers.crossing.length - .05 : 0;
+  const points = directions.flatMap(d => [new THREE.Vector3(origin[0], y, origin[2]), new THREE.Vector3(origin[0] + d[0] * length, y, origin[2] + d[2] * length)]);
+  const lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(points), lineMaterial(0x909094, .4));
+  lines.renderOrder = -18.5;
+  group.add(lines);
+  // The label sits just outside the image-left edge, off the lane between camera and crossing where vehicles are dragged.
+  const [d, other] = directions, side = d[2] * other[0] - d[0] * other[2] > 0 ? 1 : -1, distance = Math.min(10, length * .3);
+  return [origin[0] + d[0] * distance - side * d[2], y, origin[2] + d[2] * distance + side * d[0]];
+}
 // Round ruler dots of a fixed pixel size, coloured by the checked distance state at each setback.
 function rulerObject(dots, pixelRatio) {
   const geometry = new THREE.BufferGeometry();
@@ -345,7 +376,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
     if (invalid) { onError?.(invalid); return undefined; }
     const world = new THREE.Scene();
     world.background = mode === 'recorded' ? null : new THREE.Color(VIEW_BACKGROUND);
-    let renderer, observer, removePointer, removeResolution, dots = null, mapBase = null;
+    let renderer, observer, removePointer, removeResolution, dots = null, mapBase = null, cameraViewLabel = null;
     const contextLost = () => latest.current.onError?.('Measured scene rendering failed: WebGL context lost.');
     try {
       // Transparent outside the calibrated image: a driver view letterboxed in a wider stage shows the page behind it.
@@ -370,11 +401,19 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         const pointGeometry = new THREE.BufferGeometry();
         pointGeometry.setAttribute('position', geometry.getAttribute('position'));
         pointGeometry.setAttribute('color', geometry.getAttribute('color'));
+        if (mode === 'plan') {
+          const indices = mapObjectPointIndices(scene, surface.positions);
+          if (indices) pointGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        }
         dots = pointMaterial();
         world.add(new THREE.Points(pointGeometry, dots));
         // The night map: real publisher map layers and annotated objects under the scan points.
         const layers = mode === 'plan' ? mapLayers(scene.ground) : null;
         if (layers) world.add(mapBase = buildMapBase(layers));
+        if (mode === 'plan') {
+          addMapSurface(mapSurface(scene), world);
+          cameraViewLabel = addMapCameraView(scene, layers, world);
+        }
       }
       const draw = () => {
         const config = latest.current, width = element.clientWidth, height = element.clientHeight;
@@ -426,7 +465,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
         renderer.setScissorTest(false);
         return camera;
       };
-      api.current = { world, renderer, draw, mapBase, plane: new THREE.Plane(UP, 0), ray: new THREE.Raycaster() };
+      api.current = { world, renderer, draw, mapBase, cameraViewLabel, plane: new THREE.Plane(UP, 0), ray: new THREE.Raycaster() };
       const redraw = () => { try { api.current.camera = draw(); placeLabels(); } catch (error) { latest.current.onError?.(error.message); } };
       const watchResolution = () => {
         removeResolution?.();
@@ -506,7 +545,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
   }
   function placeLabels() {
     const a = api.current, s = latest.current.scenario, nodes = labels.current;
-    if (!a?.camera || latest.current.mode !== 'plan' || !s?.whatIf) return;
+    if (!a?.camera || latest.current.mode !== 'plan') return;
     const rect = host.current.getBoundingClientRect(), camera = a.camera, perMetre = rect.height / (camera.top - camera.bottom);
     const screen = point => {
       const p = new THREE.Vector3(...point).project(camera);
@@ -518,6 +557,8 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
       node.style.left = `${at.x}px`;
       node.style.top = `${at.y}px`;
     };
+    if (a.cameraViewLabel) put(nodes.cameraView, screen(a.cameraViewLabel));
+    if (!s?.whatIf) return;
     // A vehicle is drawn as its exact footprint (width by length on the ground) at its own heading, nose toward the crossing.
     const footprint = (node, box, show = true) => {
       const along = flat(box.axis), at = screen(box.center), nose = screen(box.center.map((v, i) => v - along[i] * box.vehicle.length / 2));
@@ -680,6 +721,7 @@ export default function StreetView({ scene, scenario, preview, eye, mode = 'driv
   const blocked = plan && scenario.proposedVisibility.state === 'blocked';
   const personLabel = 'Person' + (scenario?.support?.target?.supportLabel ? ': ' + scenario.support.target.supportLabel : '');
   return <div ref={host} role={plan ? 'group' : 'img'} aria-label={mode === 'plan' ? `Top-down ${sourceLabel.toLowerCase()}` : mode === 'recorded' ? 'Declared actors over recorded camera view' : `${sourceLabel} from driver view`} style={{ position: 'relative', width: '100%', height: '100%', minHeight: mode === 'plan' ? 160 : 0, overflow: 'hidden', background: mode === 'plan' ? '#060716' : 'transparent' }}>
+    {mode === 'plan' && <span ref={node => { labels.current.cameraView = node; }} className="map-tick" style={{ display: 'none', transform: 'translate(-50%, -50%)', zIndex: 2 }} aria-hidden="true">camera view</span>}
     {plan && <>
       <div ref={node => { labels.current.baseline = node; }} className="map-vehicle map-vehicle--baseline" title={baselineLabel}/>
       <div {...sliderProps('setback', 'Proposed vehicle distance from crossing')} className={'map-vehicle map-vehicle--proposed' + (truck ? ' map-vehicle--truck' : '')}>

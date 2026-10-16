@@ -6,7 +6,8 @@ export async function fetchAsset(path) {
   catch(e){if(e.code==='ENOENT')return new Response(null,{status:404});throw e;}
 }
 export const catalog=await (await fetchAsset('/scenes/index.json')).json();
-export const scene=await loadScene(fetchAsset,catalog[0].id);
+// The measured-depth fixture these pixels belong to; mapped-ground (AV2) entries may come first in a local catalog.
+export const scene=await loadScene(fetchAsset,catalog.find(entry=>!entry.ground).id);
 // Test annotations on actual measured pixels. These are never imported by the app.
 const pixels={crossing:[589,233],parking:[600,250],target:[621,235]};
 const placement=placementFromPixels(scene,pixels);
