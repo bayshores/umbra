@@ -1,0 +1,40 @@
+{
+ "labelsAddendumSha256": "c1c61b3d19cf5cea749fb1436de86a2e4a73f233e0603fa0cbd767713deb55a8",
+ "sites": [
+  {
+   "logId": "88f47a10-87b4-3ea8-a0c7-a07d825b647d",
+   "crossingId": "2659268",
+   "labelsSha256": "e1a16d359ded62898b2362f9e500697219166f9b96292758d5971f3f2f88780e"
+  },
+  {
+   "logId": "3153b5b3-d381-3664-8f82-1d3c5ca841d2",
+   "crossingId": "2659599",
+   "labelsSha256": null,
+   "reason": "not built"
+  },
+  {
+   "logId": "d33f667d-7b6c-39aa-9ba9-eac2fa615ae1",
+   "crossingId": "2399287",
+   "labelsSha256": null,
+   "reason": "not built"
+  },
+  {
+   "logId": "fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91",
+   "crossingId": "2659589",
+   "labelsSha256": null,
+   "reason": "no annotated recorded vehicle"
+  },
+  {
+   "logId": "25e5c600-36fe-3245-9cc0-40ef91620c22",
+   "crossingId": "2659878",
+   "labelsSha256": null,
+   "reason": "not built"
+  },
+  {
+   "logId": "e1d68dde-22a9-3918-a526-0850b21ff2eb",
+   "crossingId": "5987490",
+   "labelsSha256": null,
+   "reason": "no annotated recorded vehicle"
+  }
+ ]
+}
