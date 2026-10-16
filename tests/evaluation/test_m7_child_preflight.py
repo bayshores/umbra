@@ -115,6 +115,7 @@ def fixture(tmp_path, monkeypatch):
         helpers = {name: getattr(shape, name) for name in ('make_plan', 'download_sweeps', 'approach_split_document',
                                                           'build_car_shape', 'load_receipted', 'fetch_listing',
                                                           'http_fetch', 'fetch_with_rule')}
+        downloads = {'curl': m7.curl, 'fetch': m7.fetch}  # the real M7 download helpers, before the I/O mocks
         for module, names in ((m7, ('curl', 'write_new', 'run_marker')),
                               (shape, ('http_fetch', 'write_exclusive', 'make_plan', 'download_sweeps', 'approach_split_document')),
                               (builder, ('snapshot', 'publish', 'find_sources', 'load_poses', 'load_annotations'))):
@@ -129,7 +130,7 @@ def fixture(tmp_path, monkeypatch):
         monkeypatch.setattr(shape, 'snapshot', snapshot)
         yield SimpleNamespace(m7=m7, shape=shape, adapter=adapter, builder=builder, root=tmp_path,
                               lock=lock, digest=digest, record=record, anchor=anchor, addendum=addendum,
-                              sites=sites, state=state, calls=calls, fetch=fetch, helpers=helpers)
+                              sites=sites, state=state, calls=calls, fetch=fetch, helpers=helpers, downloads=downloads)
 
 
 def child_argv(f, command, site):
@@ -288,6 +289,47 @@ def test_url_guard_checks_the_requested_log_not_a_query_prefix(fixture, monkeypa
     for url in (f.shape.BUCKET_URL + f.shape.lidar_prefix(dev) + '1.feather', f.shape.listing_url(dev)):
         assert f.shape.guard_url(url) is None  # development URLs need no lock
     network.assert_not_called()
+    f.fetch.assert_not_called()
+
+
+def test_m7_download_helpers_guard_the_requested_log(fixture):
+    """lock-2 review r9 F6: common.curl and common.fetch reached the subprocess boundary for held-out logs without preflight."""
+    f = fixture
+    curl, fetch = f.downloads['curl'], f.downloads['fetch']
+    dev = next(s['logId'] for s in f.sites if s['role'] in f.m7.DEVELOPMENT_ROLES)
+    dev_query = '?prefix=' + f.m7.log_prefix(dev).replace('/', '%2F')
+    reserve = next(s['logId'] for s in f.sites if s['role'] not in f.m7.DEVELOPMENT_ROLES + f.m7.HELD_OUT_ROLES)
+    folder = f.root / 'downloads'
+
+    def attempts(url, lock):
+        yield lambda: curl(url, folder / 'x', folder / 'x.headers', 10, lock_sha256=lock)
+        yield lambda: fetch(url, folder, 'x', 10, lock_sha256=lock)
+
+    for log in sorted({s['logId'] for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES}):
+        obj = f.m7.BUCKET + f.m7.log_prefix(log) + 'calibration/intrinsics.feather'
+        listing = f.m7.listing_url(log, 'map/')
+        for url in (obj, listing):  # canonical held-out URLs: no lock, no preflight
+            for call in attempts(url, None):
+                with pytest.raises(SystemExit, match='--protocol-lock-sha256'):
+                    call()
+        bypasses = [obj + dev_query, obj + '#x', obj.replace('/calibration/', '/calibration%2F'), listing + '&x=1',
+                    f.m7.BUCKET + f.m7.log_prefix(dev) + '../' + log + '/calibration/intrinsics.feather',
+                    obj.replace('/calibration/', '/./calibration/'), listing.replace('map%2F', 'annotations%2F')]
+        for url in bypasses:
+            for call in attempts(url, f.digest):
+                with pytest.raises(SystemExit):
+                    call()
+        with pytest.raises(AssertionError, match='unexpected child process'):  # with the lock: the (stubbed) subprocess
+            curl(obj, folder / 'x', folder / 'x.headers', 10, lock_sha256=f.digest)
+    f.record.unlink()
+    log = next(s['logId'] for s in f.sites if s['role'] in f.m7.HELD_OUT_ROLES)
+    for call in attempts(f.m7.BUCKET + f.m7.log_prefix(log) + 'map/x.json', f.digest):
+        with pytest.raises(SystemExit, match='record'):
+            call()
+    with pytest.raises(SystemExit):  # reserve logs stay unopened
+        f.m7.guard_url(f.m7.BUCKET + 'datasets/av2/sensor/train/' + reserve + '/map/x.json', f.digest)
+    assert f.m7.guard_url(f.m7.listing_url(dev, 'sensors/lidar/')) == dev  # development needs no lock
+    assert not folder.exists()  # refused before any folder
     f.fetch.assert_not_called()
 
 

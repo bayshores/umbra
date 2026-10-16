@@ -61,6 +61,7 @@ def load_driver(name):
 SITE = {'logId': 'aaaaaaaa-0000-0000-0000-000000000000', 'crossingId': '1', 'role': 'held-out-blocked-test'}
 GROUND = '11' * 32
 ADDENDUM_SHA = '22' * 32
+DEV_LOG = next(s['logId'] for s in common.split_sites() if s['role'] in common.DEVELOPMENT_ROLES)  # frozen metadata only (common.fetch guards URLs)
 LABELS = '33' * 32
 LOST = {'file': common.LOST_SITES_REL, 'sha256': '00' * 32}  # the lost-site list every held-out test record names
 PINNED = {'file': 'scripts/evaluation/m7/score.py', 'sha256': hashlib.sha256((M7_DIR / 'score.py').read_bytes()).hexdigest()}
@@ -1312,10 +1313,10 @@ class StopsAndDownloads(Tmp):
     def test_a_chunked_listing_is_accepted_but_a_chunked_object_is_refused(self):
         chunked = 'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nETag: "abc"\r\n'
         with mock.patch('subprocess.run', self.fake_curl(chunked)):
-            _, receipt = common.fetch('https://example.invalid/list', self.dir / 'listing', 'l.xml', 1000)
+            _, receipt = common.fetch(common.listing_url(DEV_LOG, 'map/'), self.dir / 'listing', 'l.xml', 1000)
             self.assertEqual(receipt['httpContentLength'], 'none (chunked)')
             with self.assertRaises(common.SiteStop) as stop:
-                common.fetch('https://example.invalid/obj', self.dir / 'object', 'o.bin', 1000, {'bytes': 6, 'etag': 'abc'})
+                common.fetch(common.BUCKET + common.log_prefix(DEV_LOG) + 'map/o.json', self.dir / 'object', 'o.bin', 1000, {'bytes': 6, 'etag': 'abc'})
             self.assertIn('without Content-Length', stop.exception.reason)
             self.assertEqual(len(list((self.dir / 'object').iterdir())), common.RETRIES + 1)  # a new folder per attempt
 
@@ -1324,7 +1325,7 @@ class StopsAndDownloads(Tmp):
         md5 = hashlib.md5(body).hexdigest()
         headers = f'HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\nETag: "{md5}"\r\n'
         with mock.patch('subprocess.run', self.fake_curl(headers, body)):
-            _, receipt = common.fetch('https://example.invalid/obj', self.dir / 'object', 'o.bin', 1000, {'bytes': 6, 'etag': md5})
+            _, receipt = common.fetch(common.BUCKET + common.log_prefix(DEV_LOG) + 'map/o.json', self.dir / 'object', 'o.bin', 1000, {'bytes': 6, 'etag': md5})
         self.assertEqual((receipt['bytes'], receipt['md5Check']), (6, 'single-part: MD5 == ETag'))
 
 

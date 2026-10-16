@@ -185,7 +185,8 @@ def main():
             ts = str(chosen['timestampNs']); entry_ = listed.get(f'{ts}.feather')
             if entry_ is None or '-' in entry_['etag'] or entry_['bytes'] > MAX_SWEEP:
                 raise SiteStop('sweeps', f'{ts}: not listed, multi-part, or over {MAX_SWEEP} bytes')
-            path, receipt = fetch(common.BUCKET + entry_['key'], out / 'sweeps' / ts, f'{ts}.feather', MAX_SWEEP, entry_)
+            path, receipt = fetch(common.BUCKET + entry_['key'], out / 'sweeps' / ts, f'{ts}.feather', MAX_SWEEP, entry_,
+                                    lock_sha256=None if args.rehearse else args.protocol_lock_sha256)
             downloads.append(receipt)
             files.append({'timestampNs': ts, 'url': receipt['url'], 'path': os.path.relpath(path, out), 'bytes': receipt['bytes'],
                           'etag': receipt['httpETag'], 'md5': receipt['md5'], 'sha256': receipt['sha256'], 'downloadedUtc': receipt['utc']})

@@ -606,7 +606,36 @@ def guard(log, crossing, rehearse, lock_sha256, *, fetch=True):
 
 
 # ------------------------------------------------------------------ public downloads
-def curl(url, target, headers, max_bytes):
+OBJECT_URL_RE = re.compile(re.escape(BUCKET) + r'datasets/av2/sensor/(train|val)/([0-9a-f-]+)/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+)')
+LISTING_URL_RE = re.compile(re.escape(BUCKET) + r'\?list-type=2&delimiter=%2F&max-keys=1000&prefix=datasets%2Fav2%2Fsensor%2F'
+                            r'(train|val)%2F([0-9a-f-]+)%2F.*')
+
+
+def guard_url(url, lock_sha256=None):
+    """Before any folder or network call, for the log the URL actually requests: url is exactly a public AV2 object URL
+    (no query, fragment, percent-encoding or dot segment) or exactly listing_url(log, sub) for a LISTINGS sub-folder; the
+    URL's publisher folder is the log's frozen av2Split; held-out/control logs need the full lock-2 preflight
+    (fetch=False) with an explicit lock sha256; reserve, test and unknown logs are refused. Returns the log."""
+    match = (OBJECT_URL_RE.fullmatch(url) or LISTING_URL_RE.fullmatch(url)) if isinstance(url, str) else None
+    if match is None:
+        raise SystemExit(f'M7 downloads only public AV2 object URLs and listing_url() listings: {str(url)[:200]}')
+    log = match[2]
+    if match.re is OBJECT_URL_RE and any(part in ('.', '..') for part in match[3].split('/')):
+        raise SystemExit(f'dot segment in an object URL: {url[:200]}')
+    if match.re is LISTING_URL_RE and url not in {listing_url(log, sub) for sub in LISTINGS.values()}:
+        raise SystemExit(f'not an M7 listing URL: {url[:200]}')
+    if match[1] != av2_split(log):  # also refuses reserve, test and unknown logs
+        raise SystemExit(f'{log[:8]}: URL folder {match[1]} differs from its av2Split')
+    roles = {x['role'] for x in split_sites() if x['logId'] == log}
+    if not roles <= set(DEVELOPMENT_ROLES):
+        if not roles <= set(HELD_OUT_ROLES):
+            raise SystemExit(f'{log[:8]} is {sorted(roles)}: only development or held-out logs are downloaded')
+        preflight(lock_sha256, fetch=False)
+    return log
+
+
+def curl(url, target, headers, max_bytes, *, lock_sha256=None):
+    guard_url(url, lock_sha256)
     subprocess.run(['curl', '--fail', '--silent', '--show-error', '--proto', '=https', '--max-time', str(CURL_SECONDS),
                     '--max-filesize', str(max_bytes), '--dump-header', str(headers), '--output', str(target), url], check=True, env=child_env())
     text = headers.read_text(errors='replace').lower().splitlines()
@@ -616,18 +645,20 @@ def curl(url, target, headers, max_bytes):
     return int(head['content-length']), head.get('etag', '').strip('"')
 
 
-def fetch(url, folder, name, max_bytes, listing=None):
+def fetch(url, folder, name, max_bytes, listing=None, *, lock_sha256=None):
     """GET url into folder/attempt-<n>/name (a new empty folder per attempt; at most RETRIES retries). With a listing
     entry: bytes == HTTP Content-Length == listing Size, and MD5 == HTTP ETag == listing ETag for single-part objects
     (multi-part: the HTTP ETag equals the listing ETag and the size matches). Without one (a listing fetch) a chunked
-    response without Content-Length is accepted; an object download always needs it. Returns (path, receipt)."""
+    response without Content-Length is accepted; an object download always needs it. guard_url runs first (held-out
+    and control logs: full preflight with lock_sha256). Returns (path, receipt)."""
+    guard_url(url, lock_sha256)
     errors = []
     for attempt in range(RETRIES + 1):
         where = Path(folder) / f'attempt-{attempt}'
         where.mkdir(parents=True, exist_ok=False)
         target, headers = where / name, where / f'{name}.headers.txt'
         try:
-            length, etag = curl(url, target, headers, max_bytes)
+            length, etag = curl(url, target, headers, max_bytes, lock_sha256=lock_sha256)
             data = target.read_bytes(); md5 = hashlib.md5(data).hexdigest()
             if length is None and listing is not None:
                 raise ValueError('object download without Content-Length')

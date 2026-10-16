@@ -81,6 +81,7 @@ CODE = ('scripts/evaluation/m7/run_heldout.py', 'scripts/evaluation/m7/common.py
 class Build:
     def __init__(self, args, entry, lock):
         self.args, self.entry, self.lock = args, entry, lock
+        self.lock_sha256 = None if args.rehearse else args.protocol_lock_sha256  # common.fetch guards each URL with it
         self.log, self.crossing = args.log, str(args.crossing)
         self.out = Path(args.out).resolve()
         self.addendum = common.labels_addendum(not args.rehearse)  # held-out: equal to its committed anchor (checked in preflight)
@@ -121,7 +122,8 @@ class Build:
     def listings(self):
         self.listing_files, self.listed = {}, {}
         for name, sub in common.LISTINGS.items():
-            path, receipt = fetch(common.listing_url(self.log, sub), self.out / 'listings' / name, f'{name}.xml', MAX_LISTING)
+            path, receipt = fetch(common.listing_url(self.log, sub), self.out / 'listings' / name, f'{name}.xml', MAX_LISTING,
+                                  lock_sha256=self.lock_sha256)
             self.downloads.append({'kind': 'listing', 'name': name, **receipt})
             self.listing_files[name] = path
             self.listed[name] = read_listing(path, self.log, sub)
@@ -143,7 +145,7 @@ class Build:
                 raise SiteStop('metadata', f'{group}/{name} is {entry["bytes"]} bytes, over {MAX_METADATA}')
             relative = name if group == 'root' else f'{group}/{name}'
             path, receipt = fetch(common.BUCKET + entry['key'], self.out / 'downloads' / relative.replace('/', '__'), name,
-                                  MAX_METADATA, entry)
+                                  MAX_METADATA, entry, lock_sha256=self.lock_sha256)
             self.place(path, relative)
             self.downloads.append({'kind': 'metadata', 'publisherPath': relative, 'listing': entry, **receipt})
         self.steps.append({'step': 'metadata', 'files': len(wanted), 'utc': now()})
@@ -183,7 +185,7 @@ class Build:
             if entry['bytes'] > MAX_SENSOR:
                 raise SiteStop('sensors', f'{relative} is {entry["bytes"]} bytes, over {MAX_SENSOR}')
             path, receipt = fetch(common.BUCKET + key, self.out / 'downloads' / relative.replace('/', '__'), relative.rsplit('/', 1)[1],
-                                  MAX_SENSOR, entry)
+                                  MAX_SENSOR, entry, lock_sha256=self.lock_sha256)
             self.place(path, relative)
             self.downloads.append({'kind': 'sensor', 'role': missing['role'], 'publisherPath': relative, 'listing': entry, **receipt})
         self.steps.append({'step': 'sensors', 'files': len(selection['missingSources']), 'utc': now()})
