@@ -455,7 +455,10 @@ export function samplePlacements(scene,{count=3000,seed=12345,maxAttempts=400000
 }
 export function honestyCounters(scene,setup,placements) {
   const suggestionTrack=pose(scene,setup)?.track,cuboids=scene.ground.cuboids.items;
-  const suggestionBox=cuboidBox(cuboids.find(b=>b.track===suggestionTrack));
+  // A declared-default suggestion (no annotated recorded vehicle; M7 lock 2 built-box sites fd5c6932 and e1d68dde) has no
+  // cuboid: every annotated cuboid is a real object, and the two counts against the suggested vehicle are null (not
+  // measured), never 0 and never an invented box. An annotated track always has its cuboid (geometry.mjs annotatedBox).
+  const suggestionBox=suggestionTrack===undefined?null:cuboidBox(cuboids.find(b=>b.track===suggestionTrack));
   const tally={person:{rows:0,blocked:0,unknown:0},driver:{rows:0,blocked:0,unknown:0}};
   const start={placements:0,conflictReportedBlocked:0,conflicts:0};
   const realOverlap={currentOverlapsReal:0,currentOverlapsReplacedSuggestionVehicle:0,whatIfRowsOverlappingReal:0,whatIfRowsOverlappingRealReportedBlocked:0,whatIfRowsOverlappingRealReportedUnknown:0,byCategory:{}};
@@ -473,10 +476,10 @@ export function honestyCounters(scene,setup,placements) {
       if(c.targetInside||c.eyeInside){start.conflicts++;if(vis.state==='blocked'){start.conflictReportedBlocked++;if(examples.conflictBlocked.length<3)examples.conflictBlocked.push({pixels:pixelsOut(input.pixels),which,label});}}
     }
     if(real.some(b=>boxesOverlap(sc.baseline,cuboidBox(b))))realOverlap.currentOverlapsReal++;
-    if(!track&&boxesOverlap(sc.baseline,suggestionBox))realOverlap.currentOverlapsReplacedSuggestionVehicle++;
+    if(suggestionBox&&!track&&boxesOverlap(sc.baseline,suggestionBox))realOverlap.currentOverlapsReplacedSuggestionVehicle++;
     if(sc.baseline.pose==='declared'&&sc.currentVisibility.state==='unknown') {
       declaredUnknown++;
-      if(appIntersects(sc.eye,sc.target,suggestionBox))declaredUnknownWithSuggestionVehicleOnLine++;
+      if(suggestionBox&&appIntersects(sc.eye,sc.target,suggestionBox))declaredUnknownWithSuggestionVehicleOnLine++;
     }
     const vehicle=Object.fromEntries(['width','height','length'].map(k=>[k,Number(input.vehicle[k])]));
     const sweep=setbackSweep(scene,{pixels:input.pixels,driverDistance:input.driverDistance},{label,...vehicle},Number(input.targetHeight));
@@ -507,7 +510,10 @@ export function honestyCounters(scene,setup,placements) {
       }
     }
   }
+  if(!suggestionBox)realOverlap.currentOverlapsReplacedSuggestionVehicle=null;
   return {
+    suggestionVehicle:suggestionBox?{status:'annotated',track:suggestionTrack}
+      :{status:'none',reason:'The suggested setup has no annotated recorded vehicle (declared default), so it has no cuboid. Every annotated cuboid counts as a real object; currentOverlapsReplacedSuggestionVehicle and declaredCurrentUnknownWithSuggestionVehicleOnLine are null (not measured).'},
     definitions:{
       personOrDriverInsideBox:'scenario-assistant boxTests: the person ground-to-head column touches the box, or the eye is inside it (the Distance check and Nemotron facts call this overlap); counted when createScenario reports that same box as Blocked',
       realObjectOverlap:'the current vehicle or the what-if box overlaps a real annotated cuboid other than itself (upright footprints and height ranges). A declared current vehicle replaces the suggested stationary vehicle (decision 12), so overlap with that one vehicle is counted separately',
@@ -515,7 +521,7 @@ export function honestyCounters(scene,setup,placements) {
     },
     sweepRowsWithPersonInsideBox:tally.person,sweepRowsWithDriverInsideBox:tally.driver,
     startValues:start,realObjectOverlap:realOverlap,borderline,
-    informational:{declaredCurrentUnknown:declaredUnknown,declaredCurrentUnknownWithSuggestionVehicleOnLine:declaredUnknownWithSuggestionVehicleOnLine,
+    informational:{declaredCurrentUnknown:declaredUnknown,declaredCurrentUnknownWithSuggestionVehicleOnLine:suggestionBox?declaredUnknownWithSuggestionVehicleOnLine:null,
       note:'today a declared current vehicle replaces the suggested stationary vehicle (decision 12, keep and label); listed only so the count is visible'},
     unknownReasonsInNonOverlapRows:unknownReasons,sweepErrors,clearanceSignMismatches:signMismatches,clearanceStateMismatches:stateMismatches,examples,
   };

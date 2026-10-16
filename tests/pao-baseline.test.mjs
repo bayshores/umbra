@@ -4,6 +4,8 @@ import {suggestedSetup,crossingText} from '../src/suggestions.mjs';
 import {devDataPresent,loadDevelopmentScene,signedClearance,appIntersects,boxesOverlap,percentile,clickToGround,suggestionConsistency,
   setbackSweepBaseline,blockedEndRange,firstLoad,samplePlacements,honestyCounters,GROUNDED_DIR} from '../scripts/evaluation/pao-baseline.mjs';
 import {historyApp} from './history-app.mjs';
+import {annotatedVehicle} from '../src/geometry.mjs';
+import {analytic,loadAnalytic} from './mapped-fixture.mjs';
 
 const near=(a,b,tolerance,what)=>assert.ok(Math.abs(a-b)<=tolerance,`${what??''} ${a} differs from ${b}`);
 
@@ -35,6 +37,33 @@ test('baseline helpers: upright box overlap and nearest-rank percentile',()=>{
   assert.equal(boxesOverlap(a,{...a,center:[0,1.6,0]}),false,'stacked above');
   const s=Math.SQRT1_2;assert.equal(boxesOverlap(a,{...a,center:[2.6,0,0],axis:[s,0,s]}),true,'turned corner reaches');
   assert.equal(percentile([5,1,4,2,3],.5),3);assert.equal(percentile([1,2,3,4],.5),2);assert.equal(percentile([1,2,3,4],.95),4);assert.equal(percentile([],.5),null);
+});
+
+// M7 lock 2 (built-box sites fd5c6932/2659589 and e1d68dde/5987490): the suggested vehicle is a declared default, so no
+// annotated cuboid is the suggestion's. honestyCounters threw there (cuboidBox(undefined): "reading 'worldFromBox'").
+// The analytic mapped scene (one annotated cuboid at z -12, not suggested) with an in-memory declared-default suggestion.
+test('honesty counters: a declared-default suggested vehicle has no cuboid; reported as none, never an invented box',async()=>{
+  const base=await loadAnalytic(analytic());
+  const scene={...base,suggestions:{schemaVersion:3,crossing:{status:'mapped',pixel:[2,4]},
+    vehicle:{status:'declared-default',pixel:[2,5],label:'SUV',dimensions:{width:1.9,height:1.5,length:4},setbackM:6.096},
+    person:{status:'declared-default',pixel:[3,5],label:'child',heightM:1.1}}};
+  const setup=suggestedSetup(scene,scene.suggestions);
+  assert.equal(setup.error,'');assert.ok(setup.input);
+  assert.equal(annotatedVehicle(scene,setup.pixels,setup.vehicle),null,'no annotated recorded vehicle');
+  assert.deepEqual(scene.ground.cuboids.items.map(b=>b.track),['analytic'],'one annotated cuboid, not the suggestion');
+  const honesty=honestyCounters(scene,setup,[{kind:'suggested',input:setup.input,label:'SUV'}]);
+  // Reported explicitly; the two counts against the suggested vehicle are not measured (null), not 0.
+  assert.deepEqual(Object.keys(honesty.suggestionVehicle),['status','reason']);assert.equal(honesty.suggestionVehicle.status,'none');
+  assert.equal(honesty.realObjectOverlap.currentOverlapsReplacedSuggestionVehicle,null);
+  assert.equal(honesty.informational.declaredCurrentUnknownWithSuggestionVehicleOnLine,null);
+  assert.equal(honesty.informational.declaredCurrentUnknown,1);
+  // Every annotated cuboid is a real object: the what-if rows at small setbacks overlap the cuboid at z -12.
+  const real=honesty.realObjectOverlap;
+  assert.ok(real.whatIfRowsOverlappingReal>0);assert.deepEqual(real.byCategory,{REGULAR_VEHICLE:real.whatIfRowsOverlappingReal});
+  assert.equal(real.whatIfRowsOverlappingRealReportedBlocked,0);assert.equal(real.currentOverlapsReal,0);
+  assert.ok(honesty.examples.realOverlap.every(x=>x.objects.includes('REGULAR_VEHICLE:analytic')));
+  assert.deepEqual([honesty.startValues.placements,honesty.sweepErrors,honesty.clearanceSignMismatches,honesty.clearanceStateMismatches],[1,0,0,0]);
+  assert.doesNotMatch(JSON.stringify(honesty),/park/i);
 });
 
 // ------------------------------------------------------------------ AV2 8c development scene (local only)
