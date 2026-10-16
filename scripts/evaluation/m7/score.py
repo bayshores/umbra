@@ -3,19 +3,22 @@
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py site --site <run_heldout.py folder> --out <new file> \
       [--baseline <pao-baseline.mjs --scene output>] [--metric-f-results <metric_f_car_top.py score output>] \
       [--metric-k <metric_k.py output>] [--paint <paint_heldout.py folder>] [--failed-step <evaluate_site.py step> ...] \
-      [--labels-de <the labels-addendum-pinned D/E scorer's output>] [--approach-split-results <its score output>]
+      [--labels-de <the labels-addendum-pinned D/E scorer's output>] [--e-grid <metric-e-grid.mjs output>] \
+      [--approach-split-results <its score output>]
   ... score.py site --site <folder> --paint <folder> --evaluation-stopped <evaluate-stopped.json> --out <new file>
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py summary --scores <site score> ... --out <new file>
   nice -n 10 python3 -I -B scripts/evaluation/m7/score.py runs-list --protocol-lock-sha256 <sha256>   (held-out, once)
 
 Every target is written as pass, fail or not scored (with its reason), using the locked rules (protocol-lock.json
 metrics, referenceBlocked and statistics). Each input is checked against the site: its ground.json sha256 (baseline,
-metric F rows, metric K; ground.json against the build receipt) or its site record sha256 (paint). A failed or missing
+metric F rows, metric E grid, metric K; ground.json against the build receipt) or its site record sha256 (paint). A failed or missing
 step is handled like a site with no feasible frame for its targets: B cannot pass, H is a miss at a Blocked-test site,
 the rest are not scored; it never counts as a pass. FApproachSplit (the approach-half split check) is report only: "reported" or
 "not scored", never a pass or a fail, and no other target reads it; its results must name this site's ground.json (through
 their rows) and the metric F results given here as their app results. D and E are scored only from the D/E file of the scorer that the labels
-addendum pins (protocol-lock labels.scoringCondition); without the addendum they are "not scored". A held-out site must
+addendum pins (protocol-lock labels.scoringCondition); without the addendum they are "not scored". E's rows must be
+exactly the rows of the metric E grid (metric-e-grid.mjs: head points with the recorded vehicle at its recorded pose and
+the eye at the recorded camera), with the same app states; without the grid E is "not scored". A held-out site must
 have been built under the committed labels addendum anchor. A held-out summary must hold exactly the held-out sites minus
 the committed lost-site list, each with its paint record and, when the addendum is anchored, a D/E file for every site
 the committed label manifest lists with labels (unless its labels-de step failed or it has no built scene). Held-out,
@@ -38,7 +41,7 @@ written once like the other anchors, so a site run again after a marker was remo
 The D/E file (labels.scoringCondition) is one JSON object with exactly the keys kind ("pao-m7-labels-de"), site
 ({logId, crossingId}: strings, and nothing else), groundSha256, labelsAddendumSha256, labels ({sha256} only: never a path),
 scorer ({file, sha256}), D ({labelledVehicle, errorsPx1024: [{feature, errorPx}], unresolvedLabels, reason?}) and E
-({labelledVehicle, rows: [{height, setbackM, appState, e}], assumption, reason?}). Nothing here changes a result the app
+({labelledVehicle, rows: [{height, xM, zM, appState, e}], assumption, reason?}). Nothing here changes a result the app
 shows.
 """
 import argparse
@@ -78,6 +81,8 @@ STOPPED_KIND = 'pao-m7-evaluation-stopped'  # evaluate_site.py --record-stopped
 D_MEDIAN_PX, D_MAX_PX = 3.0, 6.0  # metrics.D, 1024 px width
 D_FEATURES = ('L', 'R', 'S1', 'S2', 'S3')  # metrics.D: each is compared or listed unresolved, once
 E_STATES = ('blocked', 'not blocked', 'unresolved')
+E_ROW_KEYS = {'height', 'xM', 'zM', 'appState', 'e'}  # labels.scoringCondition: exactly these
+E_GRID_KIND = 'pao-m7-e-grid'  # metric-e-grid.mjs
 
 
 def outcome(result, reason=None, **extra):
@@ -90,6 +95,11 @@ def not_scored(reason, **extra):
 
 def load(path):
     return json.loads(Path(path).read_bytes())
+
+
+def no_constant(name):
+    """json parse_constant: NaN, Infinity and -Infinity are refused."""
+    raise SystemExit(f'the JSON holds {name}')
 
 
 def percentile(values, p):
@@ -320,53 +330,29 @@ def approach_split(path, ground_sha, metric_f_results):
     return metric_f_approach(split)
 
 
-def e_overrides(results, e_rows):
-    """{(height, setbackM): E state} from the D/E file's E rows; each must be one of metric F's rows (the D/E scorer copies
-    the setbacks from the same results file)."""
-    if e_rows is None:
-        return {}
-    known = {(h, r['setbackM']) for h, v in results['heights'].items() if 'error' not in v for r in v['rows']}
-    out = {}
-    for r in e_rows:
-        key = (r['height'], r['setbackM'])
-        if key not in known:
-            raise SystemExit(f'E row {key} is not a metric F row of this site')
-        out[key] = r['e']
-    return out
-
-
-def metric_h(results, role, e_rows=None):
+def metric_h(results, role):
     """Recorded-vehicle measured-shape setback rows (never declared or default rows): reference-blocked = metric F
-    "supported" or, when E is scored, E blocked at a resolved head point; E not blocked overrides F; an E-unresolved point
-    leaves the row to F (referenceBlocked). Reported Blocked = the app's row state. The own-position nearest grid row is
-    information."""
-    overrides = e_overrides(results, e_rows)
-
-    def reference(r, height):
-        e = overrides.get((height, r['setbackM']))
-        return {'blocked': True, 'not blocked': False}.get(e, r['class'] == 'supported')
-
-    def tally(rows, height):
-        ref = [r for r in rows if reference(r, height)]
-        listed = [r for r in rows if r['class'] in ('ambiguous', 'unresolved') and overrides.get((height, r['setbackM'])) in (None, 'unresolved')]
+    "supported" (referenceBlocked; E has no setback rows and is not used). Reported Blocked = the app's row state. The
+    own-position nearest grid row is information."""
+    def tally(rows):
+        ref = [r for r in rows if r['class'] == 'supported']
+        listed = [r for r in rows if r['class'] in ('ambiguous', 'unresolved')]
         by_class = {c: [r['setbackM'] for r in listed if r['class'] == c] for c in sorted({r['class'] for r in listed})}
         return {'rows': len(rows), 'referenceBlocked': len(ref), 'reportedBlocked': sum(r['state'] == 'blocked' for r in ref),
                 'anyBlocked': any(r['state'] == 'blocked' for r in rows),
                 'notReferenceListed': dict(Counter(r['class'] for r in listed)), 'notReferenceListedSetbacksM': by_class,
-                'eUsed': dict(Counter(overrides[(height, r['setbackM'])] for r in rows if (height, r['setbackM']) in overrides)),
-                'eUnresolvedSetbacksM': [r['setbackM'] for r in rows if overrides.get((height, r['setbackM'])) == 'unresolved'],
                 'stateByClass': {f'{c}/{s}': n for (c, s), n in sorted(Counter((r['class'], r['state']) for r in rows).items())}}
     child_rows = results['heights']['child']['rows']
-    child = tally(child_rows, 'child')
-    adult = tally(results['heights']['adult']['rows'], 'adult') if 'error' not in results['heights']['adult'] else results['heights']['adult']
+    child = tally(child_rows)
+    adult = tally(results['heights']['adult']['rows']) if 'error' not in results['heights']['adult'] else results['heights']['adult']
     own = results['testedBox']['setbackM']
     near = min(child_rows, key=lambda r: abs(r['setbackM'] - own)) if child_rows else None
     info = {'child': child, 'adult': {**adult, 'note': 'reported, no target'},
             'ownPositionNearestRow': near and {'ownSetbackM': own, 'rowSetbackM': near['setbackM'], 'distanceM': abs(near['setbackM'] - own),
                                                'class': near['class'], 'state': near['state'],
                                                'note': 'the own setback is not on the 0.25 m row grid; information only'},
-            'rule': ('recorded vehicle\'s measured-shape setback rows; reference-blocked = metric F "supported" or E blocked '
-                     '(E not blocked overrides F; E unresolved leaves F); target >= 50% reported Blocked')}
+            'rule': ('recorded vehicle\'s measured-shape setback rows; reference-blocked = metric F "supported"; '
+                     'target >= 50% reported Blocked')}
     if role != BLOCKED_TEST and role not in DEVELOPMENT_ROLES:
         return not_scored('not a Blocked-test site', **info)
     if not child['anyBlocked']:
@@ -449,36 +435,65 @@ def metric_d(doc):
                    medianPx=median, maxPx=largest, **listed)
 
 
-def metric_e(doc, results):
+def e_grid(path, ground_sha):
+    """metric-e-grid.mjs output for this site's ground.json, under metric F protocol v4 (its target heights): one row per
+    grid head point and height, with the app state."""
+    # Read as strictly as the D/E scorer reads it (no repeated key, no NaN or Infinity), so a grid accepted here never
+    # makes the D/E scorer refuse (which would lose D too).
+    doc = json.loads(Path(path).read_bytes(), object_pairs_hook=common.unique_keys, parse_constant=no_constant)
+    if not isinstance(doc, dict) or doc.get('groundSha256') != ground_sha or ground_sha is None:
+        raise SystemExit(f'metric E grid {path} is for ground.json {doc.get("groundSha256") if isinstance(doc, dict) else None}, '
+                         f'not this site\'s {ground_sha}')
+    rows = doc.get('rows')
+    number = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)  # noqa: E731
+    ok = isinstance(rows, list) and all(isinstance(r, dict) and r.get('height') in ('child', 'adult') and number(r.get('xM'))
+                                        and number(r.get('zM')) and isinstance(r.get('state'), str)
+                                        and isinstance(r.get('target'), list) and len(r['target']) == 3 and all(map(number, r['target']))
+                                        and r['target'][0] == r['xM'] and r['target'][2] == r['zM'] for r in rows)
+    keys = [(r['height'], r['xM'], r['zM']) for r in rows] if ok else []
+    problems = [what for what, good in (
+        ('kind', doc.get('kind') == E_GRID_KIND),
+        (f'protocol (metric F {rel(F_PROTOCOL)})', doc.get('protocolSha256') == sha_file(F_PROTOCOL)),
+        ('rows (each {height child or adult, finite xM and zM, state, target [xM, finite, zM]})', ok),
+        ('a head point given twice', len(set(keys)) == len(keys)),
+        ('row count', ok and (doc.get('counts') or {}).get('rows') == len(rows))) if not good]
+    if problems:
+        raise SystemExit(f'metric E grid {path} is not valid: {", ".join(problems)}')
+    return doc
+
+
+def metric_e(doc, grid, missing='no metric E grid'):
     """metrics.E: 0 false Blocked (app plain Blocked where E is resolved not blocked) per site; no resolved point: not scored.
-    E's rows are the recorded vehicle's measured-shape setback rows: exactly one per metric F row of each height that F
-    evaluated, with that row's app state."""
+    E's rows are the metric E grid's head points (the recorded vehicle at its recorded pose, the eye at the recorded
+    camera): exactly one per grid row, with that row's app state. missing: why E is not scored without the grid."""
     e = doc['E']
     if not e.get('labelledVehicle'):
         return not_scored(e.get('reason') or 'no labelled recorded vehicle')
-    if results is None:
-        return not_scored('no metric F rows to check E rows against (E uses the recorded vehicle\'s measured-shape rows)')
+    if grid is None:
+        return not_scored(missing)
     rows = e.get('rows')
     if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)) or not str(e.get('assumption') or '').strip():
         raise SystemExit('E needs a rows list of objects and its assumption text')
-    bad = [r for r in rows if r.get('e') not in E_STATES or r.get('height') not in ('child', 'adult')]
+    bad = [r for r in rows if set(r) != E_ROW_KEYS or r.get('e') not in E_STATES or r.get('height') not in ('child', 'adult')]
     if bad:
-        raise SystemExit(f'E rows with an unknown height or state: {bad[:3]}')
-    f_rows = {(h, r['setbackM']): r['state'] for h, v in results['heights'].items() if 'error' not in v for r in v['rows']}
-    keys = [(r['height'], r.get('setbackM')) for r in rows]
+        raise SystemExit(f'E rows need exactly {", ".join(sorted(E_ROW_KEYS))}, a known height and state: {bad[:3]}')
+    grid_rows = {(r['height'], r['xM'], r['zM']): r['state'] for r in grid['rows']}
+    keys = [(r['height'], r['xM'], r['zM']) for r in rows]
     problems = [what for what, ok in (
         ('a row given twice', len(set(keys)) == len(keys)),
-        (f'rows missing {sorted(set(f_rows) - set(keys))[:3]} or extra {sorted(set(keys) - set(f_rows), key=str)[:3]}', set(keys) == set(f_rows)),
-        ('an app state that differs from the metric F row', all(r.get('appState') == f_rows.get(k) for r, k in zip(rows, keys)))) if not ok]
+        (f'rows missing {sorted(set(grid_rows) - set(keys))[:3]} or extra {sorted(set(keys) - set(grid_rows), key=str)[:3]}',
+         set(keys) == set(grid_rows)),
+        ('an app state that differs from the grid row', all(r['appState'] == grid_rows.get(k) for r, k in zip(rows, keys)))) if not ok]
     if problems:
-        raise SystemExit(f'E rows do not match this site\'s metric F rows: {"; ".join(problems)}')
+        raise SystemExit(f'E rows do not match this site\'s metric E grid: {"; ".join(problems)}')
     resolved = [r for r in rows if r['e'] != 'unresolved']
-    false = [{'height': r['height'], 'setbackM': r['setbackM']} for r in resolved if r['e'] == 'not blocked' and r['appState'] == 'blocked']
-    listed = {'rows': len(rows), 'resolved': len(resolved), 'byState': dict(Counter(r['e'] for r in rows)), 'falseBlocked': false,
-              'unresolvedRows': [{'height': r['height'], 'setbackM': r['setbackM']} for r in rows if r['e'] == 'unresolved'],
-              'assumption': e['assumption']}
+    false = [{'height': r['height'], 'xM': r['xM'], 'zM': r['zM']} for r in resolved if r['e'] == 'not blocked' and r['appState'] == 'blocked']
+    listed = {'rows': len(rows), 'resolved': len(resolved), 'byState': dict(Counter(r['e'] for r in rows)),
+              'byAppStateAndE': {f'{a}/{b}': n for (a, b), n in sorted(Counter((r['appState'], r['e']) for r in rows).items())},
+              'falseBlocked': false, 'assumption': e['assumption'],
+              'grid': {'points': (grid.get('counts') or {}).get('points'), 'limits': grid.get('limits')}}
     if not resolved:
-        return not_scored('no resolved head point', **listed)
+        return not_scored(e.get('reason') or 'no resolved head point', **listed)
     return outcome('fail' if false else 'pass', f'{len(false)} false Blocked' if false else None, **listed)
 
 
@@ -493,7 +508,7 @@ def score_site(args):
     if args.evaluation_stopped and not held_out:
         raise SystemExit('--evaluation-stopped is for held-out sites (evaluate_site.py --record-stopped)')
     if args.evaluation_stopped and (failed or args.baseline or args.metric_f_results or args.metric_k or args.labels_de
-                                    or args.approach_split_results):
+                                    or args.e_grid or args.approach_split_results):
         raise SystemExit('--evaluation-stopped takes only --site, --paint and --out: the stopped evaluation\'s outputs are not used')
     stopped = evaluation_stopped(args.evaluation_stopped, record, record_path) if args.evaluation_stopped else None
     if held_out:
@@ -528,7 +543,7 @@ def score_site(args):
         raise SystemExit(f'{rel(ground_path)} differs from the sha256 its build receipt names')
     inputs = {'siteRecord': {'file': rel(record_path), 'sha256': sha_file(record_path)}, 'failedSteps': failed}
     for name, value in (('baseline', args.baseline), ('metricFResults', args.metric_f_results), ('metricK', args.metric_k),
-                        ('approachSplitResults', args.approach_split_results)):
+                        ('eGrid', args.e_grid), ('approachSplitResults', args.approach_split_results)):
         if value:
             inputs[name] = {'file': rel(value), 'sha256': sha_file(value)}
     de = None
@@ -537,6 +552,8 @@ def score_site(args):
             raise SystemExit('a D/E file for a site without a built scene')
         de = labels_de(args.labels_de, addendum, addendum_sha, ground_sha, record['site'], labels_sha)
         inputs['labelsDE'] = {'file': rel(args.labels_de), 'sha256': sha_file(args.labels_de), 'labelsSha256': de['labels']['sha256']}
+    if args.e_grid and ground_sha is None:
+        raise SystemExit('a metric E grid for a site without a built scene')
     if stopped:
         inputs['evaluationStopped'] = {'file': rel(args.evaluation_stopped), 'sha256': sha_file(args.evaluation_stopped)}
     metrics = {}
@@ -564,9 +581,10 @@ def score_site(args):
         if results and results.get('protocolSha256') != sha_file(F_PROTOCOL):
             raise SystemExit(f'{args.metric_f_results} was made under another protocol than {rel(F_PROTOCOL)}')
         k = checked_input(args.metric_k, ground_sha, lambda d, _: d['inputs']['ground.json'], 'metric K') if args.metric_k else None
-        if de:  # E's rows are checked against metric F's before H uses them
-            metrics['D'], metrics['E'] = metric_d(de), metric_e(de, results)
-        e_rows = de['E']['rows'] if de and de['E'].get('labelledVehicle') and results else None  # validated by metric_e
+        grid = e_grid(args.e_grid, ground_sha) if args.e_grid else None
+        if de:
+            metrics['D'] = metric_d(de)
+            metrics['E'] = metric_e(de, grid, 'the metric-e-grid step failed' if 'metric-e-grid' in failed else 'no metric E grid')
         # A failed or missing step is handled like a site with no feasible frame for its targets (lock dataAccess):
         # B cannot pass, H is a miss at a Blocked-test site, the other targets are not scored.
         if baseline is None:
@@ -593,7 +611,7 @@ def score_site(args):
         if not test_site:
             metrics['H'] = not_scored('not a Blocked-test site')
         elif results and 'error' not in results['heights']['child']:
-            metrics['H'] = metric_h(results, role, e_rows)
+            metrics['H'] = metric_h(results, role)
         elif shape:
             why = f"metric F could not evaluate the child height: {results['heights']['child']['error']}" if results else f_missing
             metrics['H'] = outcome('fail', f'{why}; a miss (handled like a site with no feasible frame)')
@@ -846,6 +864,7 @@ def main():
     s.add_argument('--paint')
     s.add_argument('--failed-step', action='append', help='an evaluate_site.py step that failed (repeatable)')
     s.add_argument('--labels-de', help='the D/E file of the scorer the labels addendum pins')
+    s.add_argument('--e-grid', help='metric-e-grid.mjs output (metric E head points)')
     s.add_argument('--evaluation-stopped', help='evaluate_site.py --record-stopped: the evaluate-stopped.json of this site')
     s.add_argument('--out', required=True)
     m = sub.add_parser('summary')

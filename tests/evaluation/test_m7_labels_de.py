@@ -1,4 +1,5 @@
-"""M7 after the re-review of 2026-10-14: the D/E hook (labels addendum anchor, label manifest, D and E rules, E in H), the
+"""M7 after the re-review of 2026-10-14: the D/E hook (labels addendum anchor, label manifest, D and E rules; since Oct 15 E
+on the metric E grid at the recorded pose and camera, and H on metric F alone), the
 summary's completeness checks, masked stop reasons and the chunked-listing download rule; after the second re-review
 the written-once anchors, the anchors each site score records, one run per step (markers and the evaluate receipt) and
 the coordinator-only folder kept out of written text. Synthetic fixtures only, no AV2 data, no network, no git: the
@@ -225,58 +226,126 @@ class MetricD(unittest.TestCase):
                 score.metric_d({'D': d})
 
 
+def grid_doc(rows, ground=GROUND, protocol=None, **over):
+    """A metric-e-grid.mjs output: rows (height, xM, zM, app state)."""
+    doc = {'kind': score.E_GRID_KIND, 'groundSha256': ground, 'protocolSha256': protocol or common.sha_file(score.F_PROTOCOL),
+           'limits': {'nearM': 10.0, 'farM': 20.0}, 'counts': {'points': len({(x, z) for _, x, z, _ in rows}), 'rows': len(rows)},
+           'rows': [{'height': h, 'xM': x, 'zM': z, 'target': [x, 1.1, z], 'targetGround': [x, 0, z], 'state': st, 'reasonCode': None,
+                     'gapM': -.1} for h, x, z, st in rows]}
+    doc.update(over)
+    return doc
+
+
+GRID_ROWS = [('child', 1.0, 12.25, 'blocked'), ('child', 1.25, 12.25, 'unknown'), ('adult', 1.0, 12.25, 'unknown')]
+
+
 class MetricE(unittest.TestCase):
-    results = f_results([(0.0, 'blocked', 'supported'), (0.25, 'unknown', 'ambiguous')], [(0.0, 'unknown', 'ambiguous')])
+    """metrics.E on the grid of head points (the recorded vehicle at its recorded pose, the eye at the recorded camera)."""
+
+    def setUp(self):
+        patcher = mock.patch.object(score, 'F_PROTOCOL', M7_DIR / 'score.py')  # any fixed file stands in for the protocol
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.grid = grid_doc(GRID_ROWS)
 
     def rows(self, *states):
-        keys = [('child', 0.0, 'blocked'), ('child', 0.25, 'unknown'), ('adult', 0.0, 'unknown')]
-        return [{'height': h, 'setbackM': s, 'appState': a, 'e': e} for (h, s, a), e in zip(keys, states)]
+        return [{'height': h, 'xM': x, 'zM': z, 'appState': a, 'e': e} for (h, x, z, a), e in zip(GRID_ROWS, states)]
 
     def test_resolved_not_blocked_where_the_app_says_blocked_is_a_false_blocked(self):
-        got = score.metric_e(de_doc(e_rows=self.rows('not blocked', 'unresolved', 'unresolved')), self.results)
-        self.assertEqual((got['outcome'], got['falseBlocked']), ('fail', [{'height': 'child', 'setbackM': 0.0}]))
+        got = score.metric_e(de_doc(e_rows=self.rows('not blocked', 'unresolved', 'unresolved')), self.grid)
+        self.assertEqual((got['outcome'], got['falseBlocked']), ('fail', [{'height': 'child', 'xM': 1.0, 'zM': 12.25}]))
+        self.assertEqual(got['byAppStateAndE'], {'blocked/not blocked': 1, 'unknown/unresolved': 2})
+        self.assertEqual(got['grid'], {'points': 2, 'limits': {'nearM': 10.0, 'farM': 20.0}})
 
     def test_no_false_blocked_passes_and_no_resolved_point_is_not_scored(self):
-        self.assertEqual(score.metric_e(de_doc(e_rows=self.rows('blocked', 'not blocked', 'unresolved')), self.results)['outcome'], 'pass')
-        self.assertEqual(score.metric_e(de_doc(e_rows=self.rows('unresolved', 'unresolved', 'unresolved')), self.results)['outcome'],
-                         'not scored')
+        # An Unknown result where E says not blocked is not a false Blocked (E has no Clear target).
+        self.assertEqual(score.metric_e(de_doc(e_rows=self.rows('blocked', 'not blocked', 'unresolved')), self.grid)['outcome'], 'pass')
+        got = score.metric_e(de_doc(e_rows=self.rows('unresolved', 'unresolved', 'unresolved')), self.grid)
+        self.assertEqual((got['outcome'], got['reason']), ('not scored', 'no resolved head point'))
+        # The scorer's own reason (here: its eye check) is kept when every row is unresolved.
+        doc = de_doc(e_rows=self.rows('unresolved', 'unresolved', 'unresolved'))
+        doc['E']['reason'] = 'the grid\'s eye is not the photo camera centre (0.01 m)'
+        self.assertEqual(score.metric_e(doc, self.grid)['reason'], doc['E']['reason'])
 
-    def test_without_metric_f_rows_e_is_not_scored(self):
+    def test_without_the_grid_e_is_not_scored_with_the_reason(self):
         got = score.metric_e(de_doc(e_rows=self.rows('blocked', 'blocked', 'blocked')), None)
-        self.assertEqual(got['outcome'], 'not scored')
-        self.assertIn('no metric F rows', got['reason'])
+        self.assertEqual((got['outcome'], got['reason']), ('not scored', 'no metric E grid'))
+        got = score.metric_e(de_doc(e_rows=[]), None, 'the metric-e-grid step failed')
+        self.assertEqual(got['reason'], 'the metric-e-grid step failed')
+        got = score.metric_e(de_doc(E={'labelledVehicle': False, 'reason': 'no annotated vehicle'}), self.grid)
+        self.assertEqual((got['outcome'], got['reason']), ('not scored', 'no annotated vehicle'))
 
-    def test_rows_that_do_not_match_metric_f_are_refused(self):
+    def test_rows_that_do_not_match_the_grid_are_refused(self):
         rows = self.rows('blocked', 'blocked', 'blocked')
         cases = {'missing row': rows[:2], 'row twice': rows + rows[:1],
                  'other app state': [dict(rows[0], appState='unknown')] + rows[1:],
-                 'extra row': rows + [{'height': 'child', 'setbackM': 0.5, 'appState': 'unknown', 'e': 'blocked'}],
-                 'unknown state': [dict(rows[0], e='maybe')] + rows[1:]}
+                 'extra row': rows + [{'height': 'child', 'xM': 1.5, 'zM': 12.25, 'appState': 'unknown', 'e': 'blocked'}],
+                 'other point': [dict(rows[0], xM=1.01)] + rows[1:],
+                 'unknown state': [dict(rows[0], e='maybe')] + rows[1:],
+                 'unknown height': [dict(rows[0], height='tall')] + rows[1:],
+                 'a setback row': [{'height': 'child', 'setbackM': 0.0, 'appState': 'blocked', 'e': 'blocked'}] + rows[1:],
+                 'an extra key': [dict(rows[0], px=[1, 2])] + rows[1:]}
         for name, bad in cases.items():
             with self.subTest(name), self.assertRaises(SystemExit):
-                score.metric_e(de_doc(e_rows=bad), self.results)
+                score.metric_e(de_doc(e_rows=bad), self.grid)
 
     def test_missing_rows_or_assumption_is_refused_not_a_crash(self):
         rows = self.rows('blocked', 'blocked', 'blocked')
         for e in ({'labelledVehicle': True, 'assumption': 'x'}, {'labelledVehicle': True, 'rows': rows},
                   {'labelledVehicle': True, 'rows': {'a': 1}, 'assumption': 'x'}, {'labelledVehicle': True, 'rows': [1], 'assumption': 'x'}):
             with self.subTest(e=e), self.assertRaises(SystemExit):
-                score.metric_e(de_doc(E=e), self.results)
+                score.metric_e(de_doc(E=e), self.grid)
 
 
-class MetricHWithE(unittest.TestCase):
-    def test_e_overrides_f_and_unresolved_e_leaves_f(self):
+class EGrid(Tmp):
+    """score.py e_grid: the metric E grid for this ground.json under metric F protocol v4, one row per head point and height."""
+
+    def setUp(self):
+        super().setUp()
+        self.protocol = self.write('protocol.json', {'p': 4})
+        patcher = mock.patch.object(score, 'F_PROTOCOL', self.protocol)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_matching_grid_is_accepted(self):
+        self.assertEqual(score.e_grid(self.write('g.json', grid_doc(GRID_ROWS)), GROUND)['counts']['rows'], 3)
+
+    def test_each_mismatch_is_refused(self):
+        good = grid_doc(GRID_ROWS)
+        with_row = lambda **kw: {**good, 'rows': [dict(good['rows'][0], **kw)] + good['rows'][1:]}  # noqa: E731
+        each = 'rows (each {height child or adult, finite xM and zM, state, target [xM, finite, zM]})'
+        cases = [("not this site's", grid_doc(GRID_ROWS, ground='00' * 32)), ('kind', grid_doc(GRID_ROWS, kind='other')),
+                 ('protocol', grid_doc(GRID_ROWS, protocol='00' * 32)), ('row count', grid_doc(GRID_ROWS, counts={'rows': 2})),
+                 ('a head point given twice', grid_doc(GRID_ROWS + GRID_ROWS[:1])),
+                 (each, with_row(xM='1')), ('the JSON holds NaN', with_row(zM=float('nan'))), (each, with_row(xM=True)),
+                 (each, with_row(height='tall')), (each, with_row(state=None)), (each, {**good, 'rows': {'a': 1}}),
+                 (each, with_row(target=None)), (each, with_row(target=[1.0, 1.1])), (each, with_row(target=[1.25, 1.1, 12.25])),
+                 (each, with_row(target=[1.0, '1.1', 12.25])), ('the JSON holds Infinity', with_row(target=[1.0, float('inf'), 12.25]))]
+        for why, doc in cases:
+            with self.subTest(why=why, doc=doc['rows'] if isinstance(doc['rows'], dict) else doc['rows'][0]), \
+                    self.assertRaises(SystemExit) as stop:
+                score.e_grid(self.write('g.json', doc), GROUND)
+            self.assertIn(why, str(stop.exception))
+        repeated = self.dir / 'r.json'
+        repeated.write_text(json.dumps(good)[:-1] + ', "kind": "pao-m7-e-grid"}')
+        with self.assertRaises(SystemExit) as stop:
+            score.e_grid(repeated, GROUND)
+        self.assertIn('repeats a key', str(stop.exception))
+
+
+class MetricHWithoutE(unittest.TestCase):
+    def test_reference_blocked_is_metric_f_supported_only(self):
         results = f_results([(0.0, 'blocked', 'supported'), (0.25, 'blocked', 'ambiguous'), (0.5, 'unknown', 'supported'),
                              (0.75, 'blocked', 'unresolved')])
-        rows = [{'height': 'child', 'setbackM': 0.0, 'e': 'not blocked'}, {'height': 'child', 'setbackM': 0.25, 'e': 'blocked'},
-                {'height': 'child', 'setbackM': 0.5, 'e': 'unresolved'}, {'height': 'child', 'setbackM': 0.75, 'e': 'unresolved'}]
-        got = score.metric_h(results, 'held-out-blocked-test', rows)
+        got = score.metric_h(results, 'held-out-blocked-test')
         child = got['child']
-        # Reference: 0.0 removed by E, 0.25 added by E, 0.5 kept by F, 0.75 stays out (F unresolved, E unresolved).
         self.assertEqual((child['referenceBlocked'], child['reportedBlocked']), (2, 1))
         self.assertEqual((got['outcome'], got['share']), ('pass', .5))
-        self.assertEqual(child['notReferenceListedSetbacksM'], {'unresolved': [0.75]})
-        self.assertEqual(child['eUnresolvedSetbacksM'], [0.5, 0.75])
+        self.assertEqual(child['notReferenceListedSetbacksM'], {'ambiguous': [0.25], 'unresolved': [0.75]})
+        self.assertNotIn('eUsed', child)
+        self.assertNotIn(' E ', got['rule'])
+        with self.assertRaises(TypeError):
+            score.metric_h(results, 'held-out-blocked-test', [])  # E rows are no longer an input
 
 
 def site_score(name, e='not scored', d='not scored', mode='rehearsal (development site)', role='development', **extra):
@@ -660,7 +729,7 @@ class HeldOutSiteScore(Tmp):
         site.mkdir()
         (site / 'site-stopped.json').write_text(json.dumps({'mode': HELD, 'site': SITE, 'outcome': 'stopped', 'labelsAddendumSha256': None,
                                                             'lostSiteList': LOST, 'stopped': {'step': 'download', 'reason': 'test'}}))
-        args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
+        args = argparse.Namespace(site=str(site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
                                   metric_k=None, paint=None, evaluation_stopped=None, approach_split_results=None)
         listed = {NAME: (common.sha_file(site / 'site-stopped.json'), '00' * 32)}
         with mock.patch.object(common, 'preflight', return_value={}), \
@@ -712,7 +781,7 @@ class StoppedSiteScore(Tmp):
                                              'siteRecord': {'file': common.rel(record), 'sha256': common.sha_file(record)}})
 
     def score(self, addendum=None, **over):
-        args = argparse.Namespace(**{**dict(site=str(self.site), failed_step=None, labels_de=None, baseline=None, metric_f_results=None,
+        args = argparse.Namespace(**{**dict(site=str(self.site), failed_step=None, labels_de=None, e_grid=None, baseline=None, metric_f_results=None,
                                             metric_k=None, paint=None, evaluation_stopped=str(self.stop), approach_split_results=None), **over})
         listed = (common.sha_file(self.site / 'build-receipt.json'),
                   common.sha_file(score.paint_record(Path(args.paint))) if args.paint else '00' * 32)
@@ -752,7 +821,7 @@ class StoppedSiteScore(Tmp):
 
     def test_other_inputs_rehearsal_or_another_site_record_are_refused(self):
         self.make()
-        for over in ({'failed_step': ['baseline']}, {'baseline': 'x'}, {'metric_f_results': 'x'}, {'metric_k': 'x'}, {'labels_de': 'x'},
+        for over in ({'failed_step': ['baseline']}, {'baseline': 'x'}, {'metric_f_results': 'x'}, {'metric_k': 'x'}, {'labels_de': 'x'}, {'e_grid': 'x'},
                      {'approach_split_results': 'x'}):
             with self.subTest(over=over), self.assertRaises(SystemExit):
                 self.score(**over)
@@ -903,7 +972,8 @@ class EvaluateHeldOut(HeldOutDriver):
                 Path(argv[argv.index('--out') + 1]).write_text(json.dumps(de_doc(kind='other')))
             return subprocess.CompletedProcess(argv, 0, '', '')
         with mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
-                mock.patch.object(self.ev, 'split_problem', return_value=None):  # these fake steps write no approach split
+                mock.patch.object(self.ev, 'split_problem', return_value=None), \
+                mock.patch.object(self.ev, 'grid_problem', return_value=None):  # these fake steps write no split or grid
             code, err = self.evaluate()
         self.assertEqual(code, 0, err)
         receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
@@ -931,7 +1001,7 @@ class EvaluateHeldOut(HeldOutDriver):
             for marker in common.RUN_MARKERS.glob('evaluate-*'):
                 marker.unlink()
             with self.subTest(why=why), mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
-                    mock.patch.object(self.ev, 'split_problem', return_value=None):
+                    mock.patch.object(self.ev, 'split_problem', return_value=None), mock.patch.object(self.ev, 'grid_problem', return_value=None):
                 out = self.out = self.dir / '.local' / f'eval-{len(why)}'
                 code, err = self.evaluate()
                 self.assertEqual(code, 0, err)
@@ -1028,7 +1098,8 @@ class EvaluateHeldOut(HeldOutDriver):
             for marker in common.RUN_MARKERS.glob('evaluate-*'):
                 marker.unlink()
             with self.subTest(fail=fail, problem=problem), mock.patch.object(self.ev.subprocess, 'run', side_effect=run), \
-                    mock.patch.object(self.ev, 'split_problem', return_value=problem) as checked:
+                    mock.patch.object(self.ev, 'split_problem', return_value=problem) as checked, \
+                    mock.patch.object(self.ev, 'grid_problem', return_value=None):
                 out = self.out = self.dir / '.local' / f'eval-{bool(fail)}-{bool(problem)}'
                 code, err = self.evaluate()
                 self.assertEqual(code, 0, err)
@@ -1061,6 +1132,72 @@ class EvaluateHeldOut(HeldOutDriver):
                     self.assertIn(('--approach-split-results', str(out / 'approach-split/results.json')), pairs)
                     scored = next(a for a in calls if '--app-results' in a)
                     self.assertEqual(scored[scored.index('--app-results') + 1], str(out / 'results.json'))
+
+
+class EvaluateGridStep(HeldOutDriver):
+    def setUp(self):
+        super().setUp()
+        self.ev = load_driver('evaluate_site')
+        self.built()
+        self.painted()
+        (self.site / 'grounded').mkdir()
+        (self.site / 'grounded/ground.json').write_text('{}')
+
+    def evaluate(self, grid_why, grid_exit=0):
+        calls = []
+
+        def run(argv, **_):
+            calls.append(argv)
+            if '--labels' in argv:
+                Path(argv[argv.index('--out') + 1]).write_text(json.dumps(de_doc(kind='other')))
+            return subprocess.CompletedProcess(argv, grid_exit if 'scripts/evaluation/metric-e-grid.mjs' in argv else 0, '', '')
+        for marker in common.RUN_MARKERS.glob('evaluate-*'):
+            marker.unlink()
+        self.out = self.dir / '.local' / f'eval-{grid_exit}-{bool(grid_why)}'
+        with mock.patch.object(self.ev.subprocess, 'run', side_effect=run), mock.patch.object(self.ev, 'split_problem', return_value=None), \
+                mock.patch.object(self.ev, 'grid_problem', return_value=grid_why) as checked:
+            code, err = self.main(self.ev, ['--site', self.site, '--out', self.out, '--protocol-lock-sha256', LOCK, '--paint', self.paint,
+                                            '--labels', self.labels], root=self.dir)
+        self.assertEqual(code, 0, err)
+        receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
+        return receipt, calls, checked
+
+    def test_a_kept_grid_goes_to_the_d_e_scorer_and_score_py(self):
+        receipt, calls, checked = self.evaluate(None)
+        names = [x['step'] for x in receipt['steps']]
+        self.assertEqual(names[names.index('metric-k'):], ['metric-k', 'metric-e-grid', 'labels-de', 'score'])
+        grid = next(a for a in calls if 'scripts/evaluation/metric-e-grid.mjs' in a)
+        self.assertEqual(grid[grid.index('--out') + 1], str(self.out / 'e-grid.json'))
+        self.assertEqual(grid[grid.index('--protocol') + 1], f'{self.ev.F_DIR}/protocol-v4.json')
+        self.assertEqual(checked.call_args.args[:2], (self.out / 'e-grid.json', self.site / 'grounded/ground.json'))
+        de = next(a for a in calls if '--labels' in a)
+        self.assertEqual(de[de.index('--e-grid') + 1], str(self.out / 'e-grid.json'))
+        self.assertFalse({'--baseline', '--metric-f-results'} & set(de))
+        self.assertIn(('--e-grid', str(self.out / 'e-grid.json')), list(zip(calls[-1], calls[-1][1:])))
+        self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['labels-de'])
+
+    def test_a_failed_or_refused_grid_fails_only_its_step(self):
+        for why, code in (('score.py refuses the metric E grid: x', 0), (None, 1)):
+            with self.subTest(why=why, code=code):
+                receipt, calls, checked = self.evaluate(why, code)
+                self.assertEqual(receipt['notScoredBecauseAStepFailed'], ['metric-e-grid', 'labels-de'])
+                if why:
+                    self.assertEqual(next(s for s in receipt['steps'] if s['step'] == 'metric-e-grid')['refused'], why)
+                else:
+                    checked.assert_not_called()
+                self.assertNotIn('--e-grid', next(a for a in calls if '--labels' in a))
+                self.assertNotIn('--e-grid', calls[-1])
+                self.assertIn(('--failed-step', 'metric-e-grid'), list(zip(calls[-1], calls[-1][1:])))
+
+    def test_no_labels_no_grid_step(self):
+        for marker in common.RUN_MARKERS.glob('evaluate-*'):
+            marker.unlink()
+        with mock.patch.object(common, 'labels_manifest', return_value=({NAME: None}, '99' * 32)), \
+                mock.patch.object(self.ev.subprocess, 'run', side_effect=lambda argv, **_: subprocess.CompletedProcess(argv, 0, '', '')):
+            code, err = self.main(self.ev, ['--site', self.site, '--out', self.out, '--protocol-lock-sha256', LOCK, '--paint', self.paint],
+                                  root=self.dir)
+        receipt = json.loads((self.out / 'evaluate-receipt.json').read_bytes())
+        self.assertNotIn('metric-e-grid', [x['step'] for x in receipt['steps']])
 
 
 class RecordInterrupted(HeldOutDriver):
@@ -1220,7 +1357,7 @@ class ApproachSplitScore(Tmp):
         return self.write('f/approach-split/results.json', doc)
 
     def score(self, **over):
-        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, baseline=None,
+        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
                                             metric_f_results=str(self.results), metric_k=None, paint=None, evaluation_stopped=None,
                                             approach_split_results=None), **over})
         with mock.patch.object(common, 'labels_addendum', return_value=None), mock.patch.object(score, 'F_PROTOCOL', self.protocol):
@@ -1277,6 +1414,91 @@ class ApproachSplitScore(Tmp):
         self.assertEqual(got['outcomes']['FApproachSplit'], {'aaaaaaaa/1': 'not scored', 'bbbbbbbb/2': 'reported'})
         self.assertEqual(got['FApproachSplit']['sites'], {'bbbbbbbb/2': reported})
         self.assertEqual(got['reasons']['FApproachSplit'], {'aaaaaaaa/1': 'test'})
+
+
+class EGridScore(Tmp):
+    """score.py site with --e-grid: E is scored only against the grid of this ground.json; H never uses E."""
+
+    def setUp(self):
+        super().setUp()
+        (self.dir / 'site/grounded').mkdir(parents=True)
+        (self.dir / 'f').mkdir()
+        self.protocol = self.write('protocol.json', {'p': 4})
+        ground = self.write('site/grounded/ground.json', {'g': 1})
+        self.ground = common.sha_file(ground)
+        self.write('site/build-receipt.json', {'mode': 'rehearsal (development site)', 'site': {**SITE, 'role': 'development'},
+                                               'outcome': 'built-shape', 'outputs': {common.rel(ground): self.ground}})
+        rows = self.write('f/rows.json', {'groundSha256': self.ground})
+        self.results = self.write('f/results.json', {
+            'protocolSha256': common.sha_file(self.protocol), 'shapeV1': {}, 'testedBox': {'setbackM': 0.1},
+            'inputs': {'rows': {'file': 'rows.json', 'sha256': common.sha_file(rows)}},
+            'heights': {'child': {'rows': [{'setbackM': 0.0, 'state': 'blocked', 'class': 'supported'}]}, 'adult': {'error': 'test'}}})
+        self.addendum = self.write('addendum.json', {'deCode': {}})
+        for patcher in (mock.patch.object(score, 'F_PROTOCOL', self.protocol), mock.patch.object(score, 'LABELS_ADDENDUM', self.addendum),
+                        mock.patch.object(common, 'labels_addendum', return_value=ADDENDUM_SHA),
+                        mock.patch.object(common, 'de_code', return_value=dict(PINNED))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def de(self, *states):
+        rows = [{'height': h, 'xM': x, 'zM': z, 'appState': a, 'e': e} for (h, x, z, a), e in zip(GRID_ROWS, states)]
+        return str(self.write('de.json', de_doc(e_rows=rows, groundSha256=self.ground)))
+
+    def score(self, **over):
+        args = argparse.Namespace(**{**dict(site=str(self.dir / 'site'), failed_step=None, labels_de=None, e_grid=None, baseline=None,
+                                            metric_f_results=str(self.results), metric_k=None, paint=None, evaluation_stopped=None,
+                                            approach_split_results=None), **over})
+        with mock.patch.object(score, 'metric_f', return_value={'outcome': 'not scored'}), \
+                mock.patch.object(score, 'metric_f0', return_value={'outcome': 'not scored'}):
+            return score.score_site(args)
+
+    def test_e_is_scored_against_the_grid_and_the_grid_is_recorded(self):
+        grid = self.write('g.json', grid_doc(GRID_ROWS, ground=self.ground))
+        got = self.score(labels_de=self.de('not blocked', 'unresolved', 'unresolved'), e_grid=str(grid))
+        self.assertEqual((got['metrics']['E']['outcome'], got['metrics']['D']['outcome']), ('fail', 'pass'))
+        self.assertEqual(got['inputs']['eGrid'], {'file': common.rel(grid), 'sha256': common.sha_file(grid)})
+        de = Path(self.dir / 'de.json')
+        self.assertEqual(got['inputs']['labelsDE'], {'file': common.rel(de), 'sha256': common.sha_file(de), 'labelsSha256': LABELS})
+        self.assertEqual(self.score(labels_de=self.de('blocked', 'not blocked', 'unresolved'), e_grid=str(grid))['metrics']['E']['outcome'], 'pass')
+
+    def test_without_the_grid_only_e_is_not_scored(self):
+        failed = self.score(labels_de=self.de('blocked', 'blocked', 'blocked'), failed_step=['metric-e-grid'])
+        self.assertEqual(failed['metrics']['E'], {'outcome': 'not scored', 'reason': 'the metric-e-grid step failed'})
+        self.assertEqual(failed['metrics']['D']['outcome'], 'pass')
+        self.assertEqual(self.score(labels_de=self.de('blocked', 'blocked', 'blocked'))['metrics']['E']['reason'], 'no metric E grid')
+
+    def test_h_is_the_same_with_or_without_e(self):
+        grid = str(self.write('g.json', grid_doc(GRID_ROWS, ground=self.ground)))
+        plain = self.score()['metrics']['H']
+        self.assertEqual(self.score(labels_de=self.de('not blocked', 'blocked', 'blocked'), e_grid=grid)['metrics']['H'], plain)
+        self.assertEqual((plain['outcome'], plain['child']['referenceBlocked']), ('pass', 1))
+
+    def test_a_grid_of_another_scene_or_a_site_without_a_built_scene_is_refused(self):
+        with self.assertRaises(SystemExit) as stop:
+            self.score(labels_de=self.de('blocked', 'blocked', 'blocked'), e_grid=str(self.write('g.json', grid_doc(GRID_ROWS))))
+        self.assertIn("not this site's", str(stop.exception))
+        self.write('site/build-receipt.json', {'mode': 'rehearsal (development site)', 'site': {**SITE, 'role': 'development'},
+                                               'outcome': 'site-stopped', 'outputs': {}})
+        with self.assertRaises(SystemExit) as stop:
+            self.score(metric_f_results=None, e_grid=str(self.write('g.json', grid_doc(GRID_ROWS, ground=self.ground))))
+        self.assertIn('a metric E grid for a site without a built scene', str(stop.exception))
+
+    def test_evaluate_site_checks_the_grid_with_the_same_rules_before_passing_it_on(self):
+        ev, ground = load_driver('evaluate_site'), self.dir / 'site/grounded/ground.json'
+        self.assertIsNone(ev.grid_problem(self.write('g.json', grid_doc(GRID_ROWS, ground=self.ground)), ground, []))
+        self.assertIn("not this site's", ev.grid_problem(self.write('g.json', grid_doc(GRID_ROWS)), ground, []))
+        self.assertIn('kind', ev.grid_problem(self.write('g.json', grid_doc(GRID_ROWS, ground=self.ground, kind='x')), ground, []))
+        self.assertIn('cannot read', ev.grid_problem(self.dir / 'missing.json', ground, []))
+        self.assertIn("not this site's", ev.grid_problem(self.write('g.json', [1]), ground, []))
+        # A row the D/E scorer would refuse (no target, or a target off its own grid point) fails only the grid step.
+        for change in ({'target': None}, {'target': [1.5, 1.1, 12.25]}, {'target': [1.0, 1.1]}, {'target': [1.0, float('nan'), 12.25]},
+                       ):
+            doc = grid_doc(GRID_ROWS, ground=self.ground)
+            doc['rows'][0] = {**doc['rows'][0], **change}
+            if change.get('target') is None and 'target' in change:
+                del doc['rows'][0]['target']
+            with self.subTest(change=change):
+                self.assertRegex(ev.grid_problem(self.write('g.json', doc), ground, []), r'rows \(each|the JSON holds NaN')
 
 
 class Preflight(Tmp):

@@ -16,11 +16,13 @@ Steps, each with nice -n 10 from the repository root, stdout and stderr kept in 
      --app-results (the metric F results above), in approach-split/. A failed step here leaves only FApproachSplit not
      scored.
   3. metric_k.py (the scene sweep; on a built-shape site also the scoring sweeps)
-  4. only when the labels addendum exists (protocol-lock labels.scoringCondition): the D/E scorer it pins, after the D/E
-     code folder is checked against the addendum (common.de_code), with --site, --baseline, --metric-f-results (those
-     that exist), --labels and --out <a new file in a temporary folder outside the repository>; that file is copied to
-     labels-de.json only if it is JSON with no repeated key, score.py's D/E checks accept it (labels_de, metric_d,
-     metric_e) and, as written and once decoded, it names neither the coordinator-only folder nor the labels folder in
+  4. only when the labels addendum exists (protocol-lock labels.scoringCondition) and --labels is given: metric-e-grid.mjs
+     (metric E's head points: the app result for each, with the recorded vehicle at its recorded pose and the eye at the
+     recorded camera; kept only if score.py's grid checks accept it, else a refused step and E not scored), then the D/E
+     scorer the addendum pins, after the D/E code folder is checked against the addendum (common.de_code), with --site,
+     --e-grid (when kept), --labels and --out <a new file in a temporary folder outside the repository>; that file is
+     copied to labels-de.json only if it is JSON with no repeated key, score.py's D/E checks accept it (labels_de, metric_d,
+     metric_e against the kept grid) and, as written and once decoded, it names neither the coordinator-only folder nor the labels folder in
      any form (common.names_folder: as given, resolved or relative to the repository, any case, JSON escapes decoded)
      and holds no banned word; otherwise the step is recorded as refused
      (a failed step: only D and E are not scored). Held-out: --labels is required exactly for the sites the committed
@@ -109,14 +111,27 @@ def copy_de(made, target, hidden, problem):
     return None
 
 
-def de_problem(made, record, site, addendum_sha, labels_sha, results, hidden):
-    """Why score.py would refuse the D/E scorer's output (None: it accepts it), checked before the output is kept, so a
-    bad D/E file fails only the labels-de step (D and E not scored), never the whole score step."""
+def grid_problem(made, ground, hidden):
+    """Why score.py would refuse the metric E grid (None: it accepts it), checked before it is passed on, so a bad grid
+    fails only the metric-e-grid step (E not scored), never the score step."""
     try:
-        doc = score.labels_de(made, score.load(score.LABELS_ADDENDUM), addendum_sha, sha_file(site / 'grounded/ground.json'),
-                              record['site'], labels_sha)
+        score.e_grid(made, sha_file(ground))
+    except SystemExit as error:
+        return common.masked(f'score.py refuses the metric E grid: {error}', hidden)[-400:]
+    except Exception as error:  # noqa: BLE001 - any unreadable grid fails only its own step
+        return f'score.py cannot read the metric E grid ({type(error).__name__})'
+    return None
+
+
+def de_problem(made, record, site, addendum_sha, labels_sha, grid, hidden):
+    """Why score.py would refuse the D/E scorer's output (None: it accepts it), checked before the output is kept, so a
+    bad D/E file fails only the labels-de step (D and E not scored), never the whole score step. grid: the kept metric E
+    grid or None."""
+    try:
+        ground = sha_file(site / 'grounded/ground.json')
+        doc = score.labels_de(made, score.load(score.LABELS_ADDENDUM), addendum_sha, ground, record['site'], labels_sha)
         score.metric_d(doc)
-        score.metric_e(doc, score.load(results) if results else None)
+        score.metric_e(doc, score.e_grid(grid, ground) if grid else None)
     except SystemExit as error:
         return common.masked(f'score.py refuses the D/E output: {error}', [*hidden, made.parent])[-400:]
     except Exception as error:  # noqa: BLE001 - any unreadable D/E output fails only its own step
@@ -312,13 +327,20 @@ def main():
                                  '--prepared', str(prepared), '--out', str(out / 'metric-k.json'), *k_sweeps]):
             inputs['metric-k'] = out / 'metric-k.json'
         if pinned:
-            given = [x for k in ('baseline', 'metric-f-results') if k in inputs for x in (f'--{k}', str(inputs[k]))]
+            if run('metric-e-grid', ['node', 'scripts/evaluation/metric-e-grid.mjs', '--assembled', f'{assembled}/', '--grounded', f'{grounded}/',
+                                     *F_PROTOCOL, '--scene', name, '--out', str(out / 'e-grid.json')]):
+                why = grid_problem(out / 'e-grid.json', grounded / 'ground.json', hidden)
+                if why is None:
+                    inputs['e-grid'] = out / 'e-grid.json'
+                else:
+                    refuse(why)
+            given = ['--e-grid', str(inputs['e-grid'])] if 'e-grid' in inputs else []
             temp = Path(tempfile.mkdtemp(prefix='pao-m7-de-'))  # outside the repository: checked before anything is kept
             try:
                 made = temp / 'labels-de.json'
                 if run('labels-de', py + [pinned['file'], '--site', str(site), *given, '--labels', str(labels_path), '--out', str(made)]):
                     why = copy_de(made, out / 'labels-de.json', hidden,
-                                  lambda: de_problem(made, record, site, addendum_sha, wanted, inputs.get('metric-f-results'), hidden))
+                                  lambda: de_problem(made, record, site, addendum_sha, wanted, inputs.get('e-grid'), hidden))
                     if why is None:
                         inputs['labels-de'] = out / 'labels-de.json'
                     else:
