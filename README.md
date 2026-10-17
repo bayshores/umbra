@@ -78,20 +78,22 @@ done
 .local/venv-tests/bin/python -B -m pytest -p no:cacheprovider tests/evaluation/test_m7_child_preflight.py
 ```
 
-**On a fresh clone, many Python tests fail.** They read the frozen method files of the Palo Alto evaluation (the site split, protocols and lock records) or saved job files, which are in the maintainer's ignored `.local/` folder and are not in this repository. This was checked on a fresh clone of commit `e785321` on 2026-10-16, with exactly the environments above:
+**Results on a fresh clone.** The frozen method files of the Palo Alto evaluation (the site split, protocols, lock records and reviews; `git ls-files .local` lists all 30) are tracked at their original `.local/evaluation/` paths. Saved job files, download receipts and older development builds stay in the maintainer's ignored `.local/` folder. This was checked on a fresh clone of commit `b8c806f` on 2026-10-16, with exactly the environments above and nothing else copied in:
 
 | Command | Result on a fresh clone |
 |---|---|
-| `npm test` (with the scene and suggestions above) | 308 pass, 0 fail, 22 skipped (the skipped tests need local Palo Alto scenes) |
-| `npm run test:sites` | 5 pass |
+| `npm test` | 308 pass, 0 fail, 22 skipped (the skipped tests read older Palo Alto development builds that stay in `.local/`) |
+| `npm run build`, `npm run build:sites`, `npm run test:sites` | build succeeds; 5 site tests pass |
 | `tests` | 56 run, all pass (8 skipped) |
-| `tests/california` | 289 run, 41 errors, all from the missing split file `.local/evaluation/pao-accuracy/split.json` (20 skipped) |
-| `tests/evaluation` | 175 run, 2 errors: the test files `test_m7_lock2` and `test_m7_labels_de` cannot load because they need the split file and a lock script (8 skipped) |
-| `tests/cloud` | 108 run, 4 errors, all from missing saved job files (30 skipped) |
+| `tests/california` | 289 run, all pass (18 skipped) |
+| `tests/evaluation` | 296 run, all pass |
+| `tests/cloud` | 108 run, 4 errors, all from missing saved job files under `.local/evaluation/auto-placement-2026-10-11/` (30 skipped) |
 | `tests/sponsors` | 22 run, all pass |
-| the pytest file | 1 pass, 57 errors, all from the missing split file |
+| the pytest file | 58 pass |
 
-Without the ONNX packages, `tests/test_onnx_inspection.py` cannot load and 14 more California and cloud tests report errors. Other tests that need local development data, a historical git commit or an optional package skip and say why. Some optional tools have their own test commands in the sections below.
+The app itself was opened from the same fresh clone: all five scenes load from the tracked files, and the console shows no errors.
+
+Without the ONNX packages, `tests/test_onnx_inspection.py` cannot load and 14 more California and cloud tests report errors (measured on a fresh clone of `e785321`). Other tests that need local development data, a historical git commit or an optional package skip and say why. Some optional tools have their own test commands in the sections below.
 
 ## NVIDIA Nemotron assistant (Nebius Token Factory)
 
