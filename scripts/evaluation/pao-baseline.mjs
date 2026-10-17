@@ -75,7 +75,9 @@ export async function loadDevelopmentScene(cache=new Map(),dirs=DEV_DIRS) {
     const name=url.split('/').at(-1);
     if(!url.startsWith(`/scenes/${id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
     try{
-      if(!cache.has(name))cache.set(name,await readFile(new URL(name,GROUNDED.has(name)?dirs.grounded:dirs.assembled)));
+      // A measured-ground-v2 build keeps its tier-0 (v1) ground.json beside grounded/.
+      const file=name==='tier-0-ground.json'?new URL('../'+name,dirs.grounded):new URL(name,GROUNDED.has(name)?dirs.grounded:dirs.assembled);
+      if(!cache.has(name))cache.set(name,await readFile(file));
       return new Response(cache.get(name));
     }catch{return new Response(null,{status:404});}
   };

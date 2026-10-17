@@ -1,4 +1,4 @@
-"""Build umbra's measured-ground-v1 layer from independent, receipted AV2 sweeps.
+"""Build umbra's measured ground from receipted other sweeps of the same AV2 log.
 
 The publisher raster remains byte-identical for evaluation reference selection. It is never
 a runtime fallback. Calibration sweeps and the scored frame cannot contribute to the fitted
@@ -199,17 +199,20 @@ def fit_plane(points, sweep_ids, xz, params=PARAMETERS):
     return float(coefficients[0])
 
 
-def fit_surface(points, sweep_ids, areas, params=PARAMETERS):
+def fit_surface(points, sweep_ids, areas, params=PARAMETERS, tier0=None):
     p = np.asarray(points, float).reshape(-1, 3); ids = np.asarray(sweep_ids)
     half = params['windowHalfWidthMeters']; step = params['cellMeters']; count = int(math.ceil(2*half/step))+1
     origin = [-half, -half]; heights = np.full((count, count), np.nan)
+    if tier0 is not None:
+        require(tier0['originXZ'] == origin and tier0['cellMeters'] == step and tier0['columns'] == tier0['rows'] == count, 'Tier-0 grid differs')
+        heights = np.array([np.nan if h is None else h for h in tier0['heights']]).reshape(count, count)
     nodes = np.array([(x, z) for z in np.arange(count)*step-half for x in np.arange(count)*step-half])
     candidates = inside_polygons(nodes, areas, params['drivableMarginMeters'])
     bucket_size = params['fitRadiusMeters']; buckets = defaultdict(list)
     for i, key in enumerate(np.floor(p[:, [0, 2]]/bucket_size).astype(int)):
         buckets[tuple(key)].append(i)
     buckets = {k: np.asarray(v, np.int64) for k, v in buckets.items()}
-    for i in np.flatnonzero(candidates):
+    for i in np.flatnonzero(candidates & ~np.isfinite(heights.ravel())):
         node = nodes[i]; key = np.floor(node/bucket_size).astype(int)
         parts = [buckets[(key[0]+dx, key[1]+dz)] for dx in (-1, 0, 1) for dz in (-1, 0, 1) if (key[0]+dx, key[1]+dz) in buckets]
         if not parts:
@@ -218,9 +221,69 @@ def fit_surface(points, sweep_ids, areas, params=PARAMETERS):
         if value is not None:
             heights.flat[i] = value
     values = heights[np.isfinite(heights)]
-    return {'version': 'measured-ground-v1', 'originXZ': origin, 'cellMeters': step, 'columns': count, 'rows': count,
+    surface = {'version': 'measured-ground-v1', 'originXZ': origin, 'cellMeters': step, 'columns': count, 'rows': count,
             'heights': [float(h) if np.isfinite(h) else None for h in heights.ravel()],
             'heightBounds': [float(values.min()), float(values.max())] if len(values) else None}
+    if tier0 is not None:
+        surface.update(version='measured-ground-v2', tiers=[None if h is None else 0 if tier0['heights'][i] is not None else 1
+                                                        for i, h in enumerate(surface['heights'])])
+    return surface
+
+
+def partition_tiers(records, tier0, scoring_sha256):
+    frame = tier0['frameTimestampNs']
+    full = partition_sweeps(records, frame, None, scoring_sha256)
+    require(all(r['sha256'] != scoring_sha256 and int(r['timestampNs']) != int(frame) for r in records), 'The full receipt must exclude scoring sweep bytes and timestamp')
+    by_time = {str(int(r['timestampNs'])): r for r in records}
+    for group in ('fit', 'calibration', 'excluded'):
+        for row in tier0[group]:
+            if int(row['timestampNs']) == int(frame):
+                require(row['sha256'] == scoring_sha256, 'Tier-0 scoring identity differs')
+                continue
+            other = by_time.get(row['timestampNs'])
+            require(other and all(other[k] == row[k] for k in ('sha256', 'bytes')), 'Full receipt is missing or changed a v1 sweep')
+    near = {r['timestampNs'] for group in ('fit', 'calibration') for r in tier0[group]}
+    extra = [r for r in records if str(int(r['timestampNs'])) not in near]
+    other = partition_sweeps(extra, frame, None, scoring_sha256)
+    tiers = [{k: tier0[k] for k in ('fit', 'calibration')}, {k: other[k] for k in ('fit', 'calibration')}]
+    return {**full, 'fit': [r for t in tiers for r in t['fit']], 'calibration': [r for t in tiers for r in t['calibration']], 'tiers': tiers}
+
+
+def surface_heights(surface, xz):
+    p = np.asarray(xz, float).reshape(-1, 2); f = (p-surface['originXZ'])/surface['cellMeters']; cells = np.floor(f).astype(int)
+    c, r = cells.T; valid = (c >= 0) & (r >= 0) & (c < surface['columns']-1) & (r < surface['rows']-1)
+    out = np.full(len(p), np.nan); i = np.flatnonzero(valid); c, r = c[i], r[i]
+    k = r*surface['columns']+c; upper = f[i, 1]-r > f[i, 0]-c
+    heights = np.array([np.nan if h is None else h for h in surface['heights']])
+    h, diagonal, side = heights[k], heights[k+surface['columns']+1], heights[k+np.where(upper, surface['columns'], 1)]
+    dx = np.where(upper, diagonal-side, side-h)/surface['cellMeters']; dz = np.where(upper, side-h, diagonal-side)/surface['cellMeters']
+    out[i] = h+dx*(p[i, 0]-surface['originXZ'][0]-c*surface['cellMeters'])+dz*(p[i, 1]-surface['originXZ'][1]-r*surface['cellMeters'])
+    return out
+
+
+def sweep_consistency(points, surface, ego_distance):
+    p = np.asarray(points, float).reshape(-1, 3); heights = surface_heights(surface, p[:, [0, 2]])
+    p = p[np.isfinite(heights)]; residual = p[:, 1]-heights[np.isfinite(heights)]
+    result = {'overlapReturns': len(p), 'egoDistanceFromFrameMeters': float(ego_distance), 'robustHeightOffsetMeters': None,
+              'planeOffsetAtCameraMeters': None, 'tiltXDegrees': None, 'tiltZDegrees': None}
+    if len(p) < 12:
+        return {**result, 'reason': 'Under 12 returns overlapping tier-0 triangles'}
+    a = np.column_stack([np.ones(len(p)), p[:, [0, 2]]]); mask = np.ones(len(p), bool)
+    for _ in range(3):
+        coefficients, _, rank, _ = np.linalg.lstsq(a[mask], residual[mask], rcond=None)
+        if rank != 3:
+            return {**result, 'reason': 'Overlapping returns do not constrain a plane'}
+        errors = residual-a@coefficients; centre = np.median(errors[mask]); mad = np.median(np.abs(errors[mask]-centre))
+        revised = mask & (np.abs(errors-centre) <= max(.025, 3*1.4826*mad))
+        if revised.sum() < 12 or np.array_equal(revised, mask):
+            break
+        mask = revised
+    coefficients, _, rank, _ = np.linalg.lstsq(a[mask], residual[mask], rcond=None)
+    if rank != 3:
+        return {**result, 'reason': 'Retained overlapping returns do not constrain a plane'}
+    return {**result, 'robustHeightOffsetMeters': float(np.median(residual[mask])), 'planeOffsetAtCameraMeters': float(coefficients[0]),
+            'tiltXDegrees': math.degrees(math.atan(float(coefficients[1]))), 'tiltZDegrees': math.degrees(math.atan(float(coefficients[2]))),
+            'retainedReturns': int(mask.sum()), 'reason': None}
 
 
 def build(site, output, params=PARAMETERS, support_receipt=None):
@@ -326,6 +389,107 @@ def build(site, output, params=PARAMETERS, support_receipt=None):
             'fitReturns': len(all_points), 'supportedVertices': sum(h is not None for h in surface['heights']), 'output': str(output)}
 
 
+def build_v2(site, output, tier0_dir, support_receipt):
+    site = Path(site).resolve(); output = Path(output).resolve(); tier0_dir = Path(tier0_dir).resolve(); receipt_path = Path(support_receipt).resolve()
+    require(not output.exists(), 'Output already exists; use a new development variant directory')
+    scene = read_json(site/'grounded/scene.json'); ground = read_json(site/'grounded/ground.json')
+    old = read_json(tier0_dir/'grounded/ground.json'); entry = read_json(tier0_dir/'grounded/catalog-entry.json')
+    require(digest((tier0_dir/'grounded/ground.json').read_bytes()) == entry['ground']['sha256'], 'Tier-0 catalog ground hash differs')
+    base = old['measuredGround']; params = dict(PARAMETERS)
+    require(old['schemaVersion'] == 4 and base['version'] == 'measured-ground-v1' and base['parameters'] == params, 'Tier 0 must be the unchanged binned v1 layer')
+    require(base['sourceGroundSha256'] == digest((site/'grounded/ground.json').read_bytes()) and
+            base['sourceSuggestionsSha256'] == digest((site/'grounded/suggestions.json').read_bytes()), 'Tier-0 source inputs differ')
+    provenance = scene['measurements']['provenance']; log = provenance['logId']; frame = provenance['lidarTimestampNs']
+    require(log.startswith(('8c52d911-', 'c780d53a-', '88f47a10-', 'fd5c6932-', 'e1d68dde-')), 'This development build requires an explicitly allowed log')
+    require(base['partition']['frameTimestampNs'] == frame and base['partition']['excludedNearNs'] == EXCLUDE_NS, 'Tier-0 frame/guard differs')
+    records, receipt = receipt_sweeps(receipt_path, log, frame, ground)
+    require(receipt['schema'] == 'support-sweeps-download-receipt', 'V2 requires the full-recording support receipt')
+    scoring_hash = ((provenance.get('originalSources') or {}).get('lidar') or {}).get('sha256')
+    partition = partition_tiers(records, base['partition'], scoring_hash)
+    output.mkdir(parents=True); write_json(output/'partition.json', partition)
+    (output/'measured-ground-source.py').write_bytes(CODE_BYTES)
+    (output/'tier-0-ground.json').write_bytes((tier0_dir/'grounded/ground.json').read_bytes())
+    (output/'tier-0-calibration-errors.json').write_bytes((tier0_dir/'calibration-errors.json').read_bytes())
+    data_dir = site/'data'/log; pose_columns = ['qw', 'qx', 'qy', 'qz', 'tx_m', 'ty_m', 'tz_m']
+    poses = {int(r['timestamp_ns']): r for r in table(pinned(data_dir/'city_SE3_egovehicle.feather', ground['sources']['poses']['sha256']), ['timestamp_ns']+pose_columns).to_pylist()}
+    annotations = defaultdict(list)
+    for row in table(pinned(data_dir/'annotations.feather', ground['sources']['annotations']['sha256']), ['timestamp_ns', 'length_m', 'width_m', 'height_m']+pose_columns).to_pylist():
+        annotations[int(row['timestamp_ns'])].append(row)
+    raster = np.frombuffer(pinned(site/'grounded/terrain.bin', ground['terrain']['sha256']), '<f4').reshape(ground['terrain']['rows'], ground['terrain']['columns'])
+    fit_points, fit_ids, counts, diagnostics = [], [], [], []
+    calibration = [[], []]; origin = np.asarray(ground['frame']['cityOrigin'])
+    require(int(frame) in poses, 'The frame pose is required')
+    frame_pose = np.array([poses[int(frame)][k] for k in ('tx_m', 'ty_m', 'tz_m')])
+    receipt_rows = {r['timestampNs']: r for r in receipt['sweeps']}
+    for tier, groups in enumerate(partition['tiers']):
+        for group in ('fit', 'calibration'):
+            for row in groups[group]:
+                ts = int(row['timestampNs']); require_support_timestamp(ts, frame)
+                require(row['sha256'] != scoring_hash, 'The scoring frame sweep bytes are refused as support/calibration')
+                require(ts in poses and ts in annotations, 'Support sweep needs exact timestamp poses and annotations')
+                raw = pinned(receipt_path.parent/'sweeps'/f'{ts}.feather', row['sha256'])
+                require(len(raw) == row['bytes'] and md5(raw).hexdigest() == receipt_rows[str(ts)]['md5'], 'Support sweep byte count or MD5/ETag mismatch')
+                sweep = table(raw, ['x', 'y', 'z']); ego = np.column_stack([np.asarray(sweep[k]) for k in ('x', 'y', 'z')])
+                valid = np.isfinite(ego).all(1); ego = ego[valid]; outside = outside_cuboids(ego, annotations[ts]); ego = ego[outside]
+                pose = poses[ts]; city = ego@rotation(pose).T+np.array([pose[k] for k in ('tx_m', 'ty_m', 'tz_m')])
+                points = (city-origin)[:, [0, 2, 1]]*np.array([1, 1, -1]); xz = points[:, [0, 2]]
+                in_window = (np.abs(xz) <= params['windowHalfWidthMeters']).all(1); points = points[in_window]; xz = xz[in_window]
+                h = raster_heights(ground, raster, xz)
+                selected = np.isfinite(h) & (np.abs(points[:, 1]-h) <= params['groundGateMeters']) & inside_polygons(xz, ground['drivableAreas'], params['drivableMarginMeters'])
+                selected_points = points[selected]
+                counts.append({'timestampNs': str(ts), 'tier': tier, 'set': group, 'finiteReturns': int(valid.sum()),
+                               'removedInsideAnnotations': int((~outside).sum()), 'groundCandidates': len(selected_points)})
+                if tier == 1:
+                    ego_distance = np.linalg.norm(np.array([pose[k] for k in ('tx_m', 'ty_m', 'tz_m')])-frame_pose)
+                    diagnostics.append({'timestampNs': str(ts), 'sha256': row['sha256'], 'set': group,
+                                        **sweep_consistency(selected_points, base, ego_distance)})
+                if group == 'fit':
+                    fit_ids.append(np.full(len(selected_points), len(fit_points), np.int32)); fit_points.append(selected_points)
+                else:
+                    keep = inside_polygons(selected_points[:, [0, 2]], ground['drivableAreas']) & camera_visible(selected_points, ground['cuboids']['items'])
+                    calibration[tier].extend(selected_points[keep].tolist())
+    require(calibration[0] == read_json(tier0_dir/'calibration-points.json'), 'Tier-0 calibration points changed')
+    all_points = np.concatenate(fit_points) if fit_points else np.empty((0, 3)); all_ids = np.concatenate(fit_ids) if fit_ids else np.empty(0, np.int32)
+    surface = fit_surface(all_points, all_ids, ground['drivableAreas'], params, tier0=base)
+    surface.update(partition=partition, parameters={**params, 'maximumSupportSeconds': None}, fitReturns=len(all_points),
+                   sourceGroundSha256=digest((site/'grounded/ground.json').read_bytes()), sourceSuggestionsSha256=digest((site/'grounded/suggestions.json').read_bytes()),
+                   receiptSha256=digest(receipt_path.read_bytes()), receiptPath=os.path.relpath(receipt_path, output), processingSha256=CODE_SHA256,
+                   sourceSite=os.path.relpath(site, output), tier0={'path': os.path.relpath(tier0_dir, output), 'groundSha256': digest((tier0_dir/'grounded/ground.json').read_bytes())})
+    require(all(a is None or a == b for a, b in zip(base['heights'], surface['heights'])), 'Tier-0 height changed')
+    write_json(output/'support-counts.json', counts); write_json(output/'sweep-consistency.json', diagnostics)
+    write_json(output/'calibration-points.json', calibration)
+    shutil.copytree(site/'grounded', output/'grounded'); shutil.copytree(site/'assembled', output/'assembled')
+    scene['processing']['groundPolicy'] = 'mappedGround with measured-ground-v2: measured triangles from other sweeps of the same recording; scoring sweep excluded; missing support or calibration is Unknown'
+    write_json(output/'grounded/scene.json', scene)
+    ground.update(schemaVersion=4, measuredGround=surface)
+    ground['limitations'] = [
+        'Runtime ground uses other sweeps of the same recording, with the scoring sweep excluded; unmeasured regions stay holes.' if s.startswith('Mapped ground is publisher terrain') else
+        'Displayed uncertainty uses held-back integer-click errors separately for near-time and other-time ground, without clipping; scoring returns are excluded.' if 'along-ray uncertainty' in s else s
+        for s in ground['limitations']]
+    ground['limitations'].append('Sweeps from the same recording remain correlated; physical calibration and terrain contact remain provisional.')
+    ground['license']['changes'] = 'Mapped geometry and annotations converted to umbra scene coordinates; other same-recording LiDAR sweeps registered into measured triangles. Scoring sweep excluded; holes retained. No endorsement implied.'
+    ground['support'] = {'rows': [], 'count': 0, 'rule': 'other sweeps of the same recording only; scoring-sweep support rows are not used'}
+    ground['alongRayUncertainty'] = {'method': 'supportSweepHoldout', 'heightBandMeters': None, 'rule': 'held-back same-recording integer-click horizontal error by hit range and triangle tier',
+                                   'quantile': .975, 'minimumCount': 100, 'bins': [], 'tiers': []}
+    for source in ground['sources'].values():
+        if source is not None:
+            source['path'] = os.path.relpath((site/'grounded'/source['path']).resolve(), output/'grounded')
+    ground['processingCodeHashes']['scripts/california/measured_ground.py'] = CODE_SHA256
+    protocol = {'schema': 'measured-ground-v2-development', 'variant': 'V0', 'parameters': surface['parameters'], 'excludeWithinNs': EXCLUDE_NS,
+                'tier0': 'exact v1 partition, heights and calibration bins', 'tier1': 'every other receipted sweep; sorted timestamps; every fourth held back; fill v1 holes only',
+                'calibration': {'rangeEdgesM': [0, 10, 12, 15, 18, 20, 22, 25, 30], 'quantile': .975, 'minimumCount': 100, 'pool': 'expand symmetrically to neighbouring bins', 'roundUpMeters': .001},
+                'legacyPlacementProtocolSha256': ground['protocol']['sha256']}
+    write_json(output/'grounded/measured-ground-protocol.json', protocol)
+    raw_protocol = (output/'grounded/measured-ground-protocol.json').read_bytes()
+    ground['protocol'] = {'path': 'measured-ground-protocol.json', 'bytes': len(raw_protocol), 'sha256': digest(raw_protocol), 'readOnlyExternal': True}
+    write_json(output/'grounded/ground.json', ground)
+    result = subprocess.run(['node', '--input-type=module', '-', str(output)], input=finalize_v2_js(), text=True, capture_output=True, cwd=ROOT)
+    (output/'finalize-stdout.txt').write_text(result.stdout); (output/'finalize-stderr.txt').write_text(result.stderr)
+    require(result.returncode == 0, f'JavaScript calibration/finalization failed: {result.stderr}')
+    return {'site': scene['id'], 'variant': 'V0', 'fitSweepsByTier': [len(t['fit']) for t in partition['tiers']],
+            'calibrationSweepsByTier': [len(t['calibration']) for t in partition['tiers']], 'verticesByTier': [surface['tiers'].count(t) for t in (0, 1, None)], 'output': str(output)}
+
+
 FINALIZE_JS = r'''
 import fs from 'node:fs';
 import path from 'node:path';
@@ -399,6 +563,71 @@ console.log(JSON.stringify({calibration:g.alongRayUncertainty,groundBytes:gd.byt
 '''
 
 
+def finalize_v2_js():
+    # Share the suggestion/hash adapter while leaving the v1 finalizer byte-for-byte unchanged.
+    adapter = FINALIZE_JS[FINALIZE_JS.index('const unknownElement='):]
+    adapter = adapter.replace('No independently measured ground support at the source anchor.', 'No measured ground support at the source anchor.')
+    adapter = adapter.replace('independentFitSweeps:', 'sameLogFitSweeps:')
+    adapter = adapter.replace('e.mappedPoint[1]=y;const uv=project(e.mappedPoint);', """const tier=measuredGroundTier(scene,e.mappedPoint[0],e.mappedPoint[2]);
+  if(measuredGroundBand(scene,Math.hypot(e.mappedPoint[0],e.mappedPoint[2]),tier)===null){suggestions[role]=unknownElement(e,`No click-error calibration for measured ground tier ${tier} at the source anchor range.`);continue;}
+  e.mappedPoint[1]=y;const uv=project(e.mappedPoint);""")
+    return FINALIZE_V2_JS + adapter
+
+
+FINALIZE_V2_JS = r'''
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {mappedGroundHeight,mappedGroundHit,measuredSurfaceHit,measuredGroundBand,measuredGroundTier} from './src/geometry.mjs';
+const dir=process.argv[2],folder=path.join(dir,'grounded'),read=name=>JSON.parse(fs.readFileSync(path.join(folder,name))),
+  sha=b=>createHash('sha256').update(b).digest('hex'),write=(name,value)=>{const b=JSON.stringify(value)+'\n';fs.writeFileSync(path.join(folder,name),b);return {file:name,bytes:Buffer.byteLength(b),sha256:sha(b)};};
+const scene=read('scene.json'),g=read('ground.json'),suggestions=read('suggestions.json'),entry=read('catalog-entry.json'),
+  old=JSON.parse(fs.readFileSync(path.join(dir,'tier-0-ground.json'))),points=JSON.parse(fs.readFileSync(path.join(dir,'calibration-points.json')));
+scene.ground=g;scene.groundSupportXZ=new Float64Array();
+const c=scene.camera,M=scene.transform.worldFromCamera,project=p=>{const q=[0,1,2].map(k=>p[0]*M[0][k]+p[1]*M[1][k]+p[2]*M[2][k]);return q[2]>0?[c.fx*q[0]/q[2]+c.cx,c.fy*q[1]/q[2]+c.cy]:null;},
+  inCrop=uv=>uv&&uv[0]>=0&&uv[0]<=c.width-1&&uv[1]>=0&&uv[1]<=c.height-1,
+  horizontal=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]),edges=[0,10,12,15,18,20,22,25,30];
+function calibrate(sample,ground,wantedTier=null) {
+  scene.ground=ground;
+  const errors=edges.slice(1).map(()=>[]),rangeErrors=[],unknown={};let eligible=0,placed=0,otherTierHits=0;
+  for(const p of sample) {
+    const uv=project(p);if(!inCrop(uv))continue;
+    const pixel=uv.map(n=>Math.floor(n+.5));if(!inCrop(pixel))continue;eligible++;
+    try {
+      const hit=measuredSurfaceHit(scene,pixel);
+      if(wantedTier!==null&&hit.tier!==wantedTier){eligible--;otherTierHits++;continue;}
+      const range=Math.hypot(hit.point[0],hit.point[2]),index=edges.findIndex((n,i)=>i<edges.length-1&&range>=n&&(range<edges[i+1]||i===edges.length-2&&range===edges[i+1]));
+      if(index>=0){const error=horizontal(hit.point,p);errors[index].push(error);rangeErrors.push([range,error]);placed++;}
+    }catch(e){unknown[e.message]=(unknown[e.message]??0)+1;}
+  }
+  const result={edges,errors,rangeErrors,eligible,placed,unknown};
+  return wantedTier===null?result:{...result,otherTierHits};
+}
+function bins(errors) {
+  const result=[];
+  for(let i=0;i<errors.length;i++) {
+    let lo=i,hi=i,pool=[...errors[i]];
+    while(pool.length<100&&(lo>0||hi<errors.length-1)) {
+      if(lo>0)pool.push(...errors[--lo]);if(hi<errors.length-1)pool.push(...errors[++hi]);
+    }
+    if(pool.length<100)continue;
+    pool.sort((a,b)=>a-b);const meters=Math.ceil(pool[Math.ceil(.975*pool.length)-1]*1000)/1000;
+    result.push({minRangeM:edges[i],maxRangeM:edges[i+1],meters,count:pool.length,ownCount:errors[i].length,poolMinRangeM:edges[lo],poolMaxRangeM:edges[hi+1]});
+  }
+  return result;
+}
+const tier0=calibrate(points[0],old),tier0Bins=bins(tier0.errors);
+assert.deepEqual(tier0,JSON.parse(fs.readFileSync(path.join(dir,'tier-0-calibration-errors.json'))),'Tier-0 calibration errors must equal v1');
+assert.deepEqual(tier0Bins,old.alongRayUncertainty.bins,'Tier-0 calibration bins must equal v1');
+const tier1=calibrate([...points[0],...points[1]],g,1),coverage=r=>({eligible:r.eligible,placed:r.placed,unknown:r.unknown});
+g.alongRayUncertainty.tiers=[{bins:tier0Bins,coverage:coverage(tier0)},{bins:bins(tier1.errors),coverage:coverage(tier1)}];
+scene.ground=g;
+fs.writeFileSync(path.join(dir,'calibration-errors.json'),JSON.stringify({tier0,tier1})+'\n');
+fs.writeFileSync(path.join(dir,'tier-0-parity.json'),JSON.stringify({heights:true,calibrationPoints:true,calibrationErrors:true,calibrationBins:true})+'\n');
+'''
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--site', type=Path, required=True); parser.add_argument('--out', type=Path, required=True)
@@ -406,9 +635,17 @@ def main():
     parser.add_argument('--fit-radius-meters', type=float, default=PARAMETERS['fitRadiusMeters'])
     parser.add_argument('--support-receipt', type=Path)
     parser.add_argument('--band-range-rule', choices=('bins', 'linear'), default=PARAMETERS['bandRangeRule'])
+    parser.add_argument('--version', choices=('measured-ground-v1', 'measured-ground-v2'), default='measured-ground-v1')
+    parser.add_argument('--tier-0', type=Path, help='Exact v1 artifact to preserve when building v2')
     args = parser.parse_args(); params = {**PARAMETERS, 'cellMeters': args.cell_meters, 'fitRadiusMeters': args.fit_radius_meters, 'bandRangeRule': args.band_range_rule}
     require(.1 <= args.cell_meters <= 1 and .5 <= args.fit_radius_meters <= 2, 'Unsupported grid/radius')
-    print(json.dumps(build(args.site, args.out, params, args.support_receipt)))
+    if args.version == 'measured-ground-v2':
+        require(args.tier_0 is not None and args.support_receipt is not None and params == PARAMETERS, 'V2 requires the v1 artifact, full receipt and unchanged v1 fit parameters')
+        result = build_v2(args.site, args.out, args.tier_0, args.support_receipt)
+    else:
+        require(args.tier_0 is None, '--tier-0 is only for v2')
+        result = build(args.site, args.out, params, args.support_receipt)
+    print(json.dumps(result))
 
 
 if __name__ == '__main__':

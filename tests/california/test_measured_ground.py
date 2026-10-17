@@ -149,6 +149,69 @@ class MeasuredGround(unittest.TestCase):
         areas = [{'outline': [[-1, -1], [1, -1], [1, 1], [-1, 1]]}]
         np.testing.assert_array_equal(tool.inside_polygons([[0, 0], [1.4, 0], [1.6, 0]], areas, .5), [True, True, False])
 
+    def tier_records(self):
+        frame = 5_000_000_000
+        records = [dict(timestampNs=str(frame+dt), sha256=tool.digest(str(dt).encode()), bytes=10)
+                   for dt in (-2_000_000_000, -900_000_000, -700_000_000, -500_000_000, -300_000_000,
+                              -250_000_000, 250_000_000, 300_000_000, 500_000_000, 700_000_000, 900_000_000, 2_000_000_000)]
+        old = tool.partition_sweeps([r for r in records if r['timestampNs'] != str(frame-700_000_000)], frame, 1., SCORING)
+        return records, old
+
+    def test_v2_partition_preserves_v1_lists_and_assigns_missing_near_sweep_to_tier1(self):
+        records, old = self.tier_records(); p = tool.partition_tiers(records, old, SCORING)
+        self.assertEqual(p['tiers'][0], {k: old[k] for k in ('fit', 'calibration')})
+        extra = sorted([r for r in records if r not in old['fit']+old['calibration'] and
+                        abs(int(r['timestampNs'])-int(old['frameTimestampNs'])) > tool.EXCLUDE_NS], key=lambda r: int(r['timestampNs']))
+        self.assertEqual(p['tiers'][1]['calibration'], extra[::4])
+        self.assertEqual(p['tiers'][1]['fit'], [r for i, r in enumerate(extra) if i % 4])
+        self.assertTrue(any(r['timestampNs'] == '4300000000' for r in p['tiers'][1]['fit']))
+        self.assertFalse({r['timestampNs'] for r in p['fit']} & {r['timestampNs'] for r in p['calibration']})
+
+    def test_v2_full_receipt_must_preserve_every_v1_non_scoring_sweep(self):
+        records, old = self.tier_records(); missing = old['fit'][0]['timestampNs']
+        with self.assertRaisesRegex(ValueError, 'missing or changed a v1 sweep'):
+            tool.partition_tiers([r for r in records if r['timestampNs'] != missing], old, SCORING)
+        changed = [{**r, 'sha256': 'e'*64} if r['timestampNs'] == missing else r for r in records]
+        with self.assertRaisesRegex(ValueError, 'missing or changed a v1 sweep'):
+            tool.partition_tiers(changed, old, SCORING)
+
+    def test_v2_scoring_bytes_are_refused_even_in_excluded_sweeps(self):
+        records, old = self.tier_records()
+        for ts in ('5000000000', '5100000000', '9000000000'):
+            with self.assertRaisesRegex(ValueError, 'scoring sweep|scoring frame sweep'):
+                tool.partition_tiers(records+[dict(timestampNs=ts, sha256=SCORING, bytes=10)], old, SCORING)
+
+    def test_v2_preserves_every_tier0_float_and_fills_only_measured_holes(self):
+        p, ids = self.plane(); areas = [{'outline': [[-5, -2], [5, -2], [5, 2], [-5, 2]]}]
+        params = {**tool.PARAMETERS, 'windowHalfWidthMeters': 5}
+        old = tool.fit_surface(p+[-3, 0, 0], ids, areas, params)
+        combined = np.concatenate([p+[-3, 0, 0], p+[3, 0, 0]])
+        new = tool.fit_surface(combined, np.concatenate([ids, ids+4]), areas, params, tier0=old)
+        self.assertEqual(new['version'], 'measured-ground-v2')
+        self.assertTrue(all(b == a and t == 0 for a, b, t in zip(old['heights'], new['heights'], new['tiers']) if a is not None))
+        centre, right = 10*21+10, 10*21+16
+        self.assertIsNone(new['heights'][centre]); self.assertIsNone(new['tiers'][centre])
+        self.assertIsNone(old['heights'][right]); self.assertIsNotNone(new['heights'][right]); self.assertEqual(new['tiers'][right], 1)
+        empty = tool.fit_surface([], [], areas, params, tier0=old)
+        self.assertEqual(empty['heights'], old['heights'])
+        self.assertTrue(all(t in (0, None) for t in empty['tiers']))
+
+    def test_v2_repeated_returns_cannot_supply_missing_sweep_support(self):
+        p, ids = self.plane(); areas = [{'outline': [[-2, -2], [2, -2], [2, 2], [-2, 2]]}]
+        params = {**tool.PARAMETERS, 'windowHalfWidthMeters': 2}
+        old = tool.fit_surface([], [], areas, params)
+        new = tool.fit_surface(p, ids*0, areas, params, tier0=old)
+        self.assertEqual(new['heights'], old['heights']); self.assertTrue(all(t is None for t in new['tiers']))
+
+    def test_v2_support_only_consistency_reports_offset_and_tilt_without_changing_heights(self):
+        p, ids = self.plane(); areas = [{'outline': [[-2, -2], [2, -2], [2, 2], [-2, 2]]}]
+        surface = tool.fit_surface(p, ids, areas, {**tool.PARAMETERS, 'windowHalfWidthMeters': 2})
+        shifted = p.copy(); shifted[:, 1] += .02+.001*p[:, 0]
+        result = tool.sweep_consistency(shifted, surface, 4.)
+        self.assertEqual(result['egoDistanceFromFrameMeters'], 4.)
+        self.assertAlmostEqual(result['planeOffsetAtCameraMeters'], .02, places=12)
+        self.assertAlmostEqual(result['tiltXDegrees'], np.degrees(np.arctan(.001)), places=12)
+
 
 if __name__ == '__main__':
     unittest.main()

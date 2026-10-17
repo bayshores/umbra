@@ -6,6 +6,9 @@ import {deflateSync,crc32} from 'node:zlib';
 import {loadScene} from '../src/scene.mjs';
 
 export const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+// A measured-ground-v2 fixture keeps its tier-0 v1 ground.json bytes here (a symbol key, so never serialized); f.fetch
+// serves them as tier-0-ground.json, as a v2 build stores them.
+export const TIER0_FILE=Symbol('tier-0-ground.json');
 // Camera at the origin looking along -Z (fx = fy = 20, 8x10 pixels); flat mapped ground at world Y -1.4375 except a
 // raised cell (step) and a no-value cell; one drivable rectangle |x| <= 3, -30 <= z <= 0; one annotated box at z -12.
 // Ground schema 3 (placement protocol v3.3): placement refused beyond 15 m (horizontal), along-ray height band 0.075 m, and
@@ -58,6 +61,7 @@ export function analytic({scene:mutateScene=()=>{},ground:mutateGround=()=>{},te
     license:{id:'CC-BY-NC-SA-4.0',attribution:'(c) analytic',source:'analytic',changes:'analytic'},limitations:['Analytic fixture only.']};
   mutateGround(ground);
   const bytes=new Map([['recorded.png',image],['terrain.bin',terrain]]);
+  if(ground[TIER0_FILE])bytes.set('tier-0-ground.json',ground[TIER0_FILE]);
   for(const [key,array] of Object.entries(arrays)) {
     const target=key.startsWith('reference')||key==='sourceIndices'?scene.measurements:scene,name=key.toLowerCase()+'.bin',buffer=Buffer.from(array.buffer,array.byteOffset,array.byteLength);
     target.buffers[key]=name;target.artifactHashes[key]=sha(buffer);bytes.set(name,buffer);

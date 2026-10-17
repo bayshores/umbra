@@ -162,7 +162,9 @@ export async function loadSceneFrom({assembled,grounded},loadScene=CURRENT_APP.l
   const fetch=async p=>{
     const name=p.split('/').at(-1);
     if(!p.startsWith(`/scenes/${id}/`)||['catalog-entry.json','LICENSE-AND-ATTRIBUTION.md'].includes(name))return new Response(null,{status:404});
-    try{return new Response(await readFile(path.join(GROUNDED.has(name)?grounded:assembled,name)));}
+    // A measured-ground-v2 build keeps its tier-0 (v1) ground.json beside grounded/.
+    const file=name==='tier-0-ground.json'?path.join(grounded,'..',name):path.join(GROUNDED.has(name)?grounded:assembled,name);
+    try{return new Response(await readFile(file));}
     catch{return new Response(null,{status:404});}
   };
   return {scene:await loadScene(fetch,id,entry.metadataSha256,undefined,entry.suggestions,entry.ground),entry};

@@ -3,11 +3,13 @@ import {existsSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline, SIZE_LIMITS,
-  mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight,measuredGroundBand,anchorPoint } from '../src/geometry.mjs';
+  mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight,measuredGroundBand,measuredGroundTier,anchorPoint,comparisonStart } from '../src/geometry.mjs';
 import { loadScene } from '../src/scene.mjs';
 import { scene,input,fetchAsset } from './scene-input.mjs';
-import {analytic,loadAnalytic,sha} from './mapped-fixture.mjs';
+import {analytic,loadAnalytic,sha,TIER0_FILE} from './mapped-fixture.mjs';
 import {suggestionConsistency,clickToGround} from '../scripts/evaluation/pao-baseline.mjs';
+import {suggestedSetup} from '../src/suggestions.mjs';
+import {mapSurface} from '../src/map-surface.mjs';
 test('measured pixels round-trip through the fitted camera transform',()=>{
   const [u,v]=input.pixels.crossing,p=measuredPoint(scene,[u,v]),R=scene.transform.worldFromCamera;
   const camera=scene.transform.cameraOriginGround.map((o,i)=>o+R.reduce((s,row,j)=>s+row[i]*p[j],0));
@@ -96,6 +98,19 @@ function measuredGrid(ground,slope=[.01,.02]) {
     bins:[{minRangeM:0,maxRangeM:30,meters:.3,count:100}],coverage:{eligible:100,placed:100,unknown:{}}};
   ground.measuredGround={version:'measured-ground-v1',columns,rows,originXZ,cellMeters,heights,heightBounds:[Math.min(...heights),Math.max(...heights)],
     partition:{frameTimestampNs:'124',excludedNearNs:250000000,fit:sweeps.slice(0,3),calibration:sweeps.slice(3)}};
+}
+// v1 changes the tier-0 (v1) layer before it is saved as tier-0-ground.json; the v2 layer starts as its exact copy.
+function measuredGridV2(g,v1=()=>{}) {
+  measuredGrid(g,[0,0]);
+  const edges=[0,10,12,15,18,20,22,25,30],bins=meters=>edges.slice(1).map((maxRangeM,i)=>({minRangeM:edges[i],maxRangeM,meters,count:100}));
+  g.alongRayUncertainty.bins=bins(.3);v1(g);
+  const tier0=Buffer.from(JSON.stringify(g)),s=g.measuredGround,p=s.partition,old={fit:p.fit,calibration:p.calibration},
+    extra={fit:[{timestampNs:'5000000000',sha256:'5'.repeat(64)}],calibration:[{timestampNs:'6000000000',sha256:'6'.repeat(64)}]};
+  Object.assign(s,{version:'measured-ground-v2',tiers:s.heights.map(h=>h===null?null:0),tier0:{groundSha256:sha(tier0),path:'../tier-0'}});
+  Object.assign(p,{tiers:[old,extra],fit:[...old.fit,...extra.fit],calibration:[...old.calibration,...extra.calibration],excluded:[]});
+  const band=g.alongRayUncertainty;
+  Object.assign(band,{bins:[],tiers:[{bins:band.bins,coverage:band.coverage},{bins:bins(.9),coverage:{eligible:100,placed:100,unknown:{}}}]});
+  g[TIER0_FILE]=tier0;
 }
 const projectMeasured=(s,p)=>{
   const m=s.transform.worldFromCamera,q=[0,1,2].map(k=>p[0]*m[0][k]+p[1]*m[1][k]+p[2]*m[2][k]),c=s.camera;
@@ -195,15 +210,106 @@ test('measured ground: legacy layer hit and reference height keep their existing
   assert.equal(mappedGroundHeight(s,0,-10),mappedGroundReferenceHeight(s,0,-10));
   assert.equal(hit.hitKind,'top');assert.deepEqual(hit.terrainCell,[10,14]);
 });
-test('measured ground: moving a declared actor stops at measured holes despite a complete publisher raster',async()=>{
+test('measured ground: vehicle movement crosses holes while placements there stay Unknown',async()=>{
   const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;
     for(let row=47;row<=53;row++)for(let column=0;column<21;column++)g.measuredGround.heights[row*21+column]=null;
   }}));
   const setup={pixels:{crossing:[2,4],parking:[2,6],target:[4,4]},vehicle:{width:1,height:1.5,length:2},targetHeight:1.1,proposedSetback:10,driverDistance:20};
   const baseline=createScenario(s,setup);
-  assert.ok(baseline.limits.maximumSetback<14);
+  assert.ok(Math.abs(baseline.limits.maximumSetback-18)<1e-8);
   assert.equal(mappedGroundHeight(s,0,-5),null);
-  assert.throws(()=>createScenario(s,{...setup,proposedSetback:14}),/setback|extent|between|outside|range/i);
+  assert.throws(()=>mappedGroundHit(s,projectMeasured(s,[0,-2,-6])),/No independently measured ground support/);
+  for(const proposedSetback of [baseline.limits.minimumSetback,10,14,baseline.limits.maximumSetback]) {
+    const moved=createScenario(s,{...setup,proposedSetback});assert.equal(moved.whatIf.groundHeight,-2);
+  }
+  s.ground.drivableAreas[0].outline=[[-3,-3],[3,-3],[3,-30],[-3,-30]];
+  assert.ok(Math.abs(createScenario(s,setup).limits.maximumSetback-15)<1e-8);
+  s.ground.measuredGround.rows=51;s.ground.measuredGround.heights.length=51*21;
+  assert.ok(Math.abs(createScenario(s,setup).limits.maximumSetback-13)<1e-8);
+});
+test('measured ground: schema 3 movement still stops at a publisher-raster hole',async()=>{
+  const setup={pixels:{crossing:[2,4],parking:[6,6],target:[4,4]},vehicle:{width:1,height:1.5,length:2},targetHeight:1.1,proposedSetback:4,driverDistance:14.375};
+  const make=hole=>loadAnalytic(analytic({terrain:h=>{if(hole)h[8*25+11]=NaN;}}));
+  const holeScene=await make(true),full=createScenario(await make(false),setup),hole=createScenario(holeScene,setup);
+  assert.ok(hole.limits.maximumSetback<full.limits.maximumSetback);
+  assert.throws(()=>createScenario(holeScene,{...setup,proposedSetback:full.limits.maximumSetback}),/captured road extent/);
+});
+test('measured ground v2: hits use the highest vertex tier and its own band and label',async()=>{
+  const s=await loadAnalytic(analytic({ground:measuredGridV2})),p=[.12,-2,-13.71],uv=projectMeasured(s,p);
+  assert.equal(mappedGroundHit(s,uv).tier,0);assert.equal(mappedGroundHit(s,uv).supportLabel,'observed nearby');
+  const grid=s.ground.measuredGround,column=Math.floor((p[0]+5)/.5),row=Math.floor((p[2]+30)/.5);
+  grid.tiers[row*grid.columns+column+grid.columns+1]=1;
+  const hit=mappedGroundHit(s,uv);
+  assert.equal(hit.tier,1);assert.equal(hit.alongRayUncertaintyM,.9);
+  assert.equal(hit.supportLabel,'measured at another moment of the same recording');
+  assert.equal(measuredGroundTier(s,p[0],p[2]),1);
+  assert.equal(measuredGroundBand(s,13,0),.3);assert.equal(measuredGroundBand(s,13,1),.9);
+  s.ground.alongRayUncertainty.tiers[1].bins=[];
+  assert.equal(mappedGroundHeight(s,p[0],p[2]),-2);
+  assert.throws(()=>mappedGroundHit(s,uv),/No click-error calibration for measured ground tier 1 at this range/);
+});
+test('measured ground v2: malformed tiers, partitions and calibration records refuse loading',async()=>{
+  for(const change of [
+    g=>g.measuredGround.tiers.pop(),g=>g.measuredGround.tiers[0]=2,g=>g.measuredGround.tiers[0]=null,
+    g=>g.measuredGround.heights[0]=null,
+    g=>delete g.measuredGround.partition.tiers,
+    g=>g.measuredGround.partition.tiers[1].fit.push(g.measuredGround.partition.tiers[0].calibration[0]),
+    g=>g.measuredGround.partition.tiers[1].calibration[0].sha256=g.measuredGround.partition.fit[0].sha256,
+    g=>g.measuredGround.partition.excluded.push({timestampNs:'7000000000',sha256:'e'.repeat(64)}),
+    g=>g.measuredGround.partition.excluded.push({...g.measuredGround.partition.fit[0]}),
+    g=>g.measuredGround.partition.tiers[1].fit[0].timestampNs='124',
+    g=>g.measuredGround.partition.tiers[1].fit[0].sha256='e'.repeat(64),
+    g=>g.alongRayUncertainty.tiers.pop(),g=>delete g.alongRayUncertainty.tiers[1].bins,
+    g=>g.alongRayUncertainty.tiers[1].bins[0].meters=-1,
+    g=>g.alongRayUncertainty.tiers[1].coverage.placed=99,
+    g=>g.alongRayUncertainty.tiers[1].bins[0].minRangeM=1,
+  ])await assert.rejects(loadAnalytic(analytic({ground:g=>{measuredGridV2(g);change(g);}})),/Invalid mapped ground/);
+  for(const change of [p=>delete p.originalSources,p=>delete p.originalSources.lidar.sha256]) {
+    const f=analytic({ground:measuredGridV2});change(f.scene.measurements.provenance);
+    await assert.rejects(loadAnalytic(f),/measured support needs the scoring sweep sha256/);
+  }
+});
+test('measured ground v2: tier 0 must be the pinned v1 layer, and tier 1 may fill only its holes',async()=>{
+  // Vertex k is a v1 hole that v2 fills from other sweeps (tier 1); vertex j is a v1 height (tier 0).
+  const k=31*21+10,j=31*21+11,filled=g=>{measuredGridV2(g,v1=>{v1.measuredGround.heights[k]=null;});g.measuredGround.heights[k]=-2;g.measuredGround.tiers[k]=1;};
+  const load=change=>loadAnalytic(analytic({ground:g=>{filled(g);change(g);}}));
+  const s=await load(()=>{});
+  assert.equal(measuredGroundTier(s,0,.5*31-30),1);assert.equal(measuredGroundTier(s,2,.5*31-30),0);
+  for(const change of [
+    g=>g.measuredGround.tiers[k]=0,// the review's relabel: a tier-1 vertex claiming tier 0 and its narrower band
+    g=>g.measuredGround.tiers[j]=1,
+    g=>{g.measuredGround.heights[j]=-1.999;g.measuredGround.heightBounds=[-2,-1.999];},
+  ])await assert.rejects(load(change),/tier 0 must keep every v1 height exactly, and tier-1 heights may fill only v1 holes/);
+  for(const change of [
+    g=>g.alongRayUncertainty.tiers[0].bins[3].meters=.2,
+    g=>g.alongRayUncertainty.tiers[0].coverage.unknown.hole=0,
+    g=>{const p=g.measuredGround.partition;p.tiers[0].fit.reverse();p.fit=p.tiers.flatMap(t=>t.fit);},
+  ])await assert.rejects(load(change),/tier 0 must keep the v1 sweep partition and calibration band/);
+  for(const change of [g=>g.measuredGround.originXZ=[-5.5,-30],g=>g.drivableAreas[0].outline[0]=[-3.5,0],g=>g.measuredGround.parameters={minimumReturns:11}])
+    await assert.rejects(load(change),/tier 0 must be a measured-ground-v1 layer of the same scene, grid and fit/);
+  await assert.rejects(load(g=>delete g.measuredGround.tier0),/measured vertex tiers must match supported heights/);
+  await assert.rejects(load(g=>g.measuredGround.tier0.groundSha256='f'.repeat(64)),/Measured ground tier 0 checksum mismatch/);
+  await assert.rejects(load(g=>delete g[TIER0_FILE]),/Measured ground tier 0 unavailable \(404\)/);
+  await assert.rejects(load(g=>{const v2=Buffer.from(JSON.stringify(g));g[TIER0_FILE]=v2;g.measuredGround.tier0.groundSha256=sha(v2);}),/Invalid mapped ground/);
+  // A valid schema-3 (publisher raster) layer of the same scene is not a tier 0 either (re-review minor: it threw a TypeError).
+  await assert.rejects(loadAnalytic(analytic({ground:g=>{const s3=Buffer.from(JSON.stringify(g));filled(g);g[TIER0_FILE]=s3;g.measuredGround.tier0.groundSha256=sha(s3);}})),
+    /tier 0 must be a measured-ground-v1 layer of the same scene, grid and fit/);
+});
+test('measured ground v2: map triangles and sampled heights share the same holes and diagonal',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>measuredGridV2(g,v1=>{v1.measuredGround.heights[31*21+10]=null;})})),mesh=mapSurface(s);
+  for(let i=0;i<mesh.triangles.length;i+=3) {
+    const p=[0,1,2].map(k=>[0,1,2].reduce((sum,j)=>sum+mesh.positions[3*mesh.triangles[i+j]+k],0)/3);
+    assert.ok(Math.abs(mappedGroundHeight(s,p[0],p[2])-p[1])<1e-8);
+  }
+  assert.equal(mappedGroundHeight(s,.01,-14.49),null);
+});
+test('suggested setup names every unplaced role and its Unknown reason',async()=>{
+  const s=await loadAnalytic(analytic({ground:measuredGridV2}));
+  const suggestions={schemaVersion:3,crossing:{status:'unknown',reason:'No measured ground support at the source anchor.'},
+    vehicle:{status:'unknown',reason:'Front ground remains hidden.'},person:{status:'unknown',reason:'No calibrated band.'}};
+  const setup=suggestedSetup(s,suggestions);
+  assert.equal(setup.input,null);
+  assert.equal(setup.error,'Suggested crossing unavailable: No measured ground support at the source anchor. Suggested vehicle front unavailable: Front ground remains hidden. Suggested person unavailable: No calibrated band.');
 });
 test('measured ground: C preserves a valid fractional hit and reports a rounded diagnostic in a hole as Unknown',async()=>{
   const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;
@@ -245,10 +351,12 @@ test('measured ground: the evaluation-only refusal option preserves reference ca
 const R2=new URL('../.local/evaluation/pao-accuracy/ground-r2-2026-10-16/final/fd5c6932-2659589/',import.meta.url);
 const r2Local=existsSync(new URL('grounded/suggestions.json',R2))&&existsSync(new URL('assembled/positions.bin',R2));
 const r2Skip=r2Local?false:'round-2 measured development scene is local-only and not present';
-const r2Read=name=>readFile(new URL((['scene.json','ground.json','terrain.bin','suggestions.json','catalog-entry.json'].includes(name)?'grounded/':'assembled/')+name,R2));
-async function loadR2({scene:mutateScene,ground:mutateGround,suggestions:mutateSuggestions}={}) {
+// A built site folder: grounded/ and assembled/ files, plus a v2 build's tier-0-ground.json beside them.
+const builtRead=(root,name)=>readFile(new URL(name==='tier-0-ground.json'?name:(['scene.json','ground.json','terrain.bin','suggestions.json','catalog-entry.json'].includes(name)?'grounded/':'assembled/')+name,root));
+const loadR2=options=>loadBuilt(R2,options);
+async function loadBuilt(root,{scene:mutateScene,ground:mutateGround,suggestions:mutateSuggestions}={}) {
   // Each changed file is repinned where the next names it: ground.json in scene.json, both in suggestions.json, then the catalog.
-  const entry=JSON.parse(await r2Read('catalog-entry.json')),bytes={},json=async name=>JSON.parse(await r2Read(name));
+  const r2Read=name=>builtRead(root,name),entry=JSON.parse(await r2Read('catalog-entry.json')),bytes={},json=async name=>JSON.parse(await r2Read(name));
   if(mutateGround){const g=await json('ground.json');mutateGround(g);bytes['ground.json']=Buffer.from(JSON.stringify(g));}
   if(mutateScene||bytes['ground.json']) {
     const x=await json('scene.json');
@@ -280,4 +388,15 @@ test('measured ground: the full development scene refuses a missing scoring swee
   await loadR2();
   await assert.rejects(loadR2({scene:x=>delete x.measurements.provenance.originalSources}),/measured support needs the scoring sweep sha256/);
 });
-
+// Development artifacts (local only): the measured-ground-v2 builds of e1 and fd5c, with their tier-0 v1 files.
+const V2=site=>new URL(`../.local/evaluation/pao-accuracy/ground-v2-full-2026-10-16/build/${site}/`,import.meta.url);
+const v2Relabels=[['e1d68dde-5987490',12821],['fd5c6932-2659589',13465]];
+const v2Skip=v2Relabels.every(([site])=>existsSync(new URL('tier-0-ground.json',V2(site)))&&existsSync(new URL('assembled/positions.bin',V2(site))))?false:
+  'measured-ground-v2 development builds are local-only and not present';
+test('measured ground v2: the e1 and fd5c development builds load, and relabelling a tier-1 vertex as tier 0 is refused',{skip:v2Skip},async()=>{
+  for(const [site,vertex] of v2Relabels) {
+    const s=await loadBuilt(V2(site));
+    assert.equal(s.ground.measuredGround.tiers[vertex],1);
+    await assert.rejects(loadBuilt(V2(site),{ground:g=>g.measuredGround.tiers[vertex]=0}),/tier-1 heights may fill only v1 holes/);
+  }
+});

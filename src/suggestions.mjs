@@ -132,7 +132,7 @@ export function mappedCrossingSource(scene,key,current) {
 }
 // The runtime rule's result as the file stores it: within 1e-6 m for points, ranges and the uncertainty, the rest equal.
 function sameHit(hit,v) {
-  return !hit.point.some((n,i)=>Math.abs(n-v.groundPoint[i])>1e-6)&&hit.supportClass===v.supportClass&&hit.hidden===v.hidden&&hit.hitKind===v.hitKind&&
+  return !hit.point.some((n,i)=>Math.abs(n-v.groundPoint[i])>1e-6)&&hit.supportClass===v.supportClass&&hit.supportLabel===v.supportLabel&&hit.hidden===v.hidden&&hit.hitKind===v.hitKind&&
     hit.terrainCityZ===v.terrainCityZ&&same(hit.terrainCell,v.terrainCell)&&Math.abs(hit.rangeM-v.rangeM)<=1e-6&&
     Math.abs(hit.alongRayUncertaintyM-v.alongRayUncertaintyM)<=1e-6;
 }
@@ -153,7 +153,8 @@ function mappedElement(v,scene,role,check) {
   pixel(v.pixel,scene,role);
   if(!inCrop(v.pixelUV,c)||!same(v.pixel,anchorOf(v.pixelUV)))fail(`${role}.pixelUV must be a crop position and pixel the pixel containing it`);
   if(!text(v.label)||!text(v.reason))fail(`${role}.label and reason must be text`);
-  if(!['observed-nearby','map-only'].includes(v.supportClass)||v.supportLabel!==SUPPORT_LABELS[v.supportClass])fail(`${role}.supportClass and supportLabel must match`);
+  const otherMoment=scene.ground.measuredGround?.version==='measured-ground-v2'&&v.supportClass==='observed-nearby'&&v.supportLabel==='measured at another moment of the same recording';
+  if(!['observed-nearby','map-only'].includes(v.supportClass)||!otherMoment&&v.supportLabel!==SUPPORT_LABELS[v.supportClass])fail(`${role}.supportClass and supportLabel must match`);
   if(scene.ground.cuboids.available?typeof v.hidden!=='boolean':v.hidden!==null)fail(`${role}.hidden must be a flag, or null without annotations`);
   if(!finiteList(v.groundPoint,3)||!finiteList(v.mappedPoint,3)||!['top','step'].includes(v.hitKind)||!finiteNumber(v.terrainCityZ)||!intPair(v.terrainCell)||
     !['rangeM','horizontalRangeM'].every(k=>positive(v[k]))||
@@ -349,7 +350,7 @@ export function suggestedSetup(scene,suggestions) {
       const next={pixels,vehicle,targetHeight,...comparisonStart(scene,pixels,vehicle)};
       createScenario(scene,next);input=next;
     }catch(e){error=e.message;}
-  }
+  }else error=ROLES.filter(([key])=>!pixels[key]).map(([key,role])=>`Suggested ${role==='vehicle'?'vehicle front':role} unavailable: ${provenance[key]?.reason||'Missing placement evidence.'}`).join(' ');
   return {pixels,vehicle,targetHeight,provenance,input,error};
 }
 

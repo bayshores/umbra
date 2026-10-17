@@ -138,10 +138,14 @@ function validateGround(g,scene) {
     Number.isFinite(m.referencePositions[r*3])&&Number.isFinite(m.referencePositions[r*3+2])),'support rows must be ascending camera-eligible source rows');
   if(measured) {
     const surface=g.measuredGround,p=surface?.partition,stamp=v=>typeof v==='string'&&/^(0|[1-9][0-9]{0,31})$/.test(v);
-    need(object(surface)&&surface.version==='measured-ground-v1'&&finite(surface.cellMeters)&&surface.cellMeters>0&&
+    const v2=surface?.version==='measured-ground-v2';
+    need(object(surface)&&(surface.version==='measured-ground-v1'||v2)&&finite(surface.cellMeters)&&surface.cellMeters>0&&
       positiveInt(surface.columns)&&positiveInt(surface.rows)&&surface.columns>=2&&surface.rows>=2&&surface.columns*surface.rows<=262144&&
       Array.isArray(surface.originXZ)&&surface.originXZ.length===2&&surface.originXZ.every(finite)&&Array.isArray(surface.heights)&&
       surface.heights.length===surface.rows*surface.columns&&surface.heights.every(h=>h===null||finite(h)),'measured surface grid');
+    if(v2)need(Array.isArray(surface.tiers)&&surface.tiers.length===surface.heights.length&&
+      surface.tiers.every((tier,i)=>surface.heights[i]===null?tier===null:tier===0||tier===1)&&
+      keys(surface.tier0,'groundSha256,path')&&hash(surface.tier0.groundSha256)&&text(surface.tier0.path),'measured vertex tiers must match supported heights');
     const heights=surface.heights.filter(h=>h!==null);
     let low=Infinity,high=-Infinity;for(const height of heights){low=Math.min(low,height);high=Math.max(high,height);}
     need(heights.length?Array.isArray(surface.heightBounds)&&surface.heightBounds.length===2&&surface.heightBounds[0]===low&&
@@ -156,6 +160,27 @@ function validateGround(g,scene) {
       new Set([...p.fit,...p.calibration].map(v=>v.timestampNs)).size===p.fit.length+p.calibration.length&&
       new Set([...p.fit,...p.calibration].map(v=>v.sha256)).size===p.fit.length+p.calibration.length&&(!heights.length||p.fit.length>=3),
       'measured support must exclude the scoring sweep and its temporal neighbours, with disjoint calibration sweeps');
+    if(v2) {
+      need(keys(p,'calibration,excluded,excludedNearNs,fit,frameTimestampNs,tiers')&&Array.isArray(p.tiers)&&p.tiers.length===2&&p.tiers.every(t=>keys(t,'calibration,fit')&&Array.isArray(t.fit)&&Array.isArray(t.calibration))&&
+        JSON.stringify(p.fit)===JSON.stringify(p.tiers.flatMap(t=>t.fit))&&JSON.stringify(p.calibration)===JSON.stringify(p.tiers.flatMap(t=>t.calibration))&&
+        Array.isArray(p.excluded)&&p.excluded.every(v=>object(v)&&stamp(v.timestampNs)&&hash(v.sha256)&&v.sha256!==scoringHash&&v.timestampNs!==p.frameTimestampNs&&
+          BigInt(v.timestampNs)-BigInt(p.frameTimestampNs)<=250000000n&&BigInt(p.frameTimestampNs)-BigInt(v.timestampNs)<=250000000n)&&
+        new Set([...p.fit,...p.calibration,...p.excluded].map(v=>v.timestampNs)).size===p.fit.length+p.calibration.length+p.excluded.length&&
+        new Set([...p.fit,...p.calibration,...p.excluded].map(v=>v.sha256)).size===p.fit.length+p.calibration.length+p.excluded.length&&
+        (!surface.tiers.includes(0)||p.tiers[0].fit.length>=3)&&(!surface.tiers.includes(1)||p.tiers[1].fit.length>0),
+        'measured tiers need disjoint fit/calibration partitions without scoring bytes in any list');
+      const edges=[0,10,12,15,18,20,22,25,30];
+      need(band.minimumCount===100&&band.bins.length===0&&!Object.hasOwn(band,'rangeRule')&&Array.isArray(band.tiers)&&band.tiers.length===2&&
+        band.tiers.every((t,tier)=>{
+          if(!keys(t,'bins,coverage')||!Array.isArray(t.bins))return false;
+          const c=t.coverage,calibrations=tier===0?p.tiers[0].calibration:p.calibration;
+          return object(c)&&count(c.eligible)&&count(c.placed)&&object(c.unknown)&&Object.values(c.unknown).every(count)&&
+            c.placed+Object.values(c.unknown).reduce((a,b)=>a+b,0)===c.eligible&&
+            t.bins.every((b,i)=>object(b)&&edges.indexOf(b.minRangeM)>=0&&edges[edges.indexOf(b.minRangeM)+1]===b.maxRangeM&&
+              finite(b.meters)&&b.meters>=0&&positiveInt(b.count)&&b.count>=100&&b.count<=c.placed&&calibrations.length>0&&
+              (i===0||b.minRangeM>=t.bins[i-1].maxRangeM));
+        }),'measured ground needs a valid calibration band record per tier');
+    }
     const coverage=band.coverage;
     const calibrated=band.rangeRule==='linear'?band.knots:band.bins;
     need(!calibrated.length||(p.calibration.length>0&&object(coverage)&&count(coverage.eligible)&&positiveInt(coverage.placed)&&
@@ -165,6 +190,23 @@ function validateGround(g,scene) {
   need(keys(g.license,'attribution,changes,id,source')&&g.license.id==='CC-BY-NC-SA-4.0'&&['attribution','changes','source'].every(k=>text(g.license[k])),'license');
   need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');
   if(g.carShape!==null)validateCarShape(g.carShape,c.items,{need,object,text,hash,finite,count,positiveInt,keys});
+}
+// A measured-ground-v2 layer's tier 0 must be exactly the measured-ground-v1 layer it names by sha256 (both already
+// validated): same scene, grid and fit parameters, every v1 height kept as a tier-0 vertex, tier 1 only in v1 holes, and
+// the v1 partition and band as tier 0's. Without this a tier-1 vertex could claim tier 0 and its narrower band.
+function validateTier0(g,t) {
+  const need=(ok,detail)=>{if(!ok)throw new Error(`Invalid mapped ground: ${detail}.`);},same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const what='tier 0 must be a measured-ground-v1 layer of the same scene, grid and fit';
+  need(t.measuredGround?.version==='measured-ground-v1',what);
+  const s=g.measuredGround,o=t.measuredGround,old=t.alongRayUncertainty,band=g.alongRayUncertainty.tiers[0],p=s.partition.tiers[0];
+  const {maximumSupportSeconds:_,...params}=s.parameters??{},{maximumSupportSeconds:__,...oldParams}=o.parameters??{};
+  need(['baseSceneSha256','terrain','drivableAreas','crossing','egoLane','cuboids','carShape'].every(k=>same(g[k],t[k]))&&
+    Object.keys(g.sources).every(k=>g.sources[k]?.sha256===t.sources[k]?.sha256)&&
+    ['cellMeters','columns','rows','originXZ'].every(k=>same(s[k],o[k]))&&same(params,oldParams),what);
+  need(s.heights.every((h,i)=>o.heights[i]===null?s.tiers[i]!==0:s.tiers[i]===0&&h===o.heights[i]),
+    'tier 0 must keep every v1 height exactly, and tier-1 heights may fill only v1 holes');
+  need(s.partition.frameTimestampNs===o.partition.frameTimestampNs&&same(p.fit,o.partition.fit)&&same(p.calibration,o.partition.calibration)&&
+    same(band.bins,old.bins)&&same(band.coverage,old.coverage),'tier 0 must keep the v1 sweep partition and calibration band');
 }
 // shape-v2 (.local/evaluation/pao-accuracy/shape-v2/protocol.json: the shape-v1 dataSchema and loaderValidation with
 // the 0.25 m sweep step, schema 'shape-v2' and placement protocol v3.4): the recorded
@@ -368,6 +410,16 @@ async function loadSceneData(fetchResource,id,expectedMetadataSha256,signal,dead
       let parsed;
       try{parsed=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));}catch{throw new Error('Invalid mapped ground: not UTF-8 JSON.');}
       validateGround(parsed,scene);
+      if(parsed.measuredGround?.version==='measured-ground-v2') {
+        // tier-0-ground.json: the exact v1 ground.json bytes the builder saves beside a v2 build, pinned by the v2 layer.
+        const r0=await fetchResource(base+'tier-0-ground.json');
+        if(!r0.ok)throw new Error(`Measured ground tier 0 unavailable (${r0.status}).`);
+        const bytes0=await boundedBytes(r0,1024*1024,false,signal,deadline);
+        if(await digest(bytes0)!==parsed.measuredGround.tier0.groundSha256)throw new Error('Measured ground tier 0 checksum mismatch.');
+        let tier0;
+        try{tier0=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes0));}catch{throw new Error('Invalid mapped ground: tier 0 is not UTF-8 JSON.');}
+        validateGround(tier0,scene);validateTier0(parsed,tier0);
+      }
       const t=parsed.terrain,tr=await fetchResource(base+t.file);
       if(!tr.ok)throw new Error(`Mapped ground terrain unavailable (${tr.status}).`);
       const terrain=await boundedBytes(tr,t.bytes,true,signal,deadline);

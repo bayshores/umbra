@@ -80,8 +80,9 @@ export function mappedGroundHeight(scene,x,z) {
     column=Math.floor(fx),row=Math.floor(fz),plane=measuredTriangle(s,column,row,fz-row>fx-column);
   return plane?plane[0]+plane[1]*x+plane[2]*z:null;
 }
-export function measuredGroundBand(scene,range) {
-  const band=scene.ground.alongRayUncertainty;
+export function measuredGroundBand(scene,range,tier=0) {
+  const root=scene.ground.alongRayUncertainty,band=scene.ground.measuredGround.version==='measured-ground-v2'?root.tiers?.[tier]:root;
+  if(!band)return null;
   if(band.rangeRule==='linear') {
     const knots=band.knots;
     if(!knots.length||range<knots[0].rangeM||range>knots.at(-1).rangeM)return null;
@@ -99,15 +100,22 @@ function measuredTriangle(s,column,row,upper) {
   const k=row*s.columns+column,h=s.heights[k],diagonal=s.heights[k+s.columns+1],side=s.heights[k+(upper?s.columns:1)];
   if(h===null||diagonal===null||side===null)return null;
   const dx=(upper?diagonal-side:side-h)/s.cellMeters,dz=(upper?side-h:diagonal-side)/s.cellMeters;
-  return [h-dx*(s.originXZ[0]+column*s.cellMeters)-dz*(s.originXZ[1]+row*s.cellMeters),dx,dz];
+  return [h-dx*(s.originXZ[0]+column*s.cellMeters)-dz*(s.originXZ[1]+row*s.cellMeters),dx,dz,
+    ...(s.version==='measured-ground-v2'?[Math.max(s.tiers[k],s.tiers[k+s.columns+1],s.tiers[k+(upper?s.columns:1)])]:[])];
 }
+export function measuredGroundTier(scene,x,z) {
+  const s=scene.ground.measuredGround,fx=(x-s.originXZ[0])/s.cellMeters,fz=(z-s.originXZ[1])/s.cellMeters,
+    plane=measuredTriangle(s,Math.floor(fx),Math.floor(fz),fz-Math.floor(fz)>fx-Math.floor(fx));
+  return plane?(plane[3]??0):null;
+}
+const tierSupportLabel=tier=>tier===1?'measured at another moment of the same recording':SUPPORT_LABELS['observed-nearby'];
 // Also used offline for calibration: geometry only, before the calibrated band is available.
 export function measuredSurfaceHit(scene,position) {
   const c=scene.camera,g=scene.ground,s=g.measuredGround;
   if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
   const q=[(position[0]-c.cx)/c.fx,(position[1]-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>dot(row,q)),n=Math.hypot(...raw),d=raw.map(v=>v/n);
   if(!(d[1]<0))throw new Error('Pixel ray does not descend toward the ground.');
-  const missing=()=>new Error('No independently measured ground support along this ray.');
+  const v2=s.version==='measured-ground-v2',missing=()=>new Error(v2?'No measured ground support along this ray.':'No independently measured ground support along this ray.');
   if(s.heightBounds===null)throw missing();
   const originHeight=mappedGroundHeight(scene,0,0);
   if(originHeight!==null&&originHeight>=0)throw new Error('Camera origin is not above the measured ground.');
@@ -140,7 +148,7 @@ export function measuredSurfaceHit(scene,position) {
       const point=d.map(v=>v*t),limit=g.placementRangeLimitMeters;
       if(Math.hypot(point[0],point[2])>limit)throw new Error(`Too far to place (over ${limit} m).`);
       if(!insideDrivable(g.drivableAreas,point[0],point[2]))throw new Error('First mapped-ground hit is outside the mapped drivable area.');
-      return {point,supportClass:'observed-nearby',supportLabel:SUPPORT_LABELS['observed-nearby'],hidden:hiddenByCuboids(g,point),
+      return {point,supportClass:'observed-nearby',supportLabel:tierSupportLabel(plane[3]),hidden:hiddenByCuboids(g,point),...(v2&&{tier:plane[3]}),
         rangeM:t,hitKind:'top',terrainCityZ:point[1]+g.frame.cityOrigin[2],terrainCell:[column,row]};
     }
     ta=tb;
@@ -194,6 +202,12 @@ function hiddenByCuboids(g,point) {
 function groundEvidence(scene,point) {
   if(scene.ground.schemaVersion===4) {
     const supportClass=mappedGroundHeight(scene,point[0],point[2])===null?'unknown':'observed-nearby';
+    if(scene.ground.measuredGround.version==='measured-ground-v2') {
+      const tier=measuredGroundTier(scene,point[0],point[2]);
+      if(tier!==null&&measuredGroundBand(scene,Math.hypot(point[0],point[2]),tier)===null)
+        throw new Error(`No click-error calibration for measured ground tier ${tier} at this range.`);
+      return {supportClass,supportLabel:tier===null?SUPPORT_LABELS.unknown:tierSupportLabel(tier),hidden:hiddenByCuboids(scene.ground,point),tier};
+    }
     return {supportClass,supportLabel:SUPPORT_LABELS[supportClass],hidden:hiddenByCuboids(scene.ground,point)};
   }
   const support=scene.groundSupportXZ,radius=scene.ground.supportRadiusMeters;
@@ -223,8 +237,8 @@ function userPixel(scene,pixel) {
 export function mappedGroundHit(scene,position) {
   const c=scene.camera,g=scene.ground;
   if(g.schemaVersion===4) {
-    const hit=measuredSurfaceHit(scene,position),band=measuredGroundBand(scene,Math.hypot(hit.point[0],hit.point[2]));
-    if(band===null)throw new Error('No independent click-error calibration at this ground range.');
+    const hit=measuredSurfaceHit(scene,position),band=measuredGroundBand(scene,Math.hypot(hit.point[0],hit.point[2]),hit.tier);
+    if(band===null)throw new Error(g.measuredGround.version==='measured-ground-v2'?`No click-error calibration for measured ground tier ${hit.tier} at this range.`:'No independent click-error calibration at this ground range.');
     return {...hit,alongRayUncertaintyM:band};
   }
   if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
@@ -322,7 +336,8 @@ export function anchorPoint(scene,key,pixel) {
   if(front)return {point:front,...groundEvidence(scene,front),alongRayUncertaintyM:null};
   const source=scene.ground.schemaVersion===4?mappedCrossingSource(scene,key,pixel):null;
   if(source)return {point:source,...groundEvidence(scene,source),alongRayUncertaintyM:null};
-  return {point:hit.point,supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM};
+  return {point:hit.point,supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM,
+    ...(Object.hasOwn(hit,'tier')&&{tier:hit.tier})};
 }
 // Setback of an annotated pose: the distance along the mapped lane axis from the app's crossing point to the centre of
 // the front face of the box the app tests (the annotated cuboid, sub-degree tilt removed). Current and proposed
@@ -371,7 +386,8 @@ function mappedVehicleLine(scene,crossing,parking,check=true) {
   return {axis,baselineSetback,vehicleOrigin:[parking[0]-axis[0]*baselineSetback,parking[1],parking[2]-axis[2]*baselineSetback]};
 }
 // End of the contiguous run from s=0 along origin + s*axis (horizontal) that stays inside the mapped drivable areas
-// with a mapped ground value, up to limit. Mapped ground is the captured road extent for these scenes.
+// up to limit. Schema 4 uses the measured grid's window, not its holes: horizontal vehicle movement retains the front
+// height. Schema 3 keeps the publisher raster's contiguous height support as its captured road extent.
 function mappedRunEnd(scene,origin,axis,limit) {
   const g=scene.ground,x0=origin[0],z0=origin[2],dx=axis[0],dz=axis[2],
     cuts=g.schemaVersion===4?measuredCuts(g.measuredGround,[x0,z0],[dx,dz],limit,[0,limit]):terrainCuts(g,[x0,z0],[dx,dz],limit,[0,limit]);
@@ -387,7 +403,10 @@ function mappedRunEnd(scene,origin,axis,limit) {
     const ta=cuts[i-1],tb=cuts[i];
     if(!(tb>ta))continue;
     const m=(ta+tb)/2,x=x0+m*dx,z=z0+m*dz;
-    if(!insideDrivable(g.drivableAreas,x,z)||(g.schemaVersion===4?mappedGroundHeight(scene,x,z)===null:!terrainSample(scene,x,z)))break;
+    const s=g.measuredGround;
+    if(!insideDrivable(g.drivableAreas,x,z)||(g.schemaVersion===4
+      ?x<s.originXZ[0]||z<s.originXZ[1]||x>s.originXZ[0]+(s.columns-1)*s.cellMeters||z>s.originXZ[1]+(s.rows-1)*s.cellMeters
+      :!terrainSample(scene,x,z)))break;
     end=tb;
   }
   return end;
