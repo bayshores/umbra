@@ -1,0 +1,32 @@
+{
+ "file": "builder-protocol-v4.3.json",
+ "sha256": "5dc0ab06ac1af4f57aa96b9cea4e451e62801d4084f9b3fbc011a2ccdd11bebe",
+ "bytes": 37170,
+ "recordedUtc": "2026-10-14T05:53:40Z",
+ "builderCodeSha256": "9ac4875c5d0a3c6e17e58ad69973e99d8ce6b1fd1d452979280ac260be155490",
+ "runtimeCode": {
+  "scripts/california/build_av2_scene.py": "9ac4875c5d0a3c6e17e58ad69973e99d8ce6b1fd1d452979280ac260be155490",
+  "scripts/california/prepare_av2.py": "77949e29d8d653f3342c443ef1f5fb6e1ac0e79d8fc4c5692b818e47fc666963",
+  "scripts/california/prepare_av2_ground.py": "60a43091e34f592b2d0e91441135cd8f20c8201a440047e73bd463990d89a771",
+  "scripts/california/suggest_av2_placements.py": "e33867b0bd2d339ebe0e34f8f25e003b7da4b5475780adcba810fc9befb8559b",
+  "scripts/remap_support.py": "5676446090a3e7aec7d34763c4167a02cb02917e74f18fa9ef802e7ecb623054",
+  "scripts/sponsors/common.py": "445d5dd2572c1daef4fc98d0cceceb3c97cbd0f54e2025d6361d8baa5c9f9ec1",
+  "scripts/prepare-stereo-crop.py": "d1d105b55e06df1377cbe7a26a66f504e92b5e0879227058bf98e4b0f3ee7cb4",
+  "scripts/rectified_calibration.py": "9cbe472d0385597f0ad80677ce0d69a7df093ba93c6dccec26440d8422033914",
+  "scripts/california/car_shape.py": "ed45c8446abe47e276ad08bdb77461ee429673699c68d6453c4ce044853367e7"
+ },
+ "placementProtocolSha256": "330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22",
+ "shapeProtocolSha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a",
+ "shapeSplitAddendumSha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838",
+ "testCodeSha256": {
+  "tests/california/test_build_av2_scene.py": "e277af84312e9b4bf690c46fe8c69a32100f7eaf59abd26ed347915644775633",
+  "tests/california/test_car_shape.py": "ef123f421539f7824e7d31980ae40af4142d72be5e8f484f82220864d9c46595",
+  "tests/california/test_prepare_av2_ground.py": "e5ee95713e2a75d2ea00c3b4b77f4676178d2f6455ec9bd32ba695baa90428e9",
+  "tests/california/test_suggest_av2_placements.py": "6763657f3618d8b647e79f1ec5e4efbcca3254fb436e72ef468b10026fc9813f"
+ },
+ "writer": {
+  "file": "write_builder_protocol_v4_3.py",
+  "sha256": "ae18623c1891706ddccbde91a4388ba6b8e96dc3d24d2b67cfa2e9498bd4f516"
+ },
+ "note": "Recorded before any builder version 4.3 output, shape-v2 sweep plan or shape-v2 sweep download existed."
+}

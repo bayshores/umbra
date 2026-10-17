@@ -1,0 +1,40 @@
+{
+  "name": "shape-v2 approach-half split addendum",
+  "kind": "Pre-registered report-only check (metric F with an approach-half split) for shape-v2. Written as an exact list of changes to the frozen shape-v1 split addendum; every rule not named under 'changes' applies unchanged. It does not change the shape-v2 protocol.",
+  "status": "FROZEN. Written and hashed before any shape-v2 result: no shape-v2 sweep plan written, no shape-v2 sweep downloaded, no row computed with a shape-v2 shape. Same code state at freeze as the shape-v2 protocol status. SHA-256 of this file and the freeze time are in split-addendum.lock.json.",
+  "createdUtc": "2026-10-14T05:29:31Z",
+  "revisedUtc": "2026-10-14T05:42:03Z",
+  "base": {
+    "path": ".local/evaluation/pao-accuracy/shape-v1/split-addendum.json",
+    "sha256": "cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626",
+    "frozenUtc": "2026-10-13T19:27:46Z"
+  },
+  "pins": {
+    "shapeProtocol": {
+      "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+      "role": "the frozen shape-v2 protocol; its SHA-256 is in shape-v2/protocol.lock.json and in split-addendum.lock.json"
+    },
+    "basePins": "base pins.design and pins.metricFv2Protocol stay; base pins.shapeProtocol is replaced by pins.shapeProtocol above"
+  },
+  "authority": "Sean, 2026-10-13T19:24:28Z (the approach-half check, report only) and 2026-10-14T05:23:35Z (shape-v2, 'More scans'); .local/project/pao-accuracy-2026-10-12/decisions.md. This addendum only carries the existing check over to shape-v2.",
+  "changes": {
+    "rule.inputList.rule": "The frozen selected sweep list of shape-v2 for that site: the kept list after candidates, 0.25 m thinning and the 40 cap, as recorded in the hashed shape-v2 sweep plan, i.e. the union of carShape.sweeps.shape and carShape.sweeps.scoring. Sweeps in carShape.sweeps.downloadDropped are already absent from both lists and are not available. Nothing else is added.",
+    "rule.shape.rule": "Build an evaluation-only shape from the far half with the frozen shape-v2 shape rules (the shape-v1 rules of base rule.shape.rule unchanged; the thinning step does not apply inside a half). Built by the same shape-build code as the app shape (scripts/california/car_shape.py), given the far-half list in place of the alternating shape list.",
+    "rule.shape.where": ".local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split/ (one file per site, schema 'shape-v2-approach-split'); never ground.json.",
+    "rule.rows.rule": "The same setback-sweep rows as metric F shape-v2 (metric F v2 definition.rows: child 1.1 m and adult 1.5 m targets, the app's own setbackSweep). Each row's result comes from the app's unchanged shape-v2 result rule with the evaluation-only shape attached to the recorded vehicle's box in place of carShape. Nothing else in the scene changes.",
+    "rule.scoring.rule": "Score with the frozen metric F shape-v2 rules (protocol v4: thresholds and classes identical to metric F shape-v1 and v2; scored on plain-Blocked rows) using only the near half as the scoring sweeps.",
+    "scenes.development": "The five development scenes of metric F shape-v2 (8c52d911-2658849 hand-made, v4-12, v4-18.5; c780d53a-2069452 v4-12, v4-18.5). 453e5558-20499018: not applicable.",
+    "names": "Every 'metric F shape-v1' in the base (notAGate, scenes.heldOut, unchanged, rule texts not replaced above) reads 'metric F shape-v2', and where it names metric F shape-v1's protocol, 'protocol v3' reads 'protocol v4'; every other shape-v1 identifier reads through the shape-v2 protocol's changes.names. The metric F summary applies exactly these two text substitutions to the base texts it copies (notAGate, dependenceThatRemains, whatDiffers, limits) and says so."
+  },
+  "unchanged": [
+    "order: by distanceM from the averaged box centre, largest first; ties by timestampNs ascending",
+    "halves: h = floor(K / 2); far = first h, near = last h; an odd middle sweep is unused",
+    "refusal: fewer than 2 far-half sweeps refuses the check for that site (too-few-sweeps)",
+    "laser check on near-half sweeps (0.15 degrees), drop and list; fewer than 2 left -> all rows approach-split unresolved",
+    "reports, dependenceThatRemains, whatDiffers, limits, words",
+    "not a gate; not used by the app; downloads nothing; held-out only at M7 after the lock, from that site's hashed sweep plan",
+    "the other fields of rule.inputList (integrity, count), rule.shape (refusal) and rule.scoring (laserCheck, unresolvedRows)"
+  ],
+  "note": "With 0.25 m thinning, neighbouring kept sweeps are closer together, so the alternating split is less independent than under shape-v1; this report-only check keeps its distance-band separation.",
+  "changeRule": "Any change to a rule here is a new addendum version with a dated reason, frozen before its own first result and before any held-out data is opened. No rule may be changed because of which rows it flips."
+}

@@ -1,0 +1,15 @@
+{
+ "file": ".local/evaluation/pao-accuracy/lock-2/protocol-lock.json",
+ "sha256": "f1923c1d08f1afe6852a81a3c3ef051975e8eb89130c728f56a506f7989a58ed",
+ "bytes": 55041,
+ "approvedBy": "Sean (conditional pre-approval; approve step run by the coordinator Claude)",
+ "approvedUtc": "2026-10-16T11:54:29Z",
+ "recordedUtc": "2026-10-16T11:54:30Z",
+ "candidateSha256": "efe2aea0b56808d6ffd0e2b58675080b48c5272bfdd777fd6e23b59f2a62e79e",
+ "repositoryHead": "9da3450a4cbf95b141a2a7d1d62614f2385773be",
+ "writer": {
+  "file": ".local/evaluation/pao-accuracy/lock/write_protocol_lock.py",
+  "sha256": "898db9a363c9a80e6bc3248add81419909cab42416cfacefeeb83b9694808509"
+ },
+ "builderCheck": "check_protocol_lock (builder v4.3) accepted the written file"
+}

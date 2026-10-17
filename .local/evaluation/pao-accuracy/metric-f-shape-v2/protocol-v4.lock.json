@@ -1,0 +1,30 @@
+{
+ "file": "protocol-v4.json",
+ "sha256": "ff981b219891543a5a0bca7067ebcc234ce0019536404032c5248a3fe623b2b7",
+ "lockedUtc": "2026-10-14T06:19:08Z",
+ "repositoryHead": "8ec75f867e5663de98ecf6fc82c5144d97305867",
+ "workingTreeDiffSha256": "61129283bf5cb662c3862c2598ed334398c52bfd72e252d4423192054b277dd0",
+ "gitStatusPorcelain": [
+  " M scripts/california/build_av2_scene.py",
+  " M scripts/california/car_shape.py",
+  " M scripts/california/prepare_av2_ground.py",
+  " M scripts/california/suggest_av2_placements.py",
+  " M scripts/evaluation/metric-f.mjs",
+  " M scripts/evaluation/metric_f_car_top.py",
+  " M src/geometry.mjs",
+  " M src/scenario-assistant.mjs",
+  " M src/scene.mjs",
+  " M tests/california/test_build_av2_scene.py",
+  " M tests/california/test_car_shape.py",
+  " M tests/california/test_prepare_av2_ground.py",
+  " M tests/california/test_suggest_av2_placements.py",
+  " M tests/car-shape-fixture.mjs",
+  " M tests/car-shape.test.mjs",
+  " M tests/evaluation/test_metric_f_car_top.py"
+ ],
+ "writer": {
+  "file": ".local/evaluation/pao-accuracy/metric-f-shape-v2/write_protocol_v4.py",
+  "sha256": "481d2b9942fa923be215d69e8f346157d610c97328f6c963ec7740e1e61b73da"
+ },
+ "note": "Locked before any metric F shape-v2 row, profile or result was computed (no rows-, profile-, results- or summary file existed in this folder or in approach-split/). The rules are transcribed from the frozen shape-v2 protocol and its base, the metric F v2 protocol and the shape-v2 split addendum and its base, whose SHA-256 values were checked when this was written. The working-tree diff SHA-256 is of 'git diff HEAD' at the lock."
+}

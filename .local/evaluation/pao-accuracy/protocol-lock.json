@@ -1,0 +1,277 @@
+{
+ "schema": "pao-protocol-lock-v1",
+ "name": "Palo Alto accuracy program: M6 protocol lock",
+ "revision": 4,
+ "status": "LOCKED (approved; held-out runs may use it after its sha256 is recorded in current.md and the anchor is pushed)",
+ "label": "AV2-referenced, development-grade, not surveyed",
+ "writtenUtc": "2026-10-16T03:58:09Z",
+ "repositoryHeadAtWriting": "53b2ebfadaa901a7819bad0eeed064d9b379002e",
+ "authority": "Sean, Oct 13 2026 (chat question tool): all 12 lock decisions (recommended answers), \"use a measured car shape\", and the shape answers (accept the coverage cost, add a split check, keep drawing the box, downloads, windows solid). Sean, Oct 14 2026 (chat question tool): \"More scans\" (shape-v2, one LiDAR sweep every 0.25 m of ego travel), \"Wait for labels v2\", \"Each street\" (metric B passes per held-out site; the pooled value is also reported). \"Wait for labels v2\" is applied as: the label v2 gate, its review and the reviewed D/E code come before this lock, and the labels addendum is pinned inside it (labels.addendum), so Sean approves them in one step. Sean, Oct 15 2026 (chat question tool): metric E \"Real spot only\" (a grid of head points with the recorded vehicle at its recorded pose and the eye at the recorded camera, metrics.E). Recorded in .local/project/pao-accuracy-2026-10-12/decisions.md.",
+ "history": "Candidate r1 (sha256 aa19954f5ce70be07f0437e4e9166f7cfeed0a850e2f05593f6c5fc3740abf58, shape-v1 and builder v4.2) failed a fresh read-only review on 2026-10-14 (1 blocker, 7 major, 5 minor) and was never shown to Sean for approval; it is kept read-only in lock/history/ with the review. Candidate r2 (sha256 8d7a8ea05918c048e4feacdc5057d0f133a14a8f5d10ad22ecc69ed9aa41108d, shape-v2 and builder v4.3) failed a fresh read-only review on 2026-10-15 (2 major, 8 minor, 1 nit) and was never shown to Sean for approval; it is kept read-only in lock/history/ with its writer and the review. Revision 3 fixes all 11 findings: the labels addendum is pinned inside this lock, the approach split runs at M7, and the runs list, the lock record and candidate checks and the approval text checks were added. It also moves metric E to the recorded view (Sean, Oct 15: \"Real spot only\"), so H and referenceBlocked use metric F alone, and pins the reviewed D/E code through the labels addendum. Candidate r3 (sha256 51e90edf0c1319e7f8c69cec6af13c08a565f9d495181017d886e2cee9404a13) failed a fresh read-only review on 2026-10-16 (2 major, 1 minor) and was never shown to Sean for approval; it is kept read-only in lock/history/ with the review. Revision 4 fixes all 3: referenceBlocked names the rows H counts (the recorded vehicle's measured-shape setback-sweep rows, as score.py and the development numbers do), and the held-out label task builder runs the M7 preflight and checks the D/E code before it reads any site, takes roles from the frozen split (never a reserve site) and records a stopped site without a task. It also writes out the development B results and that D has no minimum feature count.",
+ "split": {
+  "path": ".local/evaluation/pao-accuracy/split.json",
+  "sha256": "47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4",
+  "lock": {
+   "path": ".local/evaluation/pao-accuracy/split.lock.json",
+   "sha256": "1bcfd5442e59f93640c76d93ebc3fab564c0418251b7c3a564687022b153800e"
+  },
+  "note": "Frozen Oct 12 before any held-out image, LiDAR or calibration fetch. Annotation subsets of held-out and reserve logs were read during site selection (split.json exposureBeforeFreeze)."
+ },
+ "sceneBuilder": {
+  "protocolPath": ".local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json",
+  "protocolSha256": "5dc0ab06ac1af4f57aa96b9cea4e451e62801d4084f9b3fbc011a2ccdd11bebe",
+  "freezeRecord": {
+   "path": ".local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3-freeze.json",
+   "sha256": "ce282ff9ec953e49f45b7d4e63f9e2d4d18f1669b7eff45b2382faffcf4c2353"
+  },
+  "allowedChanges": {
+   "path": ".local/evaluation/pao-accuracy/scene-builder-v4.3/allowed-changes-v4.3.json",
+   "sha256": "0945593fb3a5af9f702c570c8edb14773639525efc1d545a4284d42546ecdb8a"
+  },
+  "builderVersion": 4.3,
+  "code": {
+   "scripts/california/build_av2_scene.py": "9ac4875c5d0a3c6e17e58ad69973e99d8ce6b1fd1d452979280ac260be155490",
+   "scripts/california/prepare_av2.py": "77949e29d8d653f3342c443ef1f5fb6e1ac0e79d8fc4c5692b818e47fc666963",
+   "scripts/california/prepare_av2_ground.py": "60a43091e34f592b2d0e91441135cd8f20c8201a440047e73bd463990d89a771",
+   "scripts/california/suggest_av2_placements.py": "e33867b0bd2d339ebe0e34f8f25e003b7da4b5475780adcba810fc9befb8559b",
+   "scripts/remap_support.py": "5676446090a3e7aec7d34763c4167a02cb02917e74f18fa9ef802e7ecb623054",
+   "scripts/sponsors/common.py": "445d5dd2572c1daef4fc98d0cceceb3c97cbd0f54e2025d6361d8baa5c9f9ec1",
+   "scripts/prepare-stereo-crop.py": "d1d105b55e06df1377cbe7a26a66f504e92b5e0879227058bf98e4b0f3ee7cb4",
+   "scripts/rectified_calibration.py": "9cbe472d0385597f0ad80677ce0d69a7df093ba93c6dccec26440d8422033914",
+   "scripts/california/car_shape.py": "ed45c8446abe47e276ad08bdb77461ee429673699c68d6453c4ce044853367e7"
+  },
+  "variant": "v4-18.5",
+  "frameRule": "first feasible frame (the frame semantics builder v4/v4.1/v4.2/v4.3 implement); the driver eye starts near 18.5 m",
+  "whyV43": "Sean chose builder v4.1 on Oct 13 (item 6) as the reviewed version, before any car shape existed. His later answers (\"use a measured car shape\", Oct 13; \"More scans\", Oct 14) need builder v4.3: the v4.1 choice rules and parameters unchanged, placement protocol v3.4 (which replaces the v3.2 named on Oct 13, through v3.3; it adds the recorded vehicle's carShape pinning shape-v2) and car_shape.py as new runtime code. Three existing runtime files changed from v4.1: build_av2_scene.py, prepare_av2_ground.py and suggest_av2_placements.py. Review status: builderCompareV42V43 passed (v4.3 makes the same frame and scene choices as v4.2, which made the v4.1 choices, on every development run), and the shape-v2 build had a fresh read-only review (PASS-WITH-FIXES, all four findings fixed). This lock asks Sean to approve v4.3 explicitly.",
+  "whyV43Evidence": {
+   "builderCompareV42V43": {
+    "path": ".local/evaluation/pao-accuracy/scene-builder-v4.3/compare-v4.2-v4.3.json",
+    "sha256": "4711a75b7589029d5de0d76d1f2b0fc231562c9e23a32f0edd7784c93f59b49e"
+   },
+   "shapeV2Review": {
+    "path": ".local/evaluation/pao-accuracy/shape-v2-review-2026-10-14/README.md",
+    "sha256": "1aa115837cb1647e52251b3fead2c3f9915ac2289e43810b33be777cedd24594"
+   }
+  }
+ },
+ "pipeline": {
+  "commit": "53b2ebfadaa901a7819bad0eeed064d9b379002e",
+  "placementProtocol": {
+   "path": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json",
+   "sha256": "330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22",
+   "freezeRecord": {
+    "path": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4-freeze.json",
+    "sha256": "c0b0deab2e40bbcce2620d486d918e3a1c6fa89b6871bbe2332b405ea0139f4a"
+   }
+  },
+  "shapeProtocol": {
+   "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+   "sha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a",
+   "freezeRecord": {
+    "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.lock.json",
+    "sha256": "697b3d3a5057f8f1e2596429857952ea29bcdaab710dd07d45f48e24a70ddb86"
+   }
+  },
+  "shapeSplitAddendum": {
+   "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+   "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838",
+   "freezeRecord": {
+    "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.lock.json",
+    "sha256": "8118d9fbae0493d023911edf7b5dffb1a87eeb7ef4941909ad38e645b7a20805"
+   },
+   "role": "report-only evaluation check; never changes ground.json or a result the app shows"
+  },
+  "scoringCode": {
+   "scripts/evaluation/pao-baseline.mjs": "01cbe1fe068b8cd743a63dea16e22b3580a4c2cd8dab178dab0f337c7db69205",
+   "scripts/evaluation/metric-f.mjs": "bbb884790e54222faced0b00fda72e6a4d5e8097f91275bda614f631973786b6",
+   "scripts/evaluation/metric_f_car_top.py": "f27520a745d7bd1530f4d53ce4d10744181a8afa7edac372541e47f7f6186dfd",
+   "src/scene.mjs": "eb46f812b4bc58919007a84603799055ef4302dbb0430c76130f787a2f186353",
+   "src/suggestions.mjs": "e8fb67b93768dff2b4866f2ef83ae5c20d64eb2987a448369997e5ae74d928f4",
+   "src/geometry.mjs": "fdc15cecf7cf8c102eb1b85d8a866ac32d861ca9a8d79f392e2f7ea71ff48f4f",
+   "src/scenario-assistant.mjs": "682ebd7733dcc238eea255329c2b7f7b0adf2d9b3f4aa9efc4e3d53869dbe2bf",
+   "scripts/california/assemble_av2_scene.py": "ad382c6fa7daa0d2b3218c6f169e1ac27d802cf0c39b1297466d685c3d4f5a74",
+   "tests/av2-ground.test.mjs": "90b5c1c324c661f38c49a8827277907a83aa16231ab26582ec65d16075e67331",
+   "scripts/evaluation/metric_k.py": "87ddd45557900caf132452f77ebc1bfdd8a366f4e95c35f0605d47e5d209eacd"
+  },
+  "m7Code": {
+   "scripts/evaluation/m7/run_heldout.py": "e942e59892ddfb9eee4defc7b582343f860005a2e36fdff8d109510d2a75d8fa",
+   "scripts/evaluation/m7/paint_heldout.py": "5461409bc77efc70861018d30a3742f202b07e1aaa4ec08e9e759e14b831c88d",
+   "scripts/evaluation/m7/common.py": "adaca3e839358b6e26ec50a68e33c607bd504424cff526ea15a36ba9e3d2dc1a",
+   "scripts/evaluation/m7/evaluate_site.py": "3601f64e71e8deb47559ed0d54ab001a59a9557f26b31f522c38efe3030e05fb",
+   "scripts/evaluation/m7/score.py": "916b7c38c03f09bee55676d14f704dbd1b7a5b25ca47ff7de5b39adcf87940e6",
+   "scripts/evaluation/metric-e-grid.mjs": "30d09fbca594e3221a337191952106127b574322f803129efbc055da11dba32a"
+  },
+  "scoringCodeRule": "M7 runs from the main checkout (the ignored .local/ protocols and data exist only there) with an empty git status. HEAD must contain pipeline.commit, and its tracked files may differ from it only in the anchor files (scripts/evaluation/pao-lock-anchor.json and scripts/evaluation/m7/anchors/). The drivers (pipeline.m7Code) check that, the lock record (lock/protocol-lock.record.json naming this lock and its candidate), that this lock is byte for byte the candidate its approval names once status and approval are put back as shown, the lock anchor on origin/main (written once), every sha256 in this lock and the labels addendum (labels.addendum) before any held-out network or file access. Builder runtime code is pinned in sceneBuilder.code.",
+  "declaredDefaultTrack": "A scene whose builder plan names no current-vehicle track (a declared default vehicle) gets currentVehicle.trackPrefix \"declared-default\" in its per-scene placement protocol. No AV2 track id starts with it, so the frozen suggest_av2_placements.py takes its declared-default path (a missing prefix would crash it). Set before any held-out access.",
+  "m7Steps": "All from the main checkout with nice -n 10, pinned in pipeline.m7Code. Per site: run_heldout.py (scene build). Per held-out crossing: paint_heldout.py (metric A). Per site: evaluate_site.py runs pao-baseline.mjs --scene (B, C, I; J Node values), on a site with the recorded vehicle's LiDAR shape metric F protocol v4 rows, profile (scoring sweeps only) and score (no --box-rows-from), then the approach split (metrics.FApproachSplit: car_shape.py approach-split with --held-out-run, metric F rows with that shape, profile on the near half, score next to the metric F results), then metric_k.py, then (with the labels addendum) metric-e-grid.mjs (the metric E grid at the recorded view, metrics.E) and the addendum-pinned D/E scorer (--site, --e-grid when the grid step passed, --labels, --out), then score.py site (pass, fail or not scored per target, by the rules in metrics, referenceBlocked and statistics). A failed scoring step is handled like a site with no feasible frame for its own targets (dataAccess): B cannot pass, H is a miss at a Blocked-test site, the others are not scored; a failed approach-split step leaves only FApproachSplit not scored, and a failed metric-e-grid step leaves only E not scored. On a site without the recorded vehicle's LiDAR shape H has no reference-blocked row (listed by name, leaves the count) unless the app's child setback sweep is all-Unknown (a miss). Each build receipt records the labels addendum sha256 (or null) the run works under; score.py refuses a held-out site built under another value than the committed anchor. When the labels addendum exists, score.py site also takes that site's D/E file from the addendum-pinned D/E scorer (labels.scoringCondition) and refuses one made by other code, for another ground.json, under another addendum, or (held-out) from labels other than the committed label manifest lists for the site; a D/E file that repeats a JSON key is refused. evaluate_site.py keeps a D/E file only after the same checks pass and its decoded text holds neither the coordinator-only folder nor the banned word (else its labels-de step is refused, a failed step). Held-out, evaluate_site.py waits up to 1 hour for the git fetch of origin/main before its score step and records the wait. Held-out, run_heldout.py, paint_heldout.py, evaluate_site.py and score.py need the committed lost-site list (statistics.lostSiteRule) and refuse a lost site; evaluate_site.py runs only on the folder the build marker names, with --paint the folder the paint marker names holding one paint record made from that site record (checked before its own marker); score.py site and summary run preflight (the approved lock, with this score.py pinned) and each site score records the sha256 of the lost-site list, label manifest and runs list it was made under. After every held-out build and paint run has its record and before any evaluate_site.py run, score.py runs-list writes the runs list (statistics.oneRunRule), which the coordinator commits and pushes; evaluate_site.py and score.py site refuse a site record or paint record it does not name. A marked run that ended (its process is gone) without its own record is recorded once afterwards and never rerun: run_heldout.py --record-interrupted (site-stopped.json, step \"interrupted\": a site with no feasible frame), paint_heldout.py --record-interrupted (paint-stopped.json: A not scored), evaluate_site.py --record-stopped (evaluate-stopped.json, used when the score step failed or no receipt was written; score.py site --evaluation-stopped scores it into stopped-score.json like a site with no feasible frame, with A from the marked paint record). Last: score.py summary over exactly the held-out sites minus the committed lost-site list (scripts/evaluation/m7/anchors/lost-sites.json): B pooled, D per site and pooled, misses with the Clopper-Pearson bound, false Blocked, the reported FApproachSplit values, and by name every site the label manifest lists with labels whose D or E is not scored. It refuses scores made by more than one scorer or labels addendum, a held-out site without its paint record (A is fail-only: a missing paint run could hide a fail), and, when the addendum is anchored, a site the label manifest lists with labels but scored without its D/E file (unless its labels-de step failed, its evaluation stopped or it has no built scene) or a D/E file the manifest does not list. It also refuses a site score made under another lost-site list, label manifest or runs list than the committed ones, of another site record or paint record than the runs list names, made by another score.py than the locked one, or not from the one marked run of each step: a scored site's failed steps must equal the receipt of that evaluate_site.py run (a failed step is never taken from a bare command-line claim), and a stopped site must come from that run's evaluate-stopped.json."
+ },
+ "resultRules": {
+  "states": [
+   "Blocked",
+   "Unknown (with a named reason)"
+  ],
+  "clear": "does not exist; the app never claims a person is visible",
+  "singleRule": "assessSightline in src/geometry.mjs (pinned in pipeline.scoringCode)",
+  "tooCloseToCallM": 0.1,
+  "unknownReasons": {
+   "driver-inside-vehicle": "driver inside a vehicle",
+   "person-inside-vehicle": "person inside a vehicle",
+   "driver-inside-object": "driver inside a real object",
+   "person-inside-object": "person inside a real object",
+   "overlaps-real-object": "overlaps a real object",
+   "too-close-to-call": "too close to call",
+   "height-not-proven": "vehicle height not proven"
+  },
+  "sceneRefusals": "named codes in the reason text (for example crossing-skew-over-limit, crossing-point-off-edge-segment); a refused scene gives Unknown, never a silent point",
+  "missingEvidence": "Unknown; a missing intersection alone never means visible",
+  "vehicleModel": "Recorded stationary vehicle: a line that cuts >= 0.10 m into its box stays Blocked only if it is also >= 0.10 m deep in the LiDAR shape (shape-v2: sweeps every 0.25 m of ego travel, at most 40, alternating shape and scoring); otherwise Unknown \"vehicle height not proven\". The shape never adds a Blocked. Windows count as solid. The box is still drawn in the app. Declared, resized and replacement vehicles: the box.",
+  "driverEye": "camera height (1.47 m), labelled",
+  "placementLimitM": 30,
+  "declaredVehicle": "declaring a different current vehicle replaces the real car (labelled)",
+  "stationaryPose": "average of all annotations (placement protocol v3)",
+  "heldOutHeightBand": "Placement protocol v3.4 alongRayUncertainty.heightBand.allowedOnlyFor: on a held-out scene the band is fixed, never refit. Fixed value: 0.075 m, fittedOn \"8c52d911/2658849 app scene (grounded-v3.4, placement protocol v3.4)\", the largest development fit (c780d53a/2069452 v4-18.5 0.047 m, 8c52d911 builder frames 0.069 and 0.070 m, 453e5558 guard check 0.066 m). Each held-out ground.json records its own residuals as a test of that band (heldOutResiduals); nothing is fitted on held-out data."
+ },
+ "clicks": {
+  "locked": "whole pixel: floor(uv + 0.5), the M0 definition, for metric B and the error budget",
+  "diagnosticOnly": "fractional (exact projection)"
+ },
+ "tooCloseToCall": {
+  "marginM": 0.1,
+  "statement": "Kept at 10 cm and stated as not fully covering the worst case: the largest value of each small steady error from any development scene sums to 0.125 m (straight) or 0.069 m (root-sum-square). Per scene the straight sums are 0.050-0.063 m. Box shape, the LiDAR shape's own height error, frame rule, click error and photo registration are not covered. Never tuned to development rows."
+ },
+ "referenceBlocked": "Only the real recorded vehicle with its measured LiDAR shape (shape-v2): its child (1.1 m) rows of the app's setback sweep, the rows metric F scores (the same vehicle moved along its lane axis to each setback on the 0.25 m grid). These are the rows the development result in metrics.H counts. Rows of declared vehicles and hypothetical default-SUV rows never count, at any site. The recorded position itself is not on the row grid; its nearest row is reported, information only. A site without the measured shape (built-box) has no counted rows. A child row is reference-blocked when metric F (pinned protocol, scoring sweeps only) classes it \"supported\". F \"ambiguous\" and F-unresolved rows are listed by name and are neither reference-blocked nor reference-not-blocked. Metric E never changes a row's reference: its grid points are at the recorded view, not at the setback rows (metrics.E). Metric K is never a reference source: it is report-only evidence against Blocked.",
+ "metrics": {
+  "A": "Fail-only check. At each held-out crossing run both frozen paint v4 LiDAR estimators (paint protocol v4, code paint.codeV4, 15 up_lidar sweeps chosen by paint v4's own sweep selection), unchanged, after this lock, through the held-out paint tool pinned in pipeline.m7Code: it reuses paint v4's exact parameters and refuses to run without this approved lock. Paint v4 scope.heldOutUse requires a fresh independent review of paint v4 before held-out use: paint.v4Review. Offset = each estimator's edgeSAtEval in paint v4's result.json: meters along the approach travel direction from the mapped near edge to the paint onset, positive when the paint starts past the mapped edge, read at result.json frame.evalL; score.py refuses a result.json whose protocolSha256/scriptSha256 are not paint v4's. A fails at that crossing only when both |offset| >= 0.30 m, they agree within 0.15 m and paint v4's own decision (nearEdge.status, which adds its precision rule) is \"resolved\"; would-be fails that paint v4 does not resolve are listed as not confirmed by paint v4 (not scored). Disagreeing by more than 0.15 m: \"estimators disagree\" (counted, not scored). Otherwise: not scored (no validated paint method); both offsets reported. A never passes: \"not scored\" says nothing about the map, and the summary states how many crossings were scored. A fail means the true offset is very likely at least about 0.20 m, not proven to be 0.30 m. A look-alike line before the crossing (a bright band, a stop line, a faint first stripe) can fool both estimators the same way; such a fail still counts against the app and is reported with this caveat (Sean, Oct 14: \"count it against us\"; no blind photo check). A paint run that stopped after paint v4 wrote its result.json is still not scored and is listed by name (stopped after measuring). No paint v6 (Sean, Oct 13).",
+  "B": "Click-to-ground error at 12-25 m, whole-pixel clicks, all three parts hard: (1) p95 <= 0.76 m; (2) the shown band (fitted on development) covers >= 95% of held-out errors; (3) the shown band is no wider than +/-0.76 m at every placed point (median and p95 also reported). Computed per held-out site: every held-out site with a built scene (Blocked-test sites, the left-side case and the controls) must pass all three parts on its own (Sean, Oct 14: \"each street\"); the pooled values over those sites are also reported. The shown band uses resultRules.heldOutHeightBand. A site without a built scene is listed by name and B cannot pass. Placement beyond 30 m refused. Failures are reported, not relaxed. Development rehearsal (the M7 scoring code on the two development sites, m7-rehearsal-2026-10-14/8c52d911-2658849-r3-eval/score.json and c780d53a-2069452-eval/score.json; the band was fitted on development, so this is not a held-out measurement): 8c fails parts (1) and (3) (p95 0.897 m, band max 1.709 m; coverage 0.966 passes) and c780 fails part (2) (coverage 0.887; p95 0.756 m and band max 0.732 m pass). So B may fail at held-out sites.",
+  "C": "Suggestion points vs their source points <= 0.05 m for the point the app uses. Internal consistency only, never called accuracy. Vehicle-front pixel-ray distance reported as a diagnostic, no target.",
+  "D": "Vehicle registration in the photo: median <= 3 px and max <= 6 px at 1024 px width over the left edge, right edge and roofline errors: the aggregated labels L, R and the resolved roofline stations S1-S3, each against the app's recorded-vehicle model as ground.json defines it (the LiDAR shape where measured, else the box) projected into the recorded photo. Unresolved labels are left out and counted; each of L, R, S1, S2 and S3 is given once, either as a finite error or as unresolved. There is no minimum number of resolved features: one is enough to pass or fail, and a site with none is not scored. Computed per held-out site with a labelled recorded vehicle; each such site must pass on its own, as for B; pooled values also reported. Scored only under labels.scoringCondition, by the D/E code the labels addendum pins; otherwise \"not scored: reference not precise enough\".",
+  "E": "Result at the recorded view vs a blind photo outline, with the recorded vehicle only at its recorded pose (Sean, Oct 15: \"Real spot only\"). Grid: metric-e-grid.mjs (pipeline.m7Code; rule text E_GRID_RULE, from the loaded scene alone, never labels or a photo outline): ground points on a 0.25 m world X/Z grid with mapped ground under them, from the farthest corner of the recorded vehicle's box footprint plus 0.5 m to that plus 10 m from the eye, inside the footprint corners' bearings widened by 2 degrees each side, each with a child (1.1 m) and an adult (1.5 m) head point above the mapped ground. The eye is the recorded camera and the vehicle is the recorded vehicle at its recorded pose with its car shape (the suggested setup at the full captured distance); each grid row holds the app's own result (assessSightline, the call the app's current result makes). With the eye at the camera, the eye-to-head line is the photo ray through the head point's pixel. Each row's head point is projected into the recorded photo (stereo_front_left at the built scene's cameraTimestampNs, camera from the build-pinned prepared/manifest.json) and compared against the aggregated labels of the recorded vehicle (L, R, T, B and roofline stations S1-S3). Margin m = 3 px at 1024 px width (6 px full resolution) plus the largest stated label range involved. Resolved not blocked: left of L - m, right of R + m, above T - m, or between two neighbouring resolved stations and above both by m. Resolved blocked: between two neighbouring resolved stations, below both by m, above B - m, with the vehicle nearer the camera than the target. Every other point is unresolved and listed (also a point outside the photo or behind the camera). Between two stations the roofline is taken to stay between their two heights; every E result states this assumption. Target: 0 false Blocked (app plain Blocked where E is resolved not blocked) per site; a site with no resolved point is not scored. The only check of a shape Blocked independent of the LiDAR; small sample (one recorded view per scene, at the recorded pose only). E's rows are exactly the grid's rows (one per row, with that row's app state). If the grid's eye is not the photo camera centre within 0.01 m, or the grid does not name the recorded vehicle at its annotated box (its track, centre, axis, length, width, height and car shape identity), every row is unresolved and E is not scored, with that reason. A site without an annotated recorded vehicle, or with a failed metric-e-grid step, has no E (not scored). Scored only under labels.scoringCondition, by the D/E code the labels addendum pins; otherwise not scored.",
+  "F": "Metric F shape-v2 (protocol v4, pinned in metricProtocols.F): consistency and code cross-check of the vehicle model, not accuracy evidence for the recorded vehicle's shape; zero likely-false rows is expected by construction. Reference: LiDAR car top from carShape.sweeps.scoring only (alternating split). Laser rule: F's frozen laser check (0.15 degrees) applies to each scoring sweep; a failing sweep is dropped and listed, and with fewer than 2 scoring sweeps left every row of that site is F-unresolved. Target: 0 likely-false rows per site (a failure means a bug). Unresolved rows are listed and never counted as passes.",
+  "F0": "No new Blocked: every shape Blocked row is box Blocked, and every row obeys the shape-v2 allowed-change table. Internal check. Target: 0 violations.",
+  "FApproachSplit": "Report only (shape-v2 split addendum, pinned in pipeline.shapeSplitAddendum): at every held-out site with the recorded vehicle's LiDAR shape, after metric F, an evaluation-only shape built from the far half of the approach (car_shape.py approach-split --held-out-run, from that site's hashed sweep plan) is scored on the near half with metric F protocol v4 and compared with the app's metric F results. Per height: rows, box and shape Blocked, supported and lost rows, app Blocked where the approach shape is height-not-proven, and the reverse. Never a pass or a fail, never read by another target, never changes a result the app shows. A failed approach step leaves only FApproachSplit not scored: it is never a miss and changes no other target. Sean chose this check on Oct 13 (\"add a split check\").",
+  "H": "Useful coverage: at each Blocked-test site at least half of the reference-blocked child (1.1 m) rows (referenceBlocked: the recorded vehicle's measured-shape setback-sweep rows) are reported Blocked. No Blocked-test site may be all-Unknown. A Blocked-test site with no feasible frame fails H (a miss). Adult (1.5 m) reported, no target. Development result, locked variant v4-18.5, shape-v2 (tuning set, metric-f-shape-v2/README.md): of the child rows F supports, the app keeps 21 of 36 Blocked on 8c (58%) and 5 of 17 on c780 (29%); with the box alone it kept all of them. At the 50% target H passes on 8c and fails on c780, so H may fail at held-out sites. Sean accepted \"child keeps about 65-86%\" on Oct 13 before these measurements.",
+  "I": "Honesty: 0 Blocked with the person or driver inside a box; 0 real-object overlaps reported as Blocked; 0 out-of-range inputs accepted; 0 sentences of the fixed bad-sentence set pass the answer check. The set is the 11 \"wording\" and 4 \"role\" sentences in tests/av2-ground.test.mjs (pinned in pipeline.scoringCode), with each number replaced by the held-out site's own value of the same role: 0.42 m by the suggested setback, 1.49 m by the recorded vehicle's height and 1.88 m by its width; the three values written to two decimals must differ from each other, else I fails (a role sentence could be true). Each must fail with the same kind (\"wording\" or \"role\"). Counts over 3000 seeded placement samples (fewer, or a sweep error, leaves I not scored unless a count is already above 0); each out-of-range case must be refused by its own field's rule. A scene without a suggested setup leaves I not scored.",
+  "J": "Speed on Sean's Mac: first result <= 500 ms after a cold page load; Drag/Compare update p95 <= 16.7 ms; setback sweep p50 <= 5 ms with the shape, measured alone.",
+  "K": "LiDAR-shadow check, report only (scripts/evaluation/metric_k.py, pinned in pipeline.scoringCode): the frozen protocol v3.1 lidarShadow rule, which every scene protocol carries unchanged, on the recorded vehicle's tested box. Per site: rays through the box (K1) with cut depth p50/p95/max, and unboxed returns (K2), from the scene sweep and, separately, from the scoring sweeps the shape result is scored with. A scene without a recorded-vehicle box is not scored. K classifies no row: Blocked rows with LiDAR evidence against them are metric F's likely-false rows, listed in the F results. Never a reference source (referenceBlocked).",
+  "errorBudget": "Combined (root-sum-square) setback error <= 0.76 m for suggested positions; dragged positions reported, no target. Real car height is modelled by the LiDAR shape (shape-v2) for the recorded vehicle; declared vehicles keep the box. Today: not established (lower bounds only).",
+  "stretch": "Report only: road direction vs lane paint <= 1.0 deg; curb estimate vs LiDAR curb step <= 0.20 m.",
+  "outcomes": "Each target is written as pass, fail, or not scored (with its reason)."
+ },
+ "metricProtocols": {
+  "F": {
+   "path": ".local/evaluation/pao-accuracy/metric-f-shape-v2/protocol-v4.json",
+   "sha256": "ff981b219891543a5a0bca7067ebcc234ce0019536404032c5248a3fe623b2b7",
+   "lock": {
+    "path": ".local/evaluation/pao-accuracy/metric-f-shape-v2/protocol-v4.lock.json",
+    "sha256": "f6a1f9fd4f2ca7bdc4c7a8f0607ca479cf118503cb5a3302240524f2a606cbcf"
+   }
+  }
+ },
+ "paint": {
+  "protocolV4": {
+   "path": ".local/evaluation/pao-paint/protocol-v4.json",
+   "sha256": "f9a52b440180e84c67d78dfb963849da73d7131f7bcaaf9ea6d0e94fafdfe273",
+   "lock": {
+    "path": ".local/evaluation/pao-paint/protocol-v4.lock.json",
+    "sha256": "f3f2ce439cdbcc1cc8b92c872aaa379936094bae41810d62368f178957b34399"
+   }
+  },
+  "codeV4": {
+   "path": ".local/evaluation/pao-paint/code-v4/measure_paint_edge.py",
+   "sha256": "bd2c6996551e03fc39160cbcb718f314467334979264816dca4f14fd0f92617a"
+  },
+  "v4Review": {
+   "path": ".local/evaluation/pao-paint/review-v4-heldout-2026-10-14/review/README.md",
+   "sha256": "ebdba40c524704ad4acc7cb57b40d2d1ea0aab087c272f3229e6da91d8f22e6a"
+  },
+  "v4ReviewFollowUp": {
+   "path": ".local/evaluation/pao-accuracy/m7-review-2026-10-14/README.md",
+   "sha256": "5817931a60cc4d629b5d0b445cf6dfeb722f8232dd2dfdefb73395166cebb414",
+   "note": "the v4 review returned fix; its 10 findings were applied in de163f1 and checked by this fresh M7 re-review (section \"The 10 paint v4 review findings\"); the two it left open were fixed in e6154dd and d2b5023 (run markers), checked by m7-review2 and m7-review3"
+  },
+  "appBound": "the app keeps the mapped crossing edge with the v4 bounds (8c +/-0.18 m, c780 +/-0.26 m)",
+  "note": "scripts/california/measure_paint_edge.py now holds paint v5 (development only, not for held-out use)"
+ },
+ "labels": {
+  "v1": {
+   "gate": "FAILED on coverage (resolved share 0.055 vs 0.70)",
+   "report": {
+    "path": "$PAO_LABELS_COORDINATOR_DIR/pao-labels/pao-labels-v2/moved-from-repo/.local/evaluation/pao-labels/validation-report.json",
+    "sha256": "b0bd33a7ca26f4fc88e584793cb21db3a51d53c2296592a09c1960bef89b3fba"
+   }
+  },
+  "v2": {
+   "protocol": {
+    "path": ".local/evaluation/pao-labels/v2/protocol-v2.json",
+    "sha256": "c35dff1792b737c039a7a324ea3f56e90876cc98e1c329c1a036b284c775367b"
+   },
+   "lock": {
+    "path": ".local/evaluation/pao-labels/v2/protocol-v2.lock.json",
+    "sha256": "deed6614a6fce86c5791aa166abcb70a40ad1571e91baeb8007a6de1b6ed4d93"
+   },
+   "gate": "protocol-v2.json scoring.syntheticGate and lidarCoarse, in full-resolution pixels: resolved share >= 0.70; at least 10 exact aggregated features in each family (car extremes, roofline profile, tire contacts, paint); car extremes, roofline profile and tire contacts median |error| <= 2 px and max <= 4 px; paint median <= 1 px and max <= 2 px; LiDAR coarse check consistent share >= 0.80 with an 8 px registration allowance. This lock adds: repeat-label spread <= 3 px at 1024 px width (6 px full resolution), the largest |original - blind repeat| over the resolved features of the repeat cases."
+  },
+  "addendum": {
+   "path": ".local/evaluation/pao-accuracy/lock/labels-addendum.json",
+   "sha256": "c1c61b3d19cf5cea749fb1436de86a2e4a73f233e0603fa0cbd767713deb55a8"
+  },
+  "noAddendum": null,
+  "scoringCondition": "D and E are scored only under the labels addendum this lock pins (labels.addendum), which Sean approves together with this lock. It was written before this lock, after all of these held: (1) label protocol v2 (labels.v2, locked with lock_protocol.py) ran on its development tasks; (2) its gate passed (labels.v2.gate, with the repeat-spread limit this lock adds); (3) a fresh read-only review of that gate result passed; (4) the D/E code (the held-out label task builder and the D/E scorer) was written after the gate passed and passed a fresh read-only review. The addendum (lock/labels-addendum.json) holds only the v2 protocol sha256, its lock record, the gate result, the gate review record and the D/E code pins (with the record of the D/E code review). Its sha256 is also committed and pushed in the tracked labels addendum anchor (scripts/evaluation/m7/anchors/labels-addendum-anchor.json) before M7 starts; preflight refuses unless the addendum file, that anchor and labels.addendum agree. labels.addendum is null only if the gate failed and Sean answered to run M7 without D and E (labels.noAddendum holds his recorded answer); then there is no addendum file and D and E are \"not scored: reference not precise enough\". The D/E code is written only after the gate passes, implements metrics.D and metrics.E as written here, names the sha256 of the labels it used, and its output is the only D/E input score.py site accepts (checked against the addendum pins). The D/E code lives in the ignored folder .local/evaluation/pao-accuracy/lock/de-code/: the addendum pins every file in it (deCode.files: repository path and sha256; nothing else in the folder, no link) and names the scorer (deCode.scorer, one of those files); evaluate_site.py and score.py refuse when the folder differs. The scorer runs with python -I -B and can import only the standard library, that folder and files this lock pins. It writes into a new temporary folder outside the repository; its output is kept (labels-de.json) only if it names neither the coordinator-only folder nor the labels folder, otherwise the labels-de step is recorded as refused (a failed step). The output has exactly the keys kind, site ({logId, crossingId} strings), groundSha256, labelsAddendumSha256, labels ({sha256} only), scorer, D and E. Held-out labels: after every held-out site is built and before evaluate_site.py runs anywhere, one car task per site whose recorded vehicle is in the builder's photo (task region from the AV2 annotation cuboid, never an app output), made by the addendum-pinned held-out label task builder from the build-pinned photo (stereo_front_left at the built scene's cameraTimestampNs, checked against the build's prepared/manifest.json), under anonymous task ids (the site map is written only inside the coordinator-only folder), labelled, scanned, aggregated and hashed exactly as in the gate, one task list and one aggregate per site; the label manifest (scripts/evaluation/m7/anchors/labels-manifest.json: the addendum sha256 and every held-out site once, with its label aggregate's sha256, or null and the reason) is committed and pushed before any held-out app result is computed or viewed by the coordinator or a labeler. evaluate_site.py takes --labels exactly for the sites the manifest lists with labels, with that sha256, from inside the coordinator-only folder named by PAO_LABELS_COORDINATOR_DIR.",
+  "method": "Fresh AI agents that never see the app output draw the references (never called human labels); one fresh agent per (labeler, task); labels hashed before scoring.",
+  "answerIsolation": {
+   "rule": "Answer-bearing files live outside the repository in the coordinator-only folder named by PAO_LABELS_COORDINATOR_DIR (v1 files moved Oct 14).",
+   "moveRecord": {
+    "path": ".local/evaluation/pao-labels/isolation-moves-20261014T031706Z.json",
+    "sha256": "9e2a033d7980cdc30daea42df7e1755de0e7c5930f541a01fcbdba8f4d597a55"
+   }
+  }
+ },
+ "sites": {
+  "heldOutBlockedTests": [
+   "88f47a10/2659268",
+   "3153b5b3/2659599",
+   "d33f667d/2399287"
+  ],
+  "heldOutLeftSideCase": "fd5c6932/2659589 (expected Unknown)",
+  "heldOutControls": [
+   "25e5c600/2659878",
+   "e1d68dde/5987490 (declared vehicles only)"
+  ],
+  "development": [
+   "8c52d911/2658849",
+   "c780d53a/2069452 (second development crossing)"
+  ],
+  "doesNotApply": "453e5558/20499018 (expected Unknown with crossing-skew-over-limit and crossing-point-off-edge-segment)",
+  "reserve": "split.json reserve sites stay unopened; they cannot replace a Blocked test",
+  "plannedMinimumNotMet": "split.json planned 4 Blocked-test sites and has 3; no untouched intersection is left to add"
+ },
+ "dataAccess": [
+  "Before any held-out access: this lock is approved; its sha256 is recorded in current.md and committed in the tracked anchor (anchor) and pushed to the private remote. The labels addendum anchor (scripts/evaluation/m7/anchors/labels-addendum-anchor.json: the sha256 labels.addendum pins, or null only under labels.noAddendum) is committed and pushed too; the drivers refuse unless the addendum file equals it and labels.addendum (null: no addendum file).",
+  "M7 step 1 (logged): fetch the public S3 listings for the held-out logs.",
+  "Read each held-out log's calibration (about 10 KB per log) to confirm the stereo setup; the log metadata files are downloaded before this check. A site whose log fails the check is recorded as not built (as a site with no feasible frame): B fails for it, a Blocked-test site counts as a miss, and the other targets are \"not scored: calibration\".",
+  "Per site (run_heldout.py): the log metadata the frozen builder reads (annotations, poses, calibration, intrinsics, 3 map files; about 4 MB for a development log, 16 MB cap per file), then one stereo pair and one LiDAR sweep for the builder's chosen frame. Per held-out crossing (paint_heldout.py, on the same receipted metadata): the 15 sweeps that paint v4's selection names (about 1 MB each; plan.md said 10, paint v4 fixed 15). A paint step that fails leaves metric A \"not scored\" at that crossing only.",
+  "Shape sweeps: at most 40 per held-out site by the frozen shape-v2 sweep rule (ego within 30 m, >= 0.25 m ego travel between kept sweeps, alternating shape/scoring); the sweep plan is hashed before any download. Shape sweeps use car_shape.py's frozen attempt rule (4 attempts, waits 5/10/20 s); a sweep that never downloads is recorded as dropped, as in shape-v2, and does not stop the site.",
+  "Every download has a size/ETag/SHA-256 receipt. A failed or mismatched download may be retried at most 3 times, each into a new empty folder; a file that never matches stops that site, which is then handled like a site with no feasible frame. Any other step that fails stops that site with the step named; it is not rerun and is handled like a site with no feasible frame (a miss for a Blocked-test site). Public AV2 files only, $0. Run the frozen builder and pipeline once: each held-out driver (run_heldout.py, paint_heldout.py, evaluate_site.py) writes a run marker for the site (.local/evaluation/pao-accuracy/m7/run-markers/, new files only) naming its output folder and its process before that folder is made, and refuses a second run; the summary refuses a site score that is not from the folders the markers name. A marked run that ended (its process is gone) without its own record (for example a crash or a power loss) is recorded once afterwards with the same driver (run_heldout.py and paint_heldout.py --record-interrupted, evaluate_site.py --record-stopped; pipeline.m7Steps) and handled like a site with no feasible frame (paint: A not scored); it is never rerun. The git fetch of origin/main that every held-out check runs is tried at most 3 times, 10 s apart, each stopped after 120 s together with every process it started. Every record and log is written whole or not at all (a temporary file, flushed to disk, then linked to its new name). Step logs, error text and every written file keep the coordinator-only labels folder out, as given, resolved or relative to the repository, in any letter case or JSON escaping (replaced by a placeholder; text that still names it is withheld whole; a file that names it is refused); no step is given the environment variable that names it, and evaluate_site.py, when given held-out labels, refuses that folder or the temporary folder inside the repository."
+ ],
+ "statistics": {
+  "unit": "one intersection (queries at one site are correlated)",
+  "falseBlocked": "When metric E is scored: the app reports plain Blocked for at least one E grid point at a site where E shows that head point resolved not blocked. Real recorded vehicles only. Counted over every held-out site with at least one E-resolved result for a real recorded vehicle; a site with none is listed by name and left out of the count. When E is not scored, false Blocked is \"not measured independently\": no bound is stated, and metric F's likely-false count is reported only as a same-LiDAR consistency check.",
+  "miss": "A Blocked-test site that fails metric H, including an all-Unknown site and a site with no feasible frame. Counted over the Blocked-test sites; a site with no reference-blocked child row is listed by name and leaves the count.",
+  "method": "One-sided 95% exact binomial (Clopper-Pearson), separately for each error kind, from the counts after scoring; never a number fixed in advance. With 0 errors in k sites the upper bound is 1 - 0.05^(1/k): 3 sites 63.2%; with 1 or 2 misses at 3 sites 86.5% or 98.3%.",
+  "lostSiteRule": "Before the first held-out build the coordinator writes the list of lost sites (possibly empty) as scripts/evaluation/m7/anchors/lost-sites.json, each entry with logId, crossingId, evidence (non-empty text) and date (YYYY-MM-DD, no later than the UTC day of the list's one commit), commits it and pushes it; run_heldout.py, paint_heldout.py, evaluate_site.py and score.py refuse without it and refuse a lost site. Each build and paint record holds the list's sha256, and score.py refuses one made under another list. A site is lost only on evidence dated before that commit that it was opened before this lock or guided a code change; the pre-freeze annotation exposure in split.json exposureBeforeFreeze does not make a site lost. A lost site moves to development and leaves both counts; it cannot be replaced, so the bound widens. The list is written once, so no site can be declared lost after it is committed. A site run once with no feasible frame is not lost: it stays in the miss count. Any code change after the first scoring run is exploratory: its results are labelled exploratory and never replace the first result. Replaces plan.md M7 line \"A lost Blocked site cannot be replaced, so the bound widens (2 sites = 77.6%)\".",
+  "oneRunRule": "Each held-out site is built, painted and evaluated once (run markers, dataAccess). Because the markers live in an ignored folder, the runs are also anchored: after every held-out build and paint run has its record (a marked run that ended without one is recorded first) and before any evaluate_site.py run, score.py runs-list writes scripts/evaluation/m7/anchors/runs.json, each held-out site minus the lost-site list once with the sha256 of the one site record and the one paint record in the folders its markers name; the coordinator commits and pushes it. It is written once. evaluate_site.py and score.py site refuse a site record or paint record it does not name, every site score records its sha256, and the summary refuses a score under another runs list or of another record. A site run again after a marker was removed therefore cannot be scored."
+ },
+ "gate": "The visibility gate is recorded as incomplete, never as passed. Its bound is stated from the scored counts, using statistics.method.",
+ "changeRule": "After approval nothing in this lock changes; protocol-lock.json, its record and the anchors are never deleted, edited or overwritten. Any change needs Sean's approval of a new lock, made this way: a fresh pipeline commit with new M7 code that reads the new lock at its own new path (a new lock folder, its own record and its own tracked anchor files) and refuses this one. No target, threshold, site, rule or pinned file changes after any held-out file is opened. Results are reported as measured, labelled \"AV2-referenced, development-grade, not surveyed\".",
+ "anchor": {
+  "trackedFile": "scripts/evaluation/pao-lock-anchor.json",
+  "rule": "approve writes the lock sha256, a schema name and the recording time (nothing else from the lock) to this tracked file; the coordinator commits and pushes it to the private remote before any held-out access. The M7 drivers refuse unless origin/main holds that sha256 and exactly one commit on origin/main touches the file. approve refuses approval text (--by, --utc, --how) that names the coordinator-only folder or holds the banned vehicle-status word, and a --utc later than now. The coordinator commits and pushes the labels addendum anchor, the lost-site list, the held-out label manifest and the runs list under scripts/evaluation/m7/anchors/ (labels-addendum-anchor.json, lost-sites.json, labels-manifest.json, runs.json); the drivers refuse each unless it is committed unchanged, equal to origin/main and written once (exactly one commit on origin/main touches it), so a change after a result is seen makes every driver refuse. The lost-site list is committed before any held-out build (statistics.lostSiteRule) and the runs list before any evaluation (statistics.oneRunRule). The ignored D/E code folder is not an anchor: the labels addendum pins every file in it (labels.scoringCondition). After pipeline.commit no other tracked file may change."
+ },
+ "approval": {
+  "by": "Sean",
+  "utc": "2026-10-16T03:59:00Z",
+  "how": "Chat question tool, Claude coordinator session: answered 'Yes, approve the lock' for candidate r4 after the r4 lock review passed. Same session answers: H counts the recorded vehicle's measured-shape setback rows; H target 50%; metric B all three parts hard per site; D with no minimum feature count, held-out band 0.075 m and the declared-default prefix as written.",
+  "candidateSha256": "bd0ab94c2cbdbdae02763645d10f1c828547ce642871646c7cfbdfc815ac9fcf",
+  "recordedUtc": "2026-10-16T07:44:50Z"
+ }
+}

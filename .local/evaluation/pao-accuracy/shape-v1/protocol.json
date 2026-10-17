@@ -1,0 +1,792 @@
+{
+  "name": "shape-v1",
+  "kind": "Sightline measured car shape: pre-registered protocol",
+  "status": "FROZEN. Pre-registered before any shape result exists (no sweep plan, no shape sweep downloaded, no car_shape.py, no row computed with a shape). SHA-256 of this file and the freeze time are in protocol.lock.json. Any change is a new version (shape-v2), see changeRule.",
+  "frozenUtc": "2026-10-13T11:03:29Z",
+  "createdUtc": "2026-10-13",
+  "companion": "design.md (plain-language version). If the two disagree, this file wins and the disagreement is a bug to report. protocol-draft.json is the same rules with a draft status line and is not the frozen record.",
+  "authority": {
+    "decision": "Sean, 2026-10-13 (question tool, after the metric F v2 rerun): use a measured car shape for the annotated real stationary vehicle.",
+    "decisionsFile": ".local/project/pao-accuracy-2026-10-12/decisions.md",
+    "bindingRules": [
+      "Declared what-if vehicles keep the box.",
+      "A thinly sampled top must never produce a Blocked the evidence does not support.",
+      "Where the shape is not measured the result is Unknown with a reason.",
+      "The design must say how metric F stays honest once the app uses the LiDAR shape.",
+      "Sequence: pre-register, fresh adversarial challenge, freeze, build, fresh review.",
+      "Every pipeline change finishes before the M6 lock (target 2026-10-20); the lock waits for this work.",
+      "Keep TOO_CLOSE_TO_CALL_M = 0.10 m (stated as not fully covering the worst case).",
+      "Reference-blocked means only the real recorded vehicle at its real spot.",
+      "Held-out S3 listings and sweeps are fetched at M7, after the lock hash is recorded."
+    ],
+    "evidenceUsed": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/ (summary.json, profile-*.json, results-*.json), development logs only. No shape result existed at the freeze."
+  },
+  "challenge": {
+    "verdict": "revise",
+    "applied": [
+      {
+        "finding": "major 1: free-ray possible top can turn a real block into plain Unknown ('not blocked by the vehicle')",
+        "change": "free rays and the possible top deleted; step 6 runs only on box-Blocked rows; solid hit -> Blocked, else Unknown height-not-proven; too-close and plain rows are today's code unchanged"
+      },
+      {
+        "finding": "major 2: coverage loss can be estimated now",
+        "change": "approximate upper limits per scene and the rows expected to change are pre-registered in predictions; open question Q3 gives Sean the numbers; the 0.10 m margin is kept"
+      },
+      {
+        "finding": "major 3: metric F after shape-v1 can hardly fail",
+        "change": "F relabelled a consistency and code cross-check (zero likely-false expected by construction, not accuracy evidence); metric E named the only independent check with its small sample; 'different spots' removed; sensor or approach-half split offered as Q5, not planned"
+      },
+      {
+        "finding": "minor 4: label 'car shape not measured' trips the answer check and is often wrong",
+        "change": "reasonCode height-not-proven, label 'vehicle height not proven'; checkAnswer({mapped: true}) test"
+      },
+      {
+        "finding": "minor 5: variable sweep count vs the coordinator default 'same fixed sweep count'",
+        "change": "fixed selection rule replaces the fixed count; per-site sweep plan with counts written and hashed before any download, build or scoring; coordinator records it in decisions.md"
+      },
+      {
+        "finding": "minor 6: no rule for failed downloads",
+        "change": "frozen download rule: one at a time, at most 4 attempts, waits 5/10/20 s; still failing -> dropped and listed, not replaced, no re-split; listing failure -> too-few-sweeps"
+      },
+      {
+        "finding": "minor 7: margin asked to cover several errors; mixed pixels and glass not listed",
+        "change": "written LiDAR-top error budget; mixed pixels, glass reflections and far sweeps added to risks (bounded by Proof 2); front-half flag in the flip table for comparison with metric E"
+      },
+      {
+        "finding": "minor 8: floating-point box equivalence",
+        "change": "all tops >= H -> today's box code directly; tests at cut exactly 0.10 and 0.10 +/- 1e-12"
+      },
+      {
+        "finding": "minor 9: breakpoint walk too complex",
+        "change": "sorted crossing parameters, one constant-height piece per sub-interval"
+      },
+      {
+        "finding": "minor 10: optional frontend request named possibleTopM; nudge > 2 px swaps shape for box",
+        "change": "request lists solidTopM only and stays unsent unless Sean asks; README limitation text for the coordinator"
+      },
+      {
+        "finding": "minor 11: schedule on the laptop",
+        "change": "no calibration, capture-time poses or laser check on the shape side; JS rule and synthetic tests first, then 8c, then c780"
+      }
+    ]
+  },
+  "versions": {
+    "shapeProtocol": "shape-v1",
+    "placementProtocol": {
+      "from": "3.2",
+      "to": "3.3",
+      "change": "adds a carShape block pinning this frozen shape-v1 protocol by SHA-256; every other v3.2 rule unchanged"
+    },
+    "groundSchemaVersion": {
+      "from": 2,
+      "to": 3,
+      "change": "adds the required top-level key carShape"
+    },
+    "builder": {
+      "from": "4.1",
+      "to": "4.2",
+      "change": "adds the sweep plan, downloads with receipts and the shape build; RUNTIME_CODE adds scripts/california/car_shape.py; parametersByVariant (v4-12, v4-18.5) and every choice rule unchanged; SUPPORTED_VERSIONS adds 4.2"
+    },
+    "metricF": {
+      "from": "protocol v2",
+      "to": "metric F shape-v1 (protocol v3)",
+      "change": "scores only the carShape scoring sweeps; a scoring sweep failing the laser check is dropped and listed; thresholds unchanged; label: consistency and code cross-check"
+    },
+    "app": "src/geometry.mjs, src/scene.mjs, src/scenario-assistant.mjs (result rule, loader, distance-check phrases)"
+  },
+  "words": {
+    "vehicleWord": "stationary (never the four-letter word for a stopped car's location)",
+    "results": "Only Blocked or Unknown (with a reason code). There is no Clear.",
+    "tooCloseToCall": "the line cuts into the obstacle by less than TOO_CLOSE_TO_CALL_M = 0.10 m",
+    "box": "the averaged annotated cuboid of the real stationary vehicle (ground.json cuboid with poseAverage), length L, width W, height H",
+    "boxDeep": "the line goes at least 0.10 m inside the box: today's Blocked condition after the too-close check",
+    "solidTop": "per cell: the second-highest of the per-sweep highest counted returns; null = not proven",
+    "shapeSweeps": "sweeps the shape is built from",
+    "scoringSweeps": "sweeps metric F is scored on; never used by the shape",
+    "sweepPlan": "per-site file of chosen sweeps and counts, written and hashed before any sweep is downloaded",
+    "newReasonCode": {
+      "code": "height-not-proven",
+      "label": "vehicle height not proven"
+    }
+  },
+  "appliesTo": {
+    "rule": "The shape is used exactly when the scenario what-if has pose 'annotated' (annotatedVehicle in src/geometry.mjs returns a pose: the vehicle-front pixel names the annotated vehicle within ANNOTATED_FRONT_NUDGE_PX, the three size fields equal the annotated sizes, and vehicleDeclared is false).",
+    "covers": [
+      "createScenario currentVisibility",
+      "createScenario proposedVisibility",
+      "every setbackSweep row (whatIfBox(w, setback))"
+    ],
+    "movedCar": "whatIfBox moves the annotated box along the lane axis, keeping centre height, heading and sizes; the shape lives in the box's own frame and moves with it exactly (no re-grounding, same as the box).",
+    "boxKept": [
+      "declared vehicles",
+      "resized vehicles",
+      "protocol v3.1 currentVehicle.declaredReplacement",
+      "the default SUV",
+      "every scene without an annotated vehicle",
+      "the DrivingStereo public scene"
+    ],
+    "unchangedBoxUses": [
+      "driver-inside-vehicle and person-inside-vehicle tests",
+      "driver/person inside a real object",
+      "overlaps-real-object",
+      "the too-close-to-call test",
+      "the plain path (line misses the box)",
+      "front point, setback, suggestions, slider limits",
+      "gapM (still the box gap)",
+      "what is drawn on screen"
+    ]
+  },
+  "frames": {
+    "carLocal": "x forward along the upright box heading (front face at x = +L/2), y to the car's left, z above the box bottom (box centre Y - H/2). Same as metric F upright_frame/car_local.",
+    "upright": "centre = ground.json cuboid center exactly; heading = normalized horizontal part of worldFromBox column 0 (pitch and roll dropped), as annotatedBox in src/geometry.mjs; L, W, H unrounded cuboid values.",
+    "appBoxLocal": "[side, y, along] with along = -x, side = -y, y_app = z - H/2 (assessSightline frame; axis = -heading; side = [axis.z, 0, -axis.x]).",
+    "scene": "X = cityX - originX, Y = cityZ - originZ (up), Z = -(cityY - originY) (ground.json frame)."
+  },
+  "representation": {
+    "kind": "2.5D height field on a grid that exactly partitions the box footprint; one height per cell (the solid top); each cell is a column from z = 0 up to its solid top.",
+    "footprint": {
+      "x": "[-L/2, L/2]",
+      "y": "[-W/2, W/2]",
+      "reason": "The shape stays inside the box, which keeps setback, overlap and the front point on the box."
+    },
+    "maxCellM": {
+      "value": 0.1,
+      "reason": "Equals TOO_CLOSE_TO_CALL_M, so the horizontal spread of one height over its cell is never more than the erosion margin."
+    },
+    "cellsAlong": {
+      "formula": "n = ceil(L / 0.10 - 1e-9)",
+      "size": "a = L / n"
+    },
+    "cellsAcross": {
+      "formula": "m = ceil(W / 0.10 - 1e-9)",
+      "size": "b = W / m"
+    },
+    "ceilTolerance": {
+      "value": 1e-09,
+      "reason": "Keeps an exact multiple of 0.10 m from gaining an extra cell through binary rounding."
+    },
+    "example": "8c box L 4.03, W 1.8825 gives n 41, m 19 (0.0983 x 0.0991 m cells).",
+    "indexing": "index = i * m + j; i = 0 is the strip at the front face increasing toward the rear; j = 0 is the strip at the left side increasing to the right (metric F numbering).",
+    "edges": "x edges x_i = L/2 - i*a for i = 0..n-1 and x_n = -L/2 exactly; y edges y_j = W/2 - j*b for j = 0..m-1 and y_m = -W/2 exactly. App box-local: along in [-L/2 + i*a, -L/2 + (i+1)*a], side in [-W/2 + j*b, -W/2 + (j+1)*b].",
+    "pointToCell": "i = clamp(floor((L/2 - x) / a), 0, n-1); j = clamp(floor((W/2 - y) / b), 0, m-1) (metric F's rule).",
+    "heightRange": {
+      "floorM": 0.0,
+      "topM": "H",
+      "reason": "Columns never rise above the box top."
+    },
+    "solidBelowTop": "Everything below a column's top is solid (windows and the gap under the body are treated as solid, like the box).",
+    "rounding": {
+      "solidTopM": "floor(z * 1000) / 1000",
+      "reason": "Rounding can never enlarge the solid shape."
+    },
+    "nullMeaning": "solidTopM null = not proven; counts as height 0 in the result rule",
+    "noContiguityRule": "Not needed: Blocked requires every cell overlapping the 0.20 m square around a line point (at least 4 cells) to have a solid top at least 0.10 m above that point."
+  },
+  "returns": {
+    "keep": [
+      "comes from a downloaded shape sweep that passed the integrity checks (both LiDARs; the laser number is not used)",
+      "inside the footprint: -L/2 <= x <= L/2 and |y| <= W/2",
+      "minHeightM <= z <= H",
+      "not inside any other track's annotated cuboid at that sweep grown by otherObjectGrowM on every side"
+    ],
+    "minHeightM": {
+      "value": 0.25,
+      "reason": "Metric F's frozen floor: a 0.15 m curb plus 0.10 m."
+    },
+    "aboveH": "dropped and counted in removed.aboveBoxTop, never lowered to H",
+    "otherObjectGrowM": {
+      "value": 0.1,
+      "reason": "Box side errors are 0.09-0.19 m (plan error budget), so a neighbour's returns can sit just outside its box; growing can only remove returns, which can only add Unknown."
+    },
+    "ownAnnotationNotUsed": "The vehicle's own per-sweep annotations are never used to place, move or filter returns.",
+    "beyondEnds": "returns beyond x = +/-L/2 are not used; counted in diagnostics.returnsBeyondEnds (front, rear) within 0.5 m"
+  },
+  "solidTop": {
+    "rule": "per cell, take each shape sweep's highest kept return in the cell; S = the second-highest of these per-sweep values (equivalently: sort the cell's returns from highest to lowest and stop at the first return at which 2 distinct sweeps have been seen); null if the cell's returns come from fewer than 2 sweeps",
+    "reason": "One sweep alone (a passing unannotated object, rain, a ghost return) can never set a height.",
+    "examples": [
+      {
+        "returns": [
+          [
+            1.4,
+            "A"
+          ],
+          [
+            1.38,
+            "A"
+          ],
+          [
+            1.2,
+            "B"
+          ]
+        ],
+        "solidTop": 1.2
+      },
+      {
+        "returns": [
+          [
+            1.4,
+            "A"
+          ],
+          [
+            1.35,
+            "B"
+          ]
+        ],
+        "solidTop": 1.35
+      },
+      {
+        "returns": [
+          [
+            1.4,
+            "A"
+          ],
+          [
+            1.1,
+            "A"
+          ]
+        ],
+        "solidTop": null
+      }
+    ],
+    "counts": "per cell: returns (kept), returnSweeps (distinct sweeps among them)"
+  },
+  "sweeps": {
+    "inputs": [
+      "public S3 listing of sensors/lidar/*.feather for the log (key, size, ETag)",
+      "annotations.feather",
+      "city_SE3_egovehicle.feather",
+      "the averaged box in ground.json"
+    ],
+    "candidate": {
+      "rule": "a listed sweep timestamp ts such that (a) annotations.feather has a row of the vehicle's track at ts, (b) ts lies inside the ego pose record, (c) the horizontal distance from the ego origin at ts to the averaged box centre is <= maxEgoDistanceM",
+      "maxEgoDistanceM": {
+        "value": 30,
+        "reason": "The frozen placement range limit; keeps float16 storage error small (car points within about 32.2 m of the ego)."
+      },
+      "metadataOnly": "Choosing reads only the listing, annotations and poses; nothing large is downloaded to choose."
+    },
+    "thinning": {
+      "rule": "walk candidates in time order; keep the first; keep each next candidate whose ego origin is at least minEgoStepM (horizontal) from the ego origin of the last kept one",
+      "minEgoStepM": {
+        "value": 1.0,
+        "reason": "At 10 sweeps per second and 5-10 m/s the ego moves 0.5-1 m per sweep; this keeps the approach and drops repeats while the ego stands still."
+      }
+    },
+    "cap": {
+      "rule": "if K > maxKept sweeps are kept, keep positions round(k * (K - 1) / (maxKept - 1)) for k = 0..maxKept-1 (Python round, half to even)",
+      "maxKept": {
+        "value": 40,
+        "reason": "About 42 MB per site at about 1.06 MB per sweep; 20 per set is ten times the two-sweep minimum."
+      }
+    },
+    "split": {
+      "rule": "at plan time, over the kept list in time order: positions 0, 2, 4, ... are shape sweeps; positions 1, 3, 5, ... are scoring sweeps; never redone",
+      "reason": "Disjoint sets, fixed before any data is downloaded."
+    },
+    "plan": {
+      "file": ".local/data/av2/shape-v1-<log>/sweep-plan.json",
+      "contents": "log, track, rule numbers, listing status and attempts, candidate count, thinned count, kept count, shape timestamps, scoring timestamps",
+      "rule": "written and its SHA-256 recorded before any sweep is downloaded; the hash goes into carShape.sweeps.planSha256 and the run receipt; per-site counts are reported from it before any build or scoring"
+    },
+    "pose": "each sweep uses city_SE3_egovehicle at ts, linearly interpolated between the two nearest recorded poses (normalized linear quaternion interpolation; metric F capture_poses applied to ts). AV2 sweeps are motion-compensated to ts. No calibration, capture-time pose or laser check is used by the shape.",
+    "downloads": {
+      "source": "https://argoverse.s3.amazonaws.com/datasets/av2/sensor/train/<log>/sensors/lidar/<ts>.feather (public, $0)",
+      "order": "one file at a time",
+      "maxAttempts": {
+        "value": 4,
+        "meaning": "the first attempt plus 3 retries"
+      },
+      "retryWaitsS": [
+        5,
+        10,
+        20
+      ],
+      "success": "HTTP status 200, byte count = listing size, and MD5 = ETag when the ETag is single-part (32 hex characters, no '-'); for a multipart ETag only the size is checked and md5MatchesEtag is null",
+      "failedAttempt": "network error, any other status, wrong size or wrong MD5; the partial file is not kept",
+      "onFinalFailure": "the sweep is dropped and listed in carShape.sweeps.downloadDropped {timestampNs, set, reason: 'download-failed', attempts: 4}; not replaced; the split is not redone",
+      "listing": "fetched under the same attempt rule; if it still fails there are zero candidates and the shape is refused too-few-sweeps (listing status 'failed')",
+      "reuse": "a sweep already on disk is reused only if it passes the same success test",
+      "receiptFields": [
+        "attempts",
+        "bytes",
+        "contentLength",
+        "etag",
+        "key",
+        "md5",
+        "md5MatchesEtag",
+        "sha256",
+        "sizeMatches",
+        "status",
+        "url"
+      ],
+      "where": ".local/data/av2/shape-v1-<log>/ with a receipt.json",
+      "integrityStops": [
+        "a receipted file whose SHA-256 on disk no longer matches its receipt",
+        "a planned and receipted sweep missing at build time",
+        "a sweep plan whose SHA-256 differs from the recorded one"
+      ],
+      "development": "8c52d911/2658849 and c780d53a/2069452 may be fetched now (about 85 MB in all).",
+      "heldOut": "Only at M7, after the lock hash is recorded, through the builder's held-out mode (which requires protocol-lock.json); at most 40 per site.",
+      "notApplicable": "No sweep plan and no download for a scene whose suggestions.vehicle is not 'annotated' (453e5558/20499018)."
+    },
+    "minimum": {
+      "minShapeSweeps": {
+        "value": 2,
+        "reason": "The two-sweep rule needs at least two sweeps."
+      },
+      "onFail": "refusal too-few-sweeps"
+    },
+    "replacesDefault": "This fixed selection rule replaces the coordinator default 'same fixed LiDAR sweep count on development and held-out crossings' for the shape (coordinator to record in decisions.md)."
+  },
+  "registration": {
+    "returns": "ego frame -> city frame with the pose at ts -> scene frame -> car-local in the upright averaged box",
+    "annotationDrift": "The 8c per-sweep annotation drift (-0.18 to +0.32 m along the car) does not move the shape because per-sweep annotations of the car are not used.",
+    "averagedBoxUncertainty": "The averaged centre moved -0.058 to +0.049 m between averaging rules; this only shifts the clipping footprint."
+  },
+  "stationary": {
+    "rule": "the placement protocol's frozen stationary test must have passed (annotation span >= 3.0 s, maximum horizontal displacement <= 1.0 m); without it there is no averaged pose and no shape",
+    "onFail": "refusal not-stationary (defensive)",
+    "limit": "Creep below 1.0 m cannot be ruled out (8c annotation noise reaches 0.32 m); a creeping car gives a smeared shape; bounded by proofs.noNewBlocked."
+  },
+  "resultRule": {
+    "file": "src/geometry.mjs assessSightline",
+    "order": [
+      "1-5 unchanged: driver-inside-vehicle, person-inside-vehicle, driver-inside-object, person-inside-object, overlaps-real-object (skipped when ownPosition)",
+      "too-close check unchanged: line touches the box but is not box-deep -> Unknown too-close-to-call with today's sentence",
+      "6 new, runs only if box.shape is set and the line touches the box (after the too-close check this means box-deep: exactly the rows today's code returns as Blocked):",
+      "6a if prepared.allTopsAtLeastH (every solid top >= H): continue with today's code (box Blocked, today's object)",
+      "6b else if shapeDeep(prepared, e, t) -> state blocked, reason resultRule.reasons.blocked, supportedFraction null",
+      "6c else -> state unknown, reasonCode height-not-proven, reason resultRule.reasons.heightNotProvenMeasured or heightNotProvenRefused",
+      "7 everything else: today's code unchanged (diagnostics true: classifySightline; diagnostics false: today's two-branch result)"
+    ],
+    "reasons": {
+      "blocked": "The recorded stationary vehicle's LiDAR shape intersects the sightline.",
+      "heightNotProvenMeasured": "The sightline cuts into the recorded stationary vehicle's box, but its LiDAR returns do not prove the vehicle is tall enough there to block it, so this placement is not decided.",
+      "heightNotProvenRefused": "The sightline cuts into the recorded stationary vehicle's box, but no LiDAR shape could be built for it (<refusal.reason>), so this placement is not decided."
+    },
+    "returned": "steps 6b and 6c return gapM = sightlineGap against the box (meaning unchanged); with diagnostics true also shape: {status, solidCutM, hitXM}",
+    "fastPathEqualsFullPath": "diagnostics false and true run the same step 6, so the setback sweep's 'Sweep disagrees with the measured comparison.' guard still holds",
+    "unknownReasonsAddition": {
+      "height-not-proven": "vehicle height not proven"
+    },
+    "allowedChanges": [
+      {
+        "box": "blocked",
+        "shape": [
+          "blocked (new sentence)",
+          "unknown height-not-proven"
+        ]
+      },
+      {
+        "box": "unknown too-close-to-call",
+        "shape": [
+          "identical object"
+        ]
+      },
+      {
+        "box": "plain unknown (line misses the box)",
+        "shape": [
+          "identical object"
+        ]
+      },
+      {
+        "box": "unknown from steps 1-5",
+        "shape": [
+          "identical object"
+        ]
+      }
+    ],
+    "identicalObject": "same state, reasonCode, reason sentence, gapM, supportedFraction and every other field",
+    "onViolation": "any other change on any development row stops the build",
+    "newPureExports": [
+      "prepareCarShape(carShape) -> frozen prepared shape (used by scene.mjs)",
+      "shapeDeep(prepared, e, t, d = TOO_CLOSE_TO_CALL_M) -> boolean (cached pieces for d = 0.10; other d only for diagnostics)",
+      "shapeCut(prepared, e, t) -> {solidCutM, hitXM} (diagnostics only)"
+    ],
+    "wiring": [
+      "scene.mjs: after validation, scene.carShape = prepareCarShape(ground.carShape) (null when ground.carShape is null)",
+      "annotatedBox(scene, v): adds shape = scene.carShape; throws 'The measured car shape is missing for the annotated vehicle.' if it is null or its track differs from v.track",
+      "createScenario: whatIf for pose 'annotated' carries shape: pose.shape",
+      "whatIfBox: the annotated branch returns shape: w.shape; the declared branch returns no shape"
+    ]
+  },
+  "deepTest": {
+    "meaning": "a point p is at least d deep in the columns when the whole cube of half-size d around p is inside: p at least d inside the footprint on every side, p's height >= d, and p's height + d <= every solid top of the cells under the cube's square",
+    "d": {
+      "value": 0.1,
+      "source": "TOO_CLOSE_TO_CALL_M"
+    },
+    "frame": "car-local: x = -along, y = -side, z = y_app + H/2",
+    "breakpoints": "along x: every cell edge minus d and plus d, plus -L/2 + d and L/2 - d, keeping values in [-L/2 + d, L/2 - d], sorted, merging values closer than mergeToleranceM; the same across y with W; cached per prepared shape",
+    "mergeToleranceM": {
+      "value": 1e-09,
+      "reason": "The tolerance sightlineGap already uses."
+    },
+    "empty": "if L < 2d, W < 2d or H < 2d nothing is deep",
+    "pieces": "each pair of neighbouring x and y breakpoints gives a closed rectangle R with midpoint (xm, ym)",
+    "pieceHeight": "g(R) = min over cells with xa - d < xm < xb + d and ya - d < ym < yb + d of the cell's solid top (null = 0); cached",
+    "perLine": [
+      "clip the line's ground track to [-L/2 + d, L/2 - d] x [-W/2 + d, W/2 - d]; nothing left or zero-length ground track -> not deep",
+      "compute t at every x and y breakpoint the clipped ground track crosses; sort them with the clip ends; neighbouring pairs are sub-intervals; skip zero-length ones",
+      "for each sub-interval find the piece containing the ground-track point at its middle (binary search); the whole sub-interval's ground track lies in that closed piece",
+      "the line height is linear in t: over the closed sub-interval it covers [z_low, z_high] (its two end heights); hit if g - d >= d and [z_low, z_high] meets [d, g - d]",
+      "deep if any sub-interval hits"
+    ],
+    "conservative": "inside a piece the cells under the square are fixed; at a piece boundary the square overlaps the same cells or fewer, so g(R) never exceeds the true minimum at any point of the closed piece: the test is never larger than the true rule",
+    "speed": {
+      "cost": "O(n + m) per line, no scan of all pieces",
+      "gate": {
+        "setbackSweepP50Ms": 5,
+        "reason": "Under a third of one 60 Hz frame (today 0.33 ms); measured alone on Sean's Mac."
+      }
+    },
+    "diagnostics": {
+      "solidCutM": "largest d in [0, min(L, W, H)/2] at which the test still hits, by bisection to 1e-9 m with pieces recomputed per tried d; null if no column is touched at d = 0; never used by a rule",
+      "hitXM": "car-local x of the middle of the first hitting sub-interval at d = 0.10, counting from the eye; null if no hit",
+      "status": "'measured' | 'refused'"
+    }
+  },
+  "proofs": {
+    "boxEquivalence": "By construction through step 6a: when every solid top >= H, today's code runs. A test also checks the piece code against the shrunk-box test on an all-H shape for lines whose cut is not within 1e-6 m of 0.10.",
+    "noNewBlocked": "Step 6 runs only on rows the box rule already calls Blocked and can only return Blocked or Unknown.",
+    "onlyAllowedChanges": "Rows that do not reach step 6 are computed by today's unchanged code.",
+    "blockedNeedsEvidence": "A shape Blocked needs two-sweep LiDAR tops at least 0.10 m above the line over every cell overlapping a 0.20 m square around a line point, inside the box; a thin, refused or empty shape can never give Blocked.",
+    "conservative": {
+      "blocked": "yes, within the error budget",
+      "unknownWording": "yes: plain 'not blocked by the vehicle' still means the line misses the drawn box",
+      "coverage": "no: some truly blocked rows become Unknown"
+    }
+  },
+  "errorBudget": {
+    "rows": [
+      {
+        "source": "float16 storage",
+        "vertical": "<= 0.0005 m (car points within 2 m of the ego origin vertically)",
+        "horizontal": "<= 1/128 m below 32 m from the ego; <= 1/64 m at 32-64 m (car points reach about 32.2 m)",
+        "basis": "IEEE half precision"
+      },
+      {
+        "source": "solid top floored to the mm",
+        "vertical": "0 to -0.001 m (safe direction)",
+        "basis": "rounding rule"
+      },
+      {
+        "source": "range noise",
+        "vertical": "+/-0.03 m x sin(elevation): <= 0.006 m with the ego >= 5 m away horizontally, <= 0.015 m at 2 m",
+        "horizontal": "<= 0.03 m",
+        "basis": "VLP-32C manufacturer figure (typical), not measured here"
+      },
+      {
+        "source": "beam direction scatter",
+        "vertical": "observed per-laser elevation standard deviation 0.066 deg (8c) and 0.079 deg (c780): about 0.037-0.044 m at 32 m, about 0.007 m at 5 m",
+        "basis": "metric F v2 laser check (a standard deviation, not a hard bound)"
+      },
+      {
+        "source": "upward lean of a maximum",
+        "vertical": "the per-sweep highest return sits above the true surface by more than one standard deviation",
+        "basis": "not separately quantified"
+      },
+      {
+        "source": "ego pose, camera-LiDAR extrinsics, mixed pixels, glass reflections, creep",
+        "vertical": "not quantified",
+        "horizontal": "not quantified"
+      }
+    ],
+    "vertical": "quantified parts about 0.05 m at the far edge (32 m), about 0.02 m within 10 m; the 0.10 m margin covers them with about 0.05 m left at the far edge; the upward lean and unquantified parts are not shown to fit: kept, not shown to cover the worst case (same status as the box margin)",
+    "horizontal": "the 0.10 m erosion is used up by the cell size (up to 0.0991 m); horizontal registration errors are not covered",
+    "bound": "every error in the budget can at worst keep a Blocked the box also gives (proofs.noNewBlocked); none can add one",
+    "smallerMargin": "not pre-registered: using only guaranteed bounds the budget leaves no room for it"
+  },
+  "assistant": {
+    "file": "src/scenario-assistant.mjs",
+    "changes": [
+      "lineTouches also returns true for reason === 'height-not-proven'",
+      "ROW_REASONS adds ['height-not-proven', 'heightNotProven_m'] (phrase part 'vehicle height not proven <span>' and fact key heightNotProven_m)"
+    ],
+    "unchanged": [
+      "untested (already includes every non-plain Unknown, so sweepShort says 'unknown from X m (vehicle height not proven)' for an undecided tail)",
+      "misses and overlap rows keep the box gap",
+      "the 'Sweep disagrees with the measured comparison.' guard",
+      "resultPhrase (gives 'unknown (vehicle height not proven)' through UNKNOWN_REASONS)"
+    ],
+    "answerCheck": "only labels enter the Nemotron facts; 'vehicle height not proven' matches none of FORBIDDEN, PARK, STOP_REASON, INVENTED_SOURCE, MAKE; a test checks checkAnswer({mapped: true}) accepts an answer containing it; the reason sentences avoid those words too"
+  },
+  "dataSchema": {
+    "file": "ground.json, schemaVersion 3, new required top-level key carShape (ground.json stays hash-pinned by scene.json and the catalog entry; size limit 1 MB unchanged; about 15-25 KB per shape)",
+    "carShapeNull": "only when suggestions.vehicle.status is not 'annotated'",
+    "carShape": {
+      "schema": "'shape-v1'",
+      "status": "'measured' | 'refused'",
+      "refusal": "null | {code: 'too-few-sweeps' | 'not-stationary', reason: <sentence>}",
+      "track": "track uuid; equals the poseAverage cuboid's track and suggestions.vehicle.track",
+      "box": "{length, width, height} exactly equal to that cuboid's values",
+      "frame": "text: the car-local frame sentence of frames.carLocal",
+      "grid": "{along: n, lateral: m, cellAlongM: L/n, cellLateralM: W/m, maxCellM: 0.1, order: 'index = i*lateral + j; i from the front face, j from the left side'}",
+      "solidTopM": "array of n*m (number | null), floored to 0.001 m",
+      "counts": "{returns, returnSweeps}: each an array of n*m non-negative safe integers",
+      "removed": "{belowFloor, aboveBoxTop, otherObjects}: non-negative safe integers",
+      "sweeps": "{rule: {maxEgoDistanceM: 30, minEgoStepM: 1.0, maxKept: 40, split: 'alternate', minShapeSweeps: 2, downloadAttempts: 4, retryWaitsS: [5, 10, 20]}, planSha256, listing: {status: 'ok' | 'failed', attempts}, candidates, thinned, kept, shape: [{timestampNs, sha256}], scoring: [{timestampNs, sha256}], downloadDropped: [{timestampNs, set: 'shape' | 'scoring', reason: 'download-failed', attempts: 4}]}; timestampNs are decimal strings",
+      "diagnostics": "{frontFaceToFirstSolidCellM: number | null, returnsBeyondEnds: {front: int, rear: int}} (report only; never used by the app)",
+      "protocol": "{placementProtocolVersion: '3.3', sha256, shapeProtocolSha256}",
+      "code": "{path: 'scripts/california/car_shape.py', sha256}"
+    },
+    "refusedContent": "status 'refused': every solidTopM null, every count 0"
+  },
+  "loaderValidation": {
+    "file": "src/scene.mjs validateGround (plus a check after suggestions load)",
+    "onAnyFailure": "reject the whole scene (no partial ground, no box fallback, no read-only mode)",
+    "checks": [
+      "schemaVersion === 3; schema 2 is refused as history",
+      "GROUND_KEYS adds carShape; exact key sets at every level of carShape",
+      "suggestions.vehicle.status === 'annotated' requires a non-null carShape; otherwise carShape must be null",
+      "carShape.track equals suggestions.vehicle.track and the track of exactly one poseAverage cuboid",
+      "carShape.box equals that cuboid's length, width, height exactly",
+      "grid.along === ceil(L/0.1 - 1e-9), grid.lateral === ceil(W/0.1 - 1e-9), cellAlongM === L/along, cellLateralM === W/lateral, maxCellM === 0.1",
+      "every array has length along*lateral",
+      "every solid top is null or finite and in [0.25, H]",
+      "a non-null solid top needs returnSweeps >= 2",
+      "counts are non-negative safe integers; returnSweeps <= returns",
+      "status 'measured' requires refusal null and at least 2 shape sweeps",
+      "status 'refused' requires a known refusal code, all tops null and all counts 0",
+      "shape and scoring sweep lists are disjoint; timestampNs are decimal strings in increasing order; sha256 values are 64 lower-case hex",
+      "shape.length + scoring.length + downloadDropped.length === kept",
+      "protocol.placementProtocolVersion === '3.3'; protocol.sha256, protocol.shapeProtocolSha256, sweeps.planSha256 and code.sha256 are 64 lower-case hex"
+    ],
+    "prepared": "the loader builds one frozen prepared shape (typed arrays, edges, cached breakpoints and piece heights, allTopsAtLeastH) per scene"
+  },
+  "refusals": {
+    "too-few-sweeps": {
+      "when": "fewer than 2 shape sweeps after downloads, including a failed listing",
+      "reasonText": "fewer than 2 LiDAR sweeps of it were available"
+    },
+    "not-stationary": {
+      "when": "the stationary test did not pass (defensive)",
+      "reasonText": "it did not pass the stationary test"
+    },
+    "effect": "every box-deep line becomes height-not-proven with the refusal named; too-close and plain rows unchanged; never Blocked",
+    "notRefusals": "integrity failures stop the build with no output (sweeps.downloads.integrityStops)"
+  },
+  "catalogAndServer": {
+    "public": "no change to public/scenes or the public catalog (DrivingStereo only)",
+    "grounded": ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.3/ with its own catalog-entry.json (same scene id, new hashes); grounded-v3.2 stays as history",
+    "server": ".local/evaluation/av2-map-first-2026-10-11/browser/serve-av2.mjs FOLDER -> 'grounded-v3.3'; app-contract.md gains section A13",
+    "appJsx": "unchanged: loadScene already pins ground.json",
+    "history": "grounded-v3.2 and builder v4.1 outputs (schema 2) then load only with the app source of their own commit (metric-f.mjs --app-src)"
+  },
+  "evaluation": {
+    "metricFShapeV1": {
+      "folder": ".local/evaluation/pao-accuracy/metric-f-shape-v1/",
+      "protocolVersion": 3,
+      "label": "consistency and code cross-check of the vehicle model; not accuracy evidence for the recorded vehicle's shape",
+      "whyNotAccuracy": "a shape Blocked needs a two-sweep top >= 0.10 m above the line; F calls a row likely false only when the scoring-sweep top is >= 0.05 m below it; the two halves of the same drive would have to disagree by about 0.15 m at the same spot, so zero likely-false is expected by construction; systematic artifacts (mixed pixels, glass reflections, pose errors) are in both halves",
+      "value": "car_shape.py and metric_f_car_top.py are written separately, so F catches frame, index and registration bugs",
+      "thresholds": "identical to metric F protocol v2 (binLengthNominalM 0.25, lateralBinNominalM 0.25, minHeightAboveBoxBottomM 0.25, maxHeightAboveBoxTopM 0.3, minReturnsMeasured 5, marginM 0.05, crossedBinMinLengthM 1e-6, otherObjectBufferBeyondEndsM 0.3, laserElevationSpreadLimitDeg 0.15, targetHeightsM child 1.1 / adult 1.5, freeRayBandM 0.05)",
+      "sweeps": "only carShape.sweeps.scoring, through the new metric_f_car_top.py option --scoring-sweeps-from GROUND_JSON (every listed sweep present with its listed SHA-256, else the run stops)",
+      "laserCheck": "F's frozen laser check (0.15 deg) applies to each scoring sweep; a failing sweep is dropped and listed (v2 stopped the run); fewer than 2 scoring sweeps left -> every row of that scene is F-unresolved",
+      "target": "0 likely-false rows (a failure means a bug)",
+      "reports": [
+        "flip table: each row's box result next to its shape result, per scene",
+        "F0 noNewBlocked: 0 rows Blocked with the shape but not with the box (hard check)",
+        "allowedChanges: every row obeys resultRule.allowedChanges (hard check)",
+        "lostSupported: rows Blocked with the box, F-supported on scoring sweeps, Unknown with the shape",
+        "frontHalfFlag (report only): rows still Blocked with the shape whose hitXM > 0, for comparison with metric E",
+        "unresolved Blocked rows listed and counted (never counted as passes)",
+        "box gaps and setbacks reproduce the v2 rows to 1e-9"
+      ]
+    },
+    "otherMetrics": {
+      "E": "verdict at the recorded view against the blind photo outline: the only check of a shape Blocked independent of the LiDAR; small sample (one recorded view per scene); scored with the shape app",
+      "K": "LiDAR ground shadow: ground returns are disjoint from the shape's returns, but sensors and sweeps are shared; partly independent; uses scoring sweeps when compared with shape results",
+      "D": "unchanged: tests the box registration",
+      "H": "useful coverage: reference-blocked cases from E, F (scoring sweeps), K",
+      "J": "performance: setback sweep p50 <= 5 ms with the shape, measured alone"
+    }
+  },
+  "metricTableChanges": [
+    {
+      "row": "F",
+      "text": "Consistency and code cross-check of the vehicle model (box for declared vehicles, LiDAR shape for the recorded vehicle). Reference: LiDAR car top from the scoring sweeps only. Independent: no for the recorded vehicle's shape (same sensors, poses and drive); zero likely-false is expected by construction and is not accuracy evidence. Target: 0 likely-false rows (a failure means a bug)."
+    },
+    {
+      "row": "F0 (new)",
+      "text": "No new Blocked: every shape Blocked row is box Blocked, and every row obeys the allowed-change table. Internal check. Target: 0 violations."
+    },
+    {
+      "row": "E",
+      "text": "add: the only independent check of a shape Blocked; small sample (one recorded view per scene)"
+    },
+    {
+      "row": "K",
+      "text": "add: uses scoring sweeps when compared with shape results"
+    },
+    {
+      "row": "H",
+      "text": "inputs: E, F (scoring sweeps), K"
+    },
+    {
+      "row": "error budget: Real car height",
+      "text": "modelled by the LiDAR shape (shape-v1) for the recorded vehicle; declared vehicles keep the box; LiDAR-top budget in shape-v1 design Section 9"
+    }
+  ],
+  "lockFieldChanges": [
+    "pipeline.placementProtocol: v3.3 SHA-256 (replaces v3.2)",
+    "pipeline.builder: v4.2 builder protocol SHA-256 and RUNTIME_CODE hashes including scripts/california/car_shape.py",
+    "pipeline.shapeProtocol: frozen shape-v1 protocol SHA-256 (from shape-v1/protocol.lock.json)",
+    "resultRules.unknownReasons: add 'vehicle height not proven'",
+    "resultRules.vehicleModel: recorded stationary vehicle = LiDAR shape (shape-v1) for box-deep lines; declared vehicles = box",
+    "metrics.F: metric F shape-v1 protocol SHA-256, scoring-sweep rule, laser-drop rule, label 'consistency and code cross-check'",
+    "metrics.F0: no-new-Blocked and allowed-change checks",
+    "downloads.heldOut.shapeSweeps: at most 40 per held-out site by the sweeps rule and download rule, with a hashed sweep plan and receipts, only after the lock"
+  ],
+  "predictions": [
+    "1. No new Blocked on any row of any development scene (structural; a violation is a bug). Blocked counts can only fall from 55 (8c hand-made: 17 adult + 38 child), 25 (8c v4-12: child), 55 (8c v4-18.5: 17 + 38), 22 (c780 v4-12: child), 22 (c780 v4-18.5: child).",
+    "2. The 8c first load is unchanged (both results plain Unknown): the line misses the box, so step 6 never runs.",
+    "3. Every row the box does not call Blocked is an identical object.",
+    "4. All 20 metric F v2 likely-false Blocked rows become height-not-proven: 5 (8c hand-made), 3 (8c v4-12), 4 (8c v4-18.5), 4 (c780 v4-12), 4 (c780 v4-18.5).",
+    "5. All metric F v2 ambiguous Blocked rows (7, 1, 6, 1, 1) become height-not-proven. Expected, not guaranteed.",
+    "6. Coverage, approximate upper limits from metric F v2 (Blocked rows with at least one crossed 0.25 m cell whose LiDAR top is >= 0.10 m above the line): adult 8c hand-made 17 -> 0, 8c v4-18.5 17 -> 0 (adult Blocked on 8c expected to fall to 0); child 8c hand-made 38 -> at most 30 (30 of 35 F-supported, 86%), 8c v4-12 25 -> at most 16 (16 of 21, 76%), 8c v4-18.5 38 -> at most 31 (31 of 36, 86%), c780 v4-12 and v4-18.5 22 -> at most 11 (11 of 17, 65%). No likely-false and no ambiguous row has such a cell. Rows expected to become height-not-proven (setbacks in m): 8c hand-made adult all 17, child 1.1032, 1.3532, 8.6032, 8.8532, 9.1032, 9.3532, 9.6032, 9.8532; 8c v4-12 child 4.1032, 4.3532, 4.572, 4.6032, 4.8532, 5.1032, 5.3532, 5.6032, 5.8532; 8c v4-18.5 adult all 17, child 1.6032, 9.1032, 9.3532, 9.6032, 9.8532, 10.1032, 10.3532; c780 (both variants) child 2.8547, 3.1047, 3.3547, 3.6047, 3.8547, 4.1047, 4.3547, 4.572, 4.6047, 4.8547, 5.1047. Approximate, not strict (different sweeps, half of the kept sweeps, 0.10 m cells, two-sweep top, full 0.20 m square); more rows may be lost. Metric H may fail at held-out sites; a refused site loses all Blocked rows.",
+    "7. 453e: unchanged outcome (crossing model does not apply; no vehicle placed; carShape null; no sweep plan, no downloads).",
+    "8. Setback sweep p50 <= 5 ms with the shape.",
+    "9. Neither development vehicle is refused; per-site planned counts are reported from the sweep plan before any build or scoring.",
+    "10. Metric F shape-v1: 0 likely-false rows on every development scene (expected by construction; a consistency result, not accuracy evidence)."
+  ],
+  "risks": [
+    "Coverage falls (prediction 6), possibly failing metric H at held-out sites.",
+    "Mixed pixels: far-edge roof returns can land over the windshield or hood at roof height and repeat in neighbouring sweeps, so two sweeps are not two independent proofs; bounded by proofs.noNewBlocked.",
+    "Glass reflections can put points inside the car body at a wrong height in several sweeps; bounded by proofs.noNewBlocked.",
+    "Far sweeps (25-32 m): beam scatter and the upward lean of a maximum can approach the 0.10 m margin; bounded by proofs.noNewBlocked.",
+    "Unannotated objects below H inside the footprint can add solid; bounded by proofs.noNewBlocked.",
+    "Creep below the 1.0 m stationary limit smears the shape; bounded by proofs.noNewBlocked.",
+    "Windows count as solid, like the box.",
+    "The real front sticks out of the box (8c: at least 0.37 m) and is clipped, exactly as the box ignores it today.",
+    "Metric F can no longer find accuracy problems in the recorded vehicle's shape; metric E's sample is small.",
+    "Screen vs test: the drawn box is not the tested shape; a declared vehicle (including a nudge of more than 2 px) is tested as a full box, so an almost identical placement can change from Unknown to Blocked.",
+    "Performance: step 6 adds work to box-deep rows (gate p50 <= 5 ms).",
+    "Edge cells hold mirror and bumper returns and are partly empty; handled only by the two-sweep and erosion rules.",
+    "Download volume: about 42 MB per site (about 85 MB for development now, up to about 210 MB held-out at M7).",
+    "Schedule: the M6 lock (target 2026-10-20) waits for build plus review.",
+    "Older outputs (grounded-v3.2, builder v4.1, schema 2) load only with --app-src."
+  ],
+  "ui": {
+    "frontendChangeNeeded": "none for correctness",
+    "why": "App.jsx shows result.reason as the tooltip and DistanceCheck.jsx uses sweepPhrase; both pick up the new reason through UNKNOWN_REASONS and ROW_REASONS. No frontend-owned file is edited.",
+    "drawing": "The car stays drawn as the box (StreetView.jsx addSolidVehicle); the shape lives in the box's frame and inside it, so drawing and test share coordinates.",
+    "optionalFrontendRequest": "On mapped-ground scenes, the recorded stationary vehicle's box now carries shape (from ground.json carShape) when it is the recorded vehicle: grid.along (n), grid.lateral (m), cellAlongM (a), cellLateralM (b) and solidTopM (an array of n*m heights above the box bottom; index i*m + j; i counts from the front face, j from the left side; null = not proven). Please, in StreetView, keep drawing the box exactly as today but as a faint outline when box.shape exists, and draw one column per cell with a non-null solidTopM, from the box bottom to solidTopM, with the same centre, axis and size transform as the box (cell (i, j) spans along in [-L/2 + i*a, -L/2 + (i+1)*a] and side in [-W/2 + j*b, -W/2 + (j+1)*b] in the box frame used by assessSightline). Use existing colour tokens, add no new text, and leave declared vehicles unchanged.",
+    "sendOnlyIf": "Sean asks for the shape to be shown",
+    "readmeLimitationForCoordinator": "On AV2 development scenes the recorded stationary vehicle is tested with a height grid built from its LiDAR returns: a sightline that cuts into its box counts as Blocked only where those returns show the vehicle reaches at least 0.10 m above the line; elsewhere the result is Unknown (vehicle height not proven). A declared vehicle, including the recorded vehicle after its front point is moved more than 2 px or its size is changed, is tested as a full box, so an almost identical placement can change from Unknown to Blocked. The drawn vehicle is always the box."
+  },
+  "buildPlan": {
+    "exclusiveEdits": [
+      "src/geometry.mjs",
+      "src/scene.mjs",
+      "src/scenario-assistant.mjs",
+      "scripts/california/prepare_av2_ground.py (placement protocol v3.3, writes carShape)",
+      "scripts/california/build_av2_scene.py (v4.2; SUPPORTED_VERSIONS adds 4.2; RUNTIME_CODE adds car_shape.py)",
+      "scripts/evaluation/metric-f.mjs (per-row shape status, solidCutM, hitXM and the carShape hash)",
+      "scripts/evaluation/metric_f_car_top.py (--scoring-sweeps-from and the scoring-sweep laser-drop rule only)",
+      "scripts/evaluation/pao-baseline.mjs (GROUNDED_DIR -> grounded-v3.3/)",
+      "tests/geometry.test.mjs",
+      "tests/scenario-assistant.test.mjs",
+      "tests/av2-ground.test.mjs",
+      "tests/metric-f.test.mjs",
+      "tests/pao-baseline.test.mjs",
+      "tests/visibility-boundaries.test.mjs",
+      "tests/california/test_prepare_av2_ground.py",
+      "tests/california/test_build_av2_scene.py",
+      "tests/evaluation/test_metric_f_car_top.py",
+      ".local/evaluation/av2-map-first-2026-10-11/browser/serve-av2.mjs",
+      ".local/evaluation/av2-map-first-2026-10-11/app-contract.md (A13)"
+    ],
+    "exclusiveNew": [
+      "scripts/california/car_shape.py (sweep plan, downloads with receipts, shape build; imports nothing from scripts/evaluation/)",
+      "tests/car-shape.test.mjs",
+      "tests/california/test_car_shape.py",
+      "placement protocol v3.3 and its freeze record",
+      "builder protocol v4.2 and its freeze record",
+      ".local/evaluation/pao-accuracy/scene-builder-v4.2/",
+      ".local/evaluation/pao-accuracy/metric-f-shape-v1/",
+      ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.3/",
+      ".local/data/av2/shape-v1-<log>/"
+    ],
+    "neverTouch": [
+      "every frontend-owned file (src/App.jsx, src/StreetView.jsx, src/styles.css, src/AssistantBar.jsx, src/DistanceCheck.jsx, src/plan-camera.mjs, src/Bloop.jsx, src/Peri*.jsx, src/DotText.jsx, src/dot-matrix.mjs, src/map-layers.mjs, src/*-frames.json, any other frontend-thread file under src/)",
+      ".local/evaluation/pao-accuracy/split.json",
+      ".local/evaluation/pao-accuracy/metric-f-v4.1/ (history)",
+      "held-out, control and reserve data",
+      ".local/secrets",
+      "README.md, plan.md, features.md, decisions.md (coordinator updates them)",
+      "shape-v1/protocol.json and protocol.lock.json (frozen)"
+    ],
+    "syntheticTestsJs": [
+      "box equivalence (shortcut): all tops H on a 4.03 x 1.8825 x 1.489 box; 2,000 seeded random lines, every existing boundary case and lines cut exactly 0.10 m and 0.10 +/- 1e-12 m: result objects identical to the box rule",
+      "piece code vs shrunk box: the deep test on an all-H shape (shortcut bypassed in the test) equals the shrunk-box test on 2,000 random lines whose cut is not within 1e-6 m of 0.10",
+      "low hood: rows i < 12 solid 0.90, other cells H; level lines side to side at x = L/2 - 0.6: z 0.80 - 1e-6 Blocked; z 0.80 + 1e-6 and z 1.20 height-not-proven; z H - 0.05 too-close identical to the box; z H + 0.05 plain identical",
+      "empty corner: cells i < 5 and j < 5 null, others H; a line cutting 0.20 m into the box only inside that corner -> height-not-proven (box: Blocked)",
+      "noise cell: one cell H, its neighbours 0.50, the rest null; a level line at 1.20 across it -> height-not-proven, never Blocked",
+      "unmeasured and refused: all tops null; every box-Blocked line -> height-not-proven (refusal named when refused); every other row an identical object",
+      "brute-force check: on 5,000 seeded random small shapes and lines, whenever the shape says Blocked a direct check finds a line point whose 0.10 m cube lies inside the columns",
+      "allowed changes: on the same random cases every row obeys resultRule.allowedChanges",
+      "moved car: translation invariance after whatIfBox; declared, resized and declaredReplacement vehicles carry no shape",
+      "fast path equals full path: a setback sweep with a shape never throws 'Sweep disagrees'",
+      "loader: each malformed carShape (wrong length, solid top without two sweeps, solid top > H or < 0.25, track mismatch, null for an annotated vehicle, overlapping sweep sets, list counts not adding to kept, schema 2, refused with a non-null top) rejects the scene",
+      "wording: phrases and facts name 'vehicle height not proven' ranges and heightNotProven_m; sweepShort names an undecided tail; checkAnswer({mapped: true}) accepts an answer containing the label; no new sentence matches a withheld pattern or contains the four forbidden letters"
+    ],
+    "syntheticTestsPython": [
+      "sweep rule: candidates (track row, pose record, 30 m), 1.0 m thinning, 40 cap, split at plan time, plan written and hashed before any download, determinism; a standing ego gives one sweep -> too-few-sweeps",
+      "download rule (simulated): success on the 3rd attempt kept; 4 failures -> dropped, listed, not replaced, no re-split; wrong size or MD5 is a failed attempt; multipart ETag -> size only, md5MatchesEtag null; listing failure -> too-few-sweeps; a receipted file changed on disk -> the build stops",
+      "registration: a synthetic car seen from known ego poses lands in the right cells; shifting the track's per-sweep annotations by +0.3 m does not move the shape",
+      "solid top examples; one high return from one sweep -> no solid top",
+      "filters: above H dropped and counted; below 0.25 ignored; inside another cuboid grown 0.10 m removed and counted",
+      "rounding: solid tops floored to the mm",
+      "cross-check with metric F (test-only import) on a synthetic cloud with no other objects: kept footprint returns equal profile_from_points(...)['counts']['kept'] with maxHeightAboveBoxTopM = 0",
+      "output byte-identical across two runs; no forbidden word"
+    ],
+    "regeneration": [
+      "1. sweep plan (hashed) then downloads for 8c, then for c780 (.local/data/av2/shape-v1-<log>/)",
+      "2. 8c grounded-v3.3 (hand-made path) from the same assembled scene; apart from carShape, schemaVersion, the protocol record and hashes, ground.json equals grounded-v3.2",
+      "3. builder v4.2 on 8c (v4-12, v4-18.5) and c780 (v4-12, v4-18.5), one at a time; same frame, crop, lane, vehicle and crossing as v4.1",
+      "4. builder v4.2 on 453e (both variants): same outcome as v4.1; no sweep plan, no downloads; the 453e guard rerun with v3.3 writes carShape null",
+      "5. metric F shape-v1 on the five development scenes, one at a time: flip table, F0, allowed changes, lost supported rows, front-half flags, F-unresolved counts",
+      "6. pao-baseline on grounded-v3.3 into a new baseline file (never overwrite)",
+      "7. performance (metric J) measured alone",
+      "8. npm test, npm run build, Python suites; foreground browser check of the 8c scene through the private QA server with its built-in time limit",
+      "9. fresh review"
+    ],
+    "laptopRules": "one command at a time; nice -n 10 for anything heavy; no background servers; no Docker; no parallel jobs",
+    "order": "placement v3.3 and builder v4.2 protocol files -> JS rule and synthetic tests (no data) -> car_shape.py and its tests (no data) -> sweep plan + downloads 8c -> sweep plan + downloads c780 -> grounded-v3.3 -> builder v4.2 runs one by one -> loader and app tests -> metric F shape-v1 one scene at a time -> harness -> metric J alone -> full test run -> browser check -> fresh review"
+  },
+  "openQuestionsForSean": [
+    {
+      "question": "Windows: keep treating glass as solid, like the box?",
+      "recommended": "Yes.",
+      "alternative": "See-through glass needs glass detection: a new version after the lock."
+    },
+    {
+      "question": "Show the measured shape on screen, or keep drawing the box?",
+      "recommended": "Keep drawing the box until after the lock.",
+      "alternative": "Send the optional solid-only frontend request now."
+    },
+    {
+      "question": "Accept the coverage cost with the 0.10 m margin (adult Blocked on 8c expected 17 -> 0; child Blocked at most 30/38, 16/25, 31/38 on 8c and 11/22 on c780, i.e. at most 86%, 76%, 86%, 65% of F-supported child rows; metric H may fail at held-out sites; a refused site loses all Blocked)?",
+      "recommended": "Accept: it follows Sean's rule that a thin top never makes Blocked, and no number was tuned on development rows.",
+      "alternative": "A shape-v2 with a smaller vertical margin for LiDAR-measured tops, derived only from the written error budget, frozen before its own first result and before any held-out data, and labelled as designed after seeing these upper limits; the budget does not currently justify a smaller margin at the far edge, so it would likely also need a shorter sweep distance limit."
+    },
+    {
+      "question": "Accept about 42 MB of public LiDAR per site (about 85 MB for development now, up to about 210 MB held-out at M7, $0)?",
+      "recommended": "Accept.",
+      "alternative": "A cap of 20 sweeps (about 21 MB per site) in a shape-v2 frozen before any result, with fewer proven cells and more Unknown."
+    },
+    {
+      "question": "Accept metric F as a consistency and code cross-check, with metric E as the only independent evidence for a shape Blocked (small sample)?",
+      "recommended": "Accept.",
+      "alternative": "Add a report-only F with an approach-half split (shape from the far half, F from the near half) or a sensor split (up versus down LiDAR): more independent, but one extra shape build per scene and still shared poses and calibration."
+    }
+  ],
+  "coordinatorFollowUps": [
+    "decisions.md: record that the fixed sweep selection rule replaces 'same fixed LiDAR sweep count' for the shape",
+    "plan.md: apply metricTableChanges and lockFieldChanges",
+    "README.md: ui.readmeLimitationForCoordinator"
+  ],
+  "changeRule": "After the freeze, any change to a rule or number here is a new version (shape-v2) with a dated reason, frozen before its own first result and before any held-out data is opened. No number may be changed because of which development rows it flips. The shape-v1 freeze record stays as history."
+}

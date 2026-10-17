@@ -1,0 +1,24 @@
+{
+ "schema": "pao-lock-2-builder-code-update-v1",
+ "authority": "Sean, 2026-10-16: Fix it, new lock. Before any held-out access.",
+ "sourceProtocol": {
+  "path": ".local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json",
+  "sha256": "5dc0ab06ac1af4f57aa96b9cea4e451e62801d4084f9b3fbc011a2ccdd11bebe"
+ },
+ "sourceFreezeRecord": {
+  "path": ".local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3-freeze.json",
+  "sha256": "ce282ff9ec953e49f45b7d4e63f9e2d4d18f1669b7eff45b2382faffcf4c2353"
+ },
+ "protocol": {
+  "path": ".local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json",
+  "sha256": "3cc6d1c93fe298e00bee073694ff798149e9b65b0f5866587f1e30019f07c9ba"
+ },
+ "changedCode": {
+  "scripts/california/car_shape.py": "54057fff619cd0e8f0b7c8c80e14474ab1d4064800a4d3f98b7800bfb050d679"
+ },
+ "adapter": {
+  "path": "scripts/evaluation/m7/build_scene.py",
+  "sha256": "44d45c435a441cb3e7da1b58d9a495ba1838dd5756aa967cdbe61d7a82c94da4"
+ },
+ "rule": "Only the car_shape.py code pin changes in the source protocol. Every builder, shape, selection and scoring rule stays identical. The source freeze record is historical lineage. The new protocol and code are frozen only by approval of lock 2; this file is neither an approval nor a protocol-lock record."
+}

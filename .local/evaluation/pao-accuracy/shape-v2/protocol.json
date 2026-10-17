@@ -1,0 +1,206 @@
+{
+  "name": "shape-v2",
+  "kind": "Frozen pre-registered protocol: the measured LiDAR shape of the recorded stationary vehicle, version 2. Written as an exact list of changes to the frozen shape-v1 protocol. Every rule, number, proof, refusal, risk and report of shape-v1 that is not named under 'changes' and not replaced by a top-level section as listed in 'sectionRule' applies to shape-v2 unchanged.",
+  "status": "FROZEN. Written and hashed before any shape-v2 result: no shape-v2 sweep plan written, no shape-v2 sweep downloaded, no row computed with a shape-v2 shape, no held-out data opened. At freeze, uncommitted working-tree edits for names, constants and report-only summary code only (schema strings, folder names, minEgoStepM 0.25, placement '3.4', builder 4.3, the metric F approach-split schema, a reader for the delta split addendum and a report-only shape-v1 comparison in the metric F summary, and the matching tests) already exist in scripts/california/car_shape.py, prepare_av2_ground.py, suggest_av2_placements.py, build_av2_scene.py, src/scene.mjs, src/geometry.mjs and src/scenario-assistant.mjs (comments), scripts/evaluation/metric-f.mjs, metric_f_car_top.py and tests; none of them has run on data. The lock records the repository HEAD, the SHA-256 of 'git diff HEAD' and 'git status --porcelain' at freeze. SHA-256 of this file and the freeze time are in protocol.lock.json.",
+  "createdUtc": "2026-10-14T05:29:09Z",
+  "revisedUtc": "2026-10-14T05:42:03Z",
+  "base": {
+    "path": ".local/evaluation/pao-accuracy/shape-v1/protocol.json",
+    "sha256": "07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825",
+    "frozenUtc": "2026-10-13T11:03:29Z",
+    "lock": ".local/evaluation/pao-accuracy/shape-v1/protocol.lock.json",
+    "design": ".local/evaluation/pao-accuracy/shape-v1/design.md (plain-language version of the base; this file wins where they differ)",
+    "readingRule": "Read the base with every entry of 'changes' applied. Where the base names shape-v1 as an identifier (schema strings, folders, version fields), the names under changes.names replace it. References to 'shape-v1 Section N' keep their meaning."
+  },
+  "sectionRule": {
+    "rule": "Top-level sections other than name, kind, status, createdUtc, revisedUtc, base, sectionRule, challenge, authority and changes relate to the base section of the same name as listed here.",
+    "disclosure": "new (no base section)",
+    "unchanged": "new: a reading aid listing base rules that stay; it changes nothing",
+    "predictions": "replaces the base predictions (those were shape-v1 predictions, scored under metric F shape-v1)",
+    "risks": "adds to the base risks; every base risk stays",
+    "buildPlan": "buildPlan.order replaces base buildPlan.order and buildPlan.regeneration; buildPlan.exclusiveEdits, exclusiveNew and neverTouch replace the base lists; base buildPlan.syntheticTestsJs and syntheticTestsPython stay, with '1.0 m thinning' read as '0.25 m thinning' and every shape-v1 identifier read through changes.names",
+    "changeRule": "replaces the base changeRule",
+    "history": "base openQuestionsForSean and coordinatorFollowUps were answered under shape-v1 and are history; base metricTableChanges, catalogAndServer (through changes.names), evaluation, ui, words and every rule section stay; base buildPlan.laptopRules and authority.bindingRules stay"
+  },
+  "authority": {
+    "decision": "Sean, 2026-10-14T05:23:35Z (chat question tool, option 'More scans'): a new frozen car-shape version that keeps a LiDAR sweep every 0.25 m of ego travel instead of every 1.0 m. Everything else in the shape rule stays.",
+    "sameTimeAnswers": [
+      "Wait for label method v2 before the lock, so metrics D and E can be scored.",
+      "Metric B must pass per held-out site; the pooled value is also reported."
+    ],
+    "decisionsFile": ".local/project/pao-accuracy-2026-10-12/decisions.md"
+  },
+  "challenge": {
+    "review": "Fresh read-only challenge agent (no edits), 2026-10-14, finished about 05:36Z, on the 05:29Z draft of this file and the split addendum.",
+    "verdict": "revise: 1 blocker, 6 major, 6 minor",
+    "applied": [
+      "B1: status and buildPlan.order state the true code state at freeze (uncommitted names-and-constants edits); the lock records HEAD and the diff SHA-256.",
+      "M1: sectionRule says which top-level sections replace or add to the base; lockFieldChanges says which base entries stay.",
+      "M2: changeRule restores 'No number may be changed because of which development rows it flips.'",
+      "M3: disclosure.whatIf.overlap and .method disclose that the what-if gain was partly measured on sweeps that move into the shape, the sampled deep test and the uncapped thinning; prediction 3 says 16 new + 1.",
+      "M4: base predictions 4-5 (metric F v2 likely-false and ambiguous Blocked rows become height-not-proven) are restated as predictions 7-8.",
+      "M5: lockFieldChanges adds pipeline.shapeSplitAddendum.",
+      "M6: the split addendum changes the .rule texts only, adds a name substitution and states which base pins stay.",
+      "m1-m6: names add the builder folder, the report key, the app-contract section and the plan-folder layout; neverTouch and exclusiveEdits extended; loaderValidation says it replaces base checks[14]; download volume corrected and no copy reuse; cap-binding risk added; createdUtc is the real write time; prediction 3 says placement v3.4; the addendum input list wording fixed."
+    ],
+    "recomputed": "The coordinator recomputed the overlap numbers independently from the shape-v1 ground.json sweep lists and the 0.25 m candidate list (metadata only, no sweep contents): 8c v4-18.5 keeps 35 of 95; 6 of 8 shape-v1 scoring sweeps become shape-v2 shape sweeps, 1 stays scoring, 1 is dropped; 7 of 8 shape-v1 shape sweeps stay shape, 1 is dropped; 16 of the 17 shape-v2 scoring sweeps were in neither shape-v1 list.",
+    "recheck": "Same agent, 2026-10-14, finished about 05:41Z: all 13 findings fixed, ready to freeze; 8 new minor items, all applied: status wording and git status; base neverTouch, versions.app and the metrics.F lock text restored; base predictions 2-3 restated; sweeps.downloads.development changed; laptopRules and bindingRules stay; the metric F summary applies the addendum names rule to the copied base texts; the builder sweepPlanDir is nominal; the addendum names rule maps protocol v3 to v4; sectionRule excludes itself.",
+    "firstFreezeWithdrawn": "A first freeze at 2026-10-14T05:42:46Z was withdrawn within minutes, before any use: its revisedUtc fields (05:45Z, 05:58Z) and the recheck time were estimates later than the freeze itself. Only those times changed; no rule, number or prediction changed, and no shape-v2 result existed."
+  },
+  "disclosure": {
+    "chosenAfterDevelopmentResults": "The 0.25 m step was chosen after a development-only what-if had been run and shown to Sean. The base change rule says 'No number may be changed because of which development rows it flips.' This change departs from that sentence on Sean's explicit decision and is recorded here as a departure, not hidden.",
+    "whatIf": {
+      "folder": ".local/evaluation/pao-accuracy/shape-whatif-2026-10-14/ (shape_whatif.py, trace_lost.py)",
+      "extraSweeps": ".local/data/av2/shape-whatif/ (public AV2 train sweeps of the two development logs only; about 27 MB)",
+      "stepsListed": "8c52d911 kept counts by ego step: 1.0 m -> 16, 0.5 m -> 30, 0.25 m -> 35, 0.1 m -> 39, 0.0 m -> 95 (before the 40 cap). c780d53a: 46 at every step (cap 40).",
+      "stepsScored": "Only 0.25 m was scored (plus an all-kept, no-split information variant). The 0.5 m and 0.1 m runs were skipped because their sweeps were not on disk; no other value was searched.",
+      "results": "8c52d911 v4-18.5: shape-v1 rule keeps 13 of 35 metric F supported child Blocked rows (8 shape sweeps, 395 of 779 cells empty); a 0.25 m step keeps 21 of 35 (18 shape sweeps, 351 of 779 empty); all 35 kept sweeps with no split also keep 21. c780d53a v4-18.5: 5 of 17 under shape-v1 (20 shape sweeps) and 5 of 17 with all 46 sweeps. No variant made a row deep that metric F did not support. The F classes in the what-if came from the shape-v1 scoring sweeps.",
+      "reproduction": "The what-if rebuilt both shape-v1 ground.json shapes exactly before any variant was scored.",
+      "overlap": "The what-if is partly circular. At 0.25 m on 8c, 6 of the 8 shape-v1 scoring sweeps (the sweeps that set the metric F 'supported' classes the what-if counted against) become shape-v2 shape sweeps, 1 stays a scoring sweep and 1 is dropped by thinning; 7 of the 8 shape-v1 shape sweeps stay shape sweeps and 1 is dropped. The 13 -> 21 gain was therefore partly measured against sweeps that are now inside the shape. Shape-v2 scoring is 17 sweeps: 16 that were in neither shape-v1 list and 1 shape-v1 scoring sweep.",
+      "method": "The what-if deep() sampled 2001 points along the line instead of calling the app's deepTest, and its thin() did not apply the 40 cap (8c kept 35, under the cap; c780 was compared with all 46). Its numbers are exploratory, not a substitute for the frozen metric F run."
+    },
+    "consequence": "Development results under shape-v2 are tuning-set results, not unbiased evidence that 0.25 m is better. The held-out sites, never opened, stay the unbiased test; their shape-v2 results are reported once under the lock, whatever they show.",
+    "notChanged": "The deep test, the solid-top rule and the 0.10 m margin were not loosened, although the what-if found 26 of the 34 lost 8c and c780 rows are lost on sloped parts where the measured top is under 0.10 m above the line. Sean chose more scans only."
+  },
+  "changes": {
+    "sweeps.thinning.minEgoStepM": {
+      "from": 1.0,
+      "to": 0.25,
+      "rule": "unchanged: walk candidates in time order; keep the first; keep each next candidate whose ego origin is at least minEgoStepM (horizontal) from the ego origin of the last kept one",
+      "reason": "Sean 2026-10-14 ('More scans'). At 10 sweeps per second and 2.5-10 m/s the ego moves 0.25-1 m per sweep; 0.25 m keeps nearly every sweep while the ego moves and still drops repeats while it stands still or creeps."
+    },
+    "names": {
+      "shapeSchema": "carShape.schema 'shape-v2' (was 'shape-v1')",
+      "planSchema": "sweep-plan.json schema 'shape-v2-sweep-plan' (was 'shape-v1-sweep-plan')",
+      "receiptSchema": "download receipt schema 'shape-v2-download-receipt' (was 'shape-v1-download-receipt')",
+      "planFolder": ".local/data/av2/shape-v2-<log8>-<scene>/<variant>/shape-v2-<log>/ (written with --out-root .local/data/av2/shape-v2-<log8>-<scene>/<variant>; was the same layout with shape-v1, e.g. shape-v1-8c52d911-2658849/v4-18.5/shape-v1-8c52d911-fe34-3424-9864-d3fdfac38064/). Variant folders: handmade-v3.4, v4-12, v4-18.5. shape-v1 folders are history and never read by a shape-v2 build. The builder's selection.json field carShape.sweepPlanDir records the default folder name .local/data/av2/shape-v2-<log>/ (no --out-root); it is nominal. The plan actually used is the one whose SHA-256 ground.json records in carShape.sweeps.planSha256.",
+      "approachSplitSchema": "'shape-v2-approach-split' (was 'shape-v1-approach-split')",
+      "metricFFolder": ".local/evaluation/pao-accuracy/metric-f-shape-v2/ (was metric-f-shape-v1/)",
+      "approachSplitFolder": ".local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split/",
+      "groundedFolder": ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.4/ (was grounded-v3.3/); grounded-v3.3 stays as history",
+      "builderFolder": ".local/evaluation/pao-accuracy/scene-builder-v4.3/ (was scene-builder-v4.2/, which stays as history)",
+      "placementProtocolFiles": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json and protocol-v3.4-freeze.json (v3.3 files stay as history)",
+      "metricFReportKey": "The report key 'shapeV1' (metric-f.mjs rows and scripts/evaluation/metric_f_car_top.py results and summaries) keeps its name and means 'the car-shape section' under both versions; the metric F protocol field shapeVersion ('shape-v2') and the summary kind name the version.",
+      "appContractSection": ".local/evaluation/av2-map-first-2026-10-11/app-contract.md gains section A14 (grounded-v3.4, placement v3.4, shape-v2); A13 stays as history"
+    },
+    "dataSchema.carShape": {
+      "schema": "'shape-v2'",
+      "sweeps.rule": "{maxEgoDistanceM: 30, minEgoStepM: 0.25, maxKept: 40, split: 'alternate', minShapeSweeps: 2, downloadAttempts: 4, retryWaitsS: [5, 10, 20]}",
+      "protocol": "{placementProtocolVersion: '3.4', sha256 (placement protocol v3.4), shapeProtocolSha256 (the SHA-256 of this file)}",
+      "everyOtherField": "unchanged (box, code, counts, diagnostics, frame, grid, refusal, removed, solidTopM, status, track; the sweeps fields planSha256, listing, candidates, thinned, kept, shape, scoring, downloadDropped)"
+    },
+    "loaderValidation": {
+      "schema": "carShape.schema === 'shape-v2'",
+      "rule": "carShape.sweeps.rule equals the shape-v2 rule above exactly",
+      "placement": "carShape.protocol.placementProtocolVersion === '3.4'",
+      "refusedHistory": "a shape-v1 ground.json (schema 'shape-v1', minEgoStepM 1, placement 3.3) is rejected by the shape-v2 app; it loads only with the app source of its own commit (metric-f.mjs --app-src)",
+      "everyOtherCheck": "unchanged",
+      "replaces": "base loaderValidation.checks[14]: placementProtocolVersion '3.3' becomes '3.4'; the hex checks of that item stay",
+      "additions": "the schema and rule checks above are added to the written base check list (src/scene.mjs already enforced both for shape-v1)"
+    },
+    "versions": {
+      "shapeProtocol": "shape-v1 -> shape-v2",
+      "placementProtocol": "3.3 -> 3.4: the carShape block pins this frozen shape-v2 protocol by SHA-256; every other v3.3 rule unchanged",
+      "groundSchemaVersion": "3, unchanged",
+      "builder": "4.2 -> 4.3: pins placement v3.4; SUPPORTED_VERSIONS adds 4.3; parametersByVariant (v4-12, v4-18.5) and every choice rule unchanged; RUNTIME_CODE still includes scripts/california/car_shape.py",
+      "metricF": "metric F shape-v1 (protocol v3) -> metric F shape-v2 (protocol v4): scores only the shape-v2 carShape scoring sweeps; thresholds, classes, laser-drop rule and label unchanged; pins this file",
+      "approachSplit": "a shape-v2 split addendum (shape-v2/split-addendum.json) applies the frozen shape-v1 approach-half rule to the shape-v2 kept list",
+      "replaces": "changes.versions replaces the base versions section",
+      "app": "src/geometry.mjs, src/scene.mjs, src/scenario-assistant.mjs (loader accepts only shape-v2; result rule and phrases unchanged)"
+    },
+    "lockFieldChanges": [
+      "pipeline.shapeProtocol: the frozen shape-v2 protocol SHA-256 (from shape-v2/protocol.lock.json)",
+      "pipeline.placementProtocol: v3.4 SHA-256",
+      "pipeline.builder: v4.3 builder protocol SHA-256 and RUNTIME_CODE hashes",
+      "resultRules.vehicleModel: recorded stationary vehicle = LiDAR shape (shape-v2) for box-deep lines; declared vehicles = box",
+      "metrics.F: metric F shape-v2 protocol SHA-256 (protocol v4), scoring-sweep rule, laser-drop rule, label 'consistency and code cross-check'",
+      "downloads.heldOut.shapeSweeps: at most 40 per held-out site (cap unchanged), with a hashed sweep plan and receipts, only after the lock",
+      "pipeline.shapeSplitAddendum: the frozen shape-v2 split addendum SHA-256 (from shape-v2/split-addendum.lock.json); car_shape.check_held_out(need_addendum=True) requires it",
+      "Base lockFieldChanges entries 3 (resultRules.unknownReasons) and 6 (metrics.F0) stay unchanged; the entries above replace base entries 0, 1, 2, 4, 5 and 7."
+    ],
+    "sweeps.downloads.development": {
+      "from": "the base development download estimate",
+      "to": "8c52d911/2658849: three variant folders (handmade-v3.4, v4-12, v4-18.5) of 35 planned sweeps; c780d53a/2069452: two variant folders (v4-12, v4-18.5) of 40; about 185 MB in all, network and disk. Each folder downloads its own copy; nothing is copied from shape-v1, what-if or sibling folders (base sweeps.downloads.reuse applies only inside a folder)."
+    }
+  },
+  "unchanged": [
+    "Candidates: listed sweeps with a track row, inside the ego pose record, ego origin within 30 m of the averaged box centre.",
+    "Cap: maxKept 40 with even spacing (Sean: everything else in the shape rule stays). About 42 MB per site.",
+    "Split: alternate positions after the cap (even = shape, odd = scoring), fixed at plan time.",
+    "Plan written and hashed before any download; downloads one at a time, 4 attempts, waits 5, 10, 20 s, size and single-part MD5 check.",
+    "Pose at ts, registration into the averaged box, stationary check and refusals (too-few-sweeps, not-stationary).",
+    "Grid (at most 0.10 m cells), height range, which returns count, solid top (second-highest per-sweep top, at least 2 sweeps, millimetre floor).",
+    "Deep test: line at least 0.10 m below the solid top over every cell under the 0.20 m square and at least 0.10 m inside the footprint; null cells count as 0.",
+    "Result rule: a box-Blocked line not deep in the shape becomes Unknown 'vehicle height not proven'; the shape never adds a Blocked; declared what-if vehicles keep the box; TOO_CLOSE_TO_CALL_M 0.10.",
+    "Metric F thresholds, classes and target (0 likely false), F0 no-new-Blocked and allowed-change checks, the approach-half split rule, metric E as the main independent check.",
+    "Drawing: the car stays drawn as the box. No frontend-owned file changes."
+  ],
+  "predictions": [
+    "1. No new Blocked on any row of any development scene (structural; a violation is a bug).",
+    "2. (Base prediction 2, restated) The 8c first load is unchanged (both results plain Unknown): the line misses the box, so step 6 never runs.",
+    "3. (Base prediction 3, restated) Every row the box does not call Blocked is an identical object.",
+    "4. c780d53a (v4-12 and v4-18.5): 46 candidates thin to 46 at both steps, so the 40 cap picks the same sweeps: the sweep plan lists the same shape and scoring timestamps as shape-v1, and solidTopM, counts, removed and every row result are identical to shape-v1. Metric F child supported kept stays 5 of 17 on both variants.",
+    "5. 8c52d911 (hand-made with placement v3.4, v4-12, v4-18.5; one vehicle, track 396f15b5): 95 candidates thin to 35 (under the cap): 18 shape and 17 scoring sweeps. Of the 17 scoring sweeps, 16 were in neither shape-v1 list and 1 was a shape-v1 scoring sweep; 6 of the 8 shape-v1 scoring sweeps become shape sweeps. Metric F reruns on the 17 scoring sweeps, so classes may move.",
+    "6. 8c52d911 v4-18.5: about 21 of the metric F supported child Blocked rows kept (what-if on shape-v1 F classes, partly circular: see disclosure.whatIf.overlap); expected, not guaranteed. Hand-made and v4-12 expected to keep at least as many as under shape-v1 (12 of 33 and 1 of 20); not guaranteed.",
+    "7. (Base prediction 4, restated) every metric F v2 likely-false Blocked row is height-not-proven under shape-v2: 5 (8c hand-made), 3 (8c v4-12), 4 (8c v4-18.5), 4 (c780 v4-12), 4 (c780 v4-18.5). On 8c this directly tests the risk that a second-highest top over more sweeps admits a noisy high return.",
+    "8. (Base prediction 5, restated) every metric F v2 ambiguous Blocked row (7, 1, 6, 1, 1 in the same scene order) is height-not-proven under shape-v2. Expected, not guaranteed.",
+    "9. Adult Blocked on 8c stays at or near 0 (expected, not guaranteed).",
+    "10. Metric F shape-v2: 0 likely-false rows on every development scene (expected by construction; a consistency result, not accuracy evidence).",
+    "11. 453e5558: unchanged outcome (no vehicle placed; carShape null; no sweep plan, no downloads).",
+    "12. Setback sweep p50 <= 5 ms with the shape.",
+    "13. Neither development vehicle is refused; per-site planned counts are reported from the sweep plan before any build or scoring."
+  ],
+  "risks": [
+    "More sweeps per cell make the second-highest per-sweep top less conservative: one more noisy high return (mixed pixel, glass reflection) is enough to raise a top. Bounded by the base proofs.noNewBlocked; metric E is the independent check.",
+    "Consecutive 0.25 m sweeps are close in viewpoint, so the alternating shape and scoring sets are less independent than under shape-v1; metric F stays a consistency check, not accuracy evidence. The approach-half split addendum is the report-only check with more separation.",
+    "Development numbers were seen before the choice (see disclosure); only held-out results test it.",
+    "Coverage may still fail metric H at held-out sites: the deep test was not loosened.",
+    "Downloads: the cap is unchanged (at most 40 sweeps, about 42 MB per held-out site). Each development variant folder downloads its own copy of its planned sweeps; nothing is copied from shape-v1, what-if or sibling folders: about 105 MB for 8c (3 x 35 sweeps) and 80 MB for c780 (2 x 40), network and disk, one file at a time.",
+    "Where 0.25 m thinning keeps more than 40 sweeps, the cap binds and shape-v2 keeps 40 sweeps like shape-v1 (c780 keeps the exact same sweeps). A gain is possible only where shape-v1 thinned below 40. The evenly spaced cap picks by list position, so slow, dense stretches of the drive get more of the 40. Metric H at held-out sites can improve only where shape-v1 would have kept fewer than 40 sweeps."
+  ],
+  "buildPlan": {
+    "order": [
+      "Before the freeze: names-and-constants code edits only, uncommitted, never run on data (status; recorded in the lock as HEAD plus the diff SHA-256).",
+      "Freeze this file and the shape-v2 split addendum (lock records).",
+      "Put the frozen SHA-256s into car_shape.py; freeze placement protocol v3.4 and builder protocol v4.3 before their first run.",
+      "Data: write the sweep plans and download (one job at a time), build grounded-v3.4 8c and the builder v4.3 runs for 8c and c780, the 453e guard rerun; then freeze metric F protocol v4 (pinning these predictions and the input hashes) before metric F shape-v2 runs (alternating and approach split), F0, allowed changes, the baseline and the speed gate.",
+      "Fresh read-only review; fix; npm test, npm run build, npm run test:sites and the Python suites; commit and push."
+    ],
+    "exclusiveEdits": [
+      "src/geometry.mjs (comments)",
+      "src/scene.mjs (shape-v2 only)",
+      "src/scenario-assistant.mjs (comments)",
+      "scripts/california/car_shape.py (names, rule, pins)",
+      "scripts/california/prepare_av2_ground.py (placement v3.4)",
+      "scripts/california/suggest_av2_placements.py (accepts placement v3.4, ground schemaVersion 3)",
+      "scripts/california/build_av2_scene.py (v4.3)",
+      "scripts/evaluation/metric-f.mjs (shape-v2 approach-split schema)",
+      "scripts/evaluation/metric_f_car_top.py (shape-v2 inputs, delta addendum, v1 comparison)",
+      "scripts/evaluation/pao-baseline.mjs (GROUNDED_DIR -> grounded-v3.4/)",
+      ".local/evaluation/av2-map-first-2026-10-11/browser/serve-av2.mjs (FOLDER grounded-v3.4, shape-v2)",
+      ".local/evaluation/av2-map-first-2026-10-11/app-contract.md (A14)",
+      "tests: car-shape-fixture.mjs, car-shape.test.mjs, av2-ground.test.mjs, metric-f.test.mjs, pao-baseline.test.mjs, history-app.mjs, tests/california/test_car_shape.py, test_prepare_av2_ground.py, test_build_av2_scene.py, test_suggest_av2_placements.py, tests/evaluation/test_metric_f_car_top.py"
+    ],
+    "exclusiveNew": [
+      ".local/evaluation/pao-accuracy/shape-v2/ (lock records)",
+      "placement protocol v3.4 and its freeze record",
+      ".local/evaluation/pao-accuracy/scene-builder-v4.3/",
+      ".local/evaluation/pao-accuracy/metric-f-shape-v2/",
+      ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.4/",
+      ".local/data/av2/shape-v2-<log8>-<scene>/"
+    ],
+    "neverTouch": [
+      "every frontend-owned file (as in the base list)",
+      ".local/evaluation/pao-accuracy/split.json",
+      "held-out, control and reserve data",
+      ".local/secrets",
+      "README.md, plan.md, features.md, decisions.md (the coordinator updates them)",
+      "shape-v2/protocol.json, protocol.lock.json, split-addendum.json and split-addendum.lock.json after the freeze",
+      ".local/evaluation/pao-accuracy/shape-v1/ (frozen)",
+      ".local/data/av2/shape-v1-*/ and .local/data/av2/shape-whatif/ (history; never read by a shape-v2 build)",
+      ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.3/ and grounded-v3.2/, protocol-v3.3.json and its freeze record (history)",
+      ".local/evaluation/pao-accuracy/scene-builder-v4.2/, metric-f-shape-v1/ and metric-f-v4.1/ (history)"
+    ]
+  },
+  "changeRule": "After the freeze, any change to a rule or number here is a new version (shape-v3) with a dated reason, frozen before its own first result and before any held-out data is opened. No number may be changed because of which development rows it flips; an exception needs Sean's explicit decision and a disclosure like the one in this file. The shape-v1 and shape-v2 freeze records stay as history."
+}

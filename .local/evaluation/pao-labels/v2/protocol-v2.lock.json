@@ -1,0 +1,69 @@
+{
+ "bytes": 34164,
+ "document": {
+  "file": "protocol-v2.md",
+  "sha256": "e9dd1e7ae23548431ec7075056f7147592c0aa979d4b33afc886df1bd6108772"
+ },
+ "environment": {
+  "interpreter": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+  "notInstalled": "No OpenCV (its wheels bundle LGPL FFmpeg); no segmentation model; no network service.",
+  "packages": {
+   "numpy": {
+    "license": "BSD-3-Clause",
+    "version": "2.3.1"
+   },
+   "pillow": {
+    "license": "MIT-CMU (HPND)",
+    "version": "11.3.0"
+   },
+   "pyarrow": {
+    "license": "Apache-2.0",
+    "version": "20.0.0"
+   },
+   "scipy": {
+    "license": "BSD-3-Clause",
+    "version": "1.16.0"
+   }
+  },
+  "python": "3.13.5"
+ },
+ "file": "protocol-v2.json",
+ "frozenUtc": "2026-10-14T10:49:24Z",
+ "kitCodeSha256": {
+  "aggregate.py": "737fc184f045f0d659300409d12cb69a10fca3ccb34793aa7c80ff19c8f0a031",
+  "av2io.py": "52d11e9b84b8a73e17e1554a911eb0793866dcbca5db2c32abfa8d031aa3ee36",
+  "build_validation.py": "54f8d4086298840401cbba4f73cdaee6c0848fa6adee9106abe4f046f8a33ae1",
+  "common.py": "4f211d6cc56c2e2f502c073fefb930b4259d0e5898da345b00448d8be67007a1",
+  "fetch_dev.py": "e2276f472cf2a81ab0432c83a778b39760f3eb6c9e1574f2376fdc6c94e2f88b",
+  "imaging.py": "1986e21b4c76f05ba81acde8374fdbba3a022314b1210207d415d65d98a5bc55",
+  "isolation.py": "3a416f5dc74aea8eaad9fac903a7868b2419201675d015e362c80979f18e79ec",
+  "labelkit.py": "41fda4f0db88cc2f4a7d4e1bfbe778d80442484d45a4032afb8e59d9753765d0",
+  "lidar_ref.py": "479b1ddb02f820b4abaaa490c0e24ab26abfb70386af5c6aebe62032c2d065b0",
+  "lock_protocol.py": "2bf6e10b0aef4e69cc97b13d0d56d05430277fa4668b7e17e1df1c63b974fbed",
+  "oracle.py": "a5e514b62b423c474b03bfb144a8bc23d2a05b70e4cc5a9017e8ffb428835e5b",
+  "score.py": "1d95cd612f8ae53d58448049cd9497236b6c3fb20527e24a00ed0b4a1c06860e",
+  "select_cases.py": "7d3e0315697a20759556815667c5b2774b554b2cddc4730594142ed58e18341f",
+  "selftest.py": "ef11f0de9efc806abef2b837a172d1e3e6682d1f1a474227884919fce542e45c",
+  "session.py": "de9d8c7f601c705f041132f84cc86c63b3884e621fa476d459c095d36473c0de",
+  "snap.py": "da76aa9ac208decae94750ec8614181af6bf2a6f9628271128e756d7481e150d",
+  "synth.py": "020bee85eb810b3aff536e21fbafd1760b8392e3aab41d562f413cf16b567906",
+  "truth.py": "2f76ad7cfa317e2ebd3e06774e6cf9ccef0429509660a5552ac12883dfd664f0"
+ },
+ "labelerInstructions": {
+  "file": "labeler-instructions-v2.md",
+  "sha256": "4cbb90111a95ccc5565a762fbc20522161a36afbdacafad336bd94a0a78a6ed1"
+ },
+ "repositoryHead": "12b29c652b809f3c63275f793a56f27f03afc764",
+ "sha256": "c35dff1792b737c039a7a324ea3f56e90876cc98e1c329c1a036b284c775367b",
+ "statement": [
+  "Frozen after the following work on the three development logs (8c52d911, 453e5558, c780d53a); no held-out, control or reserve file was opened, and no labeler session has run under v2. Scope: this lists the labels work. Outside the labels kit, the accuracy program's scene building, metric F and M7 scoring code also ran on these development logs (recorded under pao-accuracy); none of it computed a v2 label reference or rendered a v2 case.",
+  "(1) Protocol v1 and its development drafts (2026-10-12): draft case selections, draft LiDAR references, paint threshold tests, the LiDAR-to-photo registration probes that set the 8 px LiDAR allowance, draft synthetic builds and oracle self-tests (protocol-v1.errata.md section 2).",
+  "(2) The v1 run: the locked v1 build, three AI labelers, aggregation, scoring and the report (gate FAIL, 9 of 136 features) with its exploratory cannot_tell diagnostic (validation-report.diagnostic.json, which replays every v1 labeler session; input for design only), then two post-run audits (2026-10-12 and 2026-10-13) and the v1 errata.",
+  "(3) A seeded multi-seed oracle tool check of an earlier v2 draft on the locked v1 set (tool-selftest-multiseed, plan frozen before the runs). Its result (the own-column station rule loses roofline features under answer noise) led to the grid-column station rule.",
+  "(4) coverage-design.md (2026-10-14), written from the v1 report and that tool check, and its implementation, including the implementer's synthetic-only scratch builds and one-seed oracle smoke runs.",
+  "(5) The v2 known-answer set parameters were chosen before any v2 build: synthetic seeds 301-312 and 401-404, the two synthetic background frames, the exclusions and taskOrderSeed. The synthetic part was then built and inspected: the coordinator viewed the rendered vehicles, and a one-seed perfect-oracle smoke run on an earlier scratch build counted exact features per family (extremes 52, roofline 39, tire contacts 25, paint 23). The frozen comparison (7) built the same 17 synthetic tasks again: 23 paint features, of which the perfect oracles resolve 22 in every seed (V08 P4 is resolved by none of the three; its aggregate is in the comparison runs in the coordinator-only folder named by PAO_LABELS_COORDINATOR_DIR; its station column crosses the slanted side of a crosswalk bar in the synthetic paint polygon), so the binding paint count is 22. Why the smoke run counted 23 was not checked.",
+  "(6) The v2 real case plan: select_cases.py --draft runs on development annotations and poses (v1 rule rebuild to confirm the v1 exclusions; rule variants with a 1 s frame window and with paint targets 13/22 m, rejected; paint targets 16/20 m chosen so v2 paint photos differ from v1), then the download of the planned 94 camera and LiDAR files. No reference, LiDAR profile or render of a v2 real case was computed before the lock.",
+  "(7) The frozen pre-lock oracle comparison (oracle-comparison-plan-2026-10-14.json, frozen 08:49:20Z before any run): the synthetic part of this exact set, 10 seeds, 8 conditions (this design and the earlier-draft rules, each with perfect, honest-band, honest-band + 2 % and honest-band + 5 % oracles). Result (oracle-comparison-results-2026-10-14.json): with perfect oracles this design passed every synthetic check in all 10 seeds (138 of 139 features resolved; exact features per family 52/39/25/22), and under every honest condition it resolved at least as many features per family (median over the 10 seeds) as the earlier-draft rules (honest-band medians 52/39/25/22 vs 26/22/15/17; the earlier draft also missed the minimum resolved share in every honest seed), so neither revisit condition held and the lock proceeded unchanged. Deviations recorded in the results file: the runner was restarted once; the labels code at run time differed from the plan commit fd724c4 only in isolation.py tool_inputs (commit 2e7f140, the transcript scan), which selftest.py never calls.",
+  "Gate error limits, value spread limits, the minimum resolved share and the use rule are as in v1. The per-family minimum (10) was added on the second audit's suggestion, not fitted to a result. Nothing in items (3)-(7) changed any of them. No threshold or parameter was fitted to labeler answers; the v1 cannot_tell diagnostic in item (2) informed the search design (coverage-design.md)."
+ ]
+}

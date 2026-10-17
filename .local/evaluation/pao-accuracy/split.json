@@ -1,0 +1,1034 @@
+{
+ "schemaVersion": 1,
+ "name": "Palo Alto (Argoverse 2) development / held-out split",
+ "frozenUtc": "2026-10-12T09:20:27Z",
+ "frozenBy": "Sightline accuracy thread, task M0 (Claude worker); roles exactly as decisions.md coordinator defaults",
+ "authority": {
+  "decisions": ".local/project/pao-accuracy-2026-10-12/decisions.md (Split bullet; Sean: Clear removed; accuracy over speed)",
+  "binding corrections": ".local/project/pao-accuracy-2026-10-12/planning-workflow-result.json challenge.requiredChanges items 6 and 7, correctedDecisions question 1"
+ },
+ "unit": "One intersection (crossings merged within 6 m, linked within 30 m by city XY). Crossing ids differ between map versions, so grouping uses city XY.",
+ "cityFrame": "AV2 PAO city coordinates in metres (publisher frame). Vehicle lateral sign at the reference pose: negative = right of the ego, positive = left.",
+ "selectionRule": {
+  "name": "stopped annotated vehicle between ego and crossing on the approach side",
+  "frozen": true,
+  "approachSide": "right of the ego lane (protocol v2 always places the approach curb on the right)",
+  "operational": [
+   "Candidate crossing: centroid 5-40 m ahead of the ego and within 31 degrees of its heading (stereo field of view 62.6 degrees) at some pose; window = all such poses.",
+   "Stationary vehicle: vehicle-category annotation boxes (REGULAR_VEHICLE, LARGE_VEHICLE, BUS, BOX_TRUCK, TRUCK, TRUCK_CAB, VEHICULAR_TRAILER, SCHOOL_BUS, ARTICULATED_BUS, MESSAGE_BOARD_TRAILER, RAILED_VEHICLE) whose city centres stay within 0.6 m of a seed box for at least 30 distinct sweeps (about 3 s), greedy grouping in time order.",
+   "Near the crossing: cluster centre within 12 m of the crossing polygon, and its time span overlaps the crossing view window.",
+   "Reference pose: the pose in the view window whose crossing-centroid forward distance is closest to 20 m.",
+   "At the reference pose the vehicle is forward > 2 m and within 31 degrees (in stereo view), 0 < forward < crossing forward + 2 m (between ego and crossing), and lateral < -1.5 m (right side).",
+   "A site with at least one such vehicle is a Blocked-test candidate; only left-side such vehicles (lateral > +1.5 m) makes a left-side case; none makes a control."
+  ],
+  "inputsUsed": "AV2 annotation columns timestamp_ns, category, tx_m, ty_m, length_m (HTTP Range subsets for new logs); full ego poses; map pedestrian_crossings (first 24,576 B of each new map); public S3 listings (names, sizes, ETags, frame timestamps). No camera image, LiDAR sweep or calibration content of any held-out or reserve log.",
+  "scripts": {
+   "analyze.py": "68abad706e85f769cfc34d1c988753021567a30da3e57be1dbe04c21e4bf9193",
+   "fetch_ann.py": "da5718084d6882177b6b901619d088bfe4a52553ecd72eeac4d484a33016920f",
+   "frames.py": "1c6c1b90f4c45e6ba8a0b9dfa91fa8de39632b4b33c1416d05c1ed27b474957c",
+   "relgeom.py": "1123ef5c468ff00109e8ec5df35c79ed967ac8bb5d346c84ba741bc2a2e9a22c",
+   "stationary.py": "920bf1c6f2cac8ce796f4be5e30e782ad5e29fb057d7cfc1d61ed8b7e07913b4"
+  },
+  "outputs": {
+   "analysis.json": "8f2bc82e1d206d1137e152bba345cfd7eaed7f3adf8fe3ad22f47f03692bb116",
+   "ann-receipt.json": "e0a7b47d11c84d759f0b1e6d01d9fa12853a991eb1b02af6eaa2e890cd9b1cbc",
+   "fetch-receipt.json": "ab155b389f9ae6ffd4eff024b9784aeea3019e7eb464236ef35ff2107e98a776",
+   "frames.json": "5a8009d22e2a38b43fb0e2a8d7c27d787019655e2872962935ebafc57034e430",
+   "inventory-summary.json": "4bd4956a9567270cb9ebf1aede9db6daee510ae005bba46f27385ecfdebe09e4",
+   "stationary.json": "28c6b39f17be05e4cb9ab6d7c02b0345d02cbbc445c731fd1d1ca8b59da0bead"
+  },
+  "evidenceFolder": "selection-evidence/ (copied from the planning lane scratch on 2026-10-12; scripts reference their original scratch paths)",
+  "wording": "Stationary means only that the annotation stayed in place; it says nothing about why the vehicle stopped, and many of these vehicles may be queued at signals."
+ },
+ "sites": [
+  {
+   "role": "development",
+   "logId": "8c52d911-fe34-3424-9864-d3fdfac38064",
+   "av2Split": "train",
+   "crossingId": "2658849",
+   "mapArchive": "local development map (on disk)",
+   "crossingCentroidCityXY": [
+    1655.16,
+    806.05
+   ],
+   "intersectionCentroidCityXY": [
+    1658.1,
+    800.9
+   ],
+   "expectedBlocked": true,
+   "selectionExpectation": "Blocked (development; not a held-out claim)",
+   "crossingView": {
+    "minForwardM": 13.4,
+    "maxForwardM": 40.0,
+    "spanS": 10.42,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315969947092441186",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.03,
+     "stationaryS": 11.3,
+     "nSweeps": 114,
+     "posSpreadM": 0.32,
+     "distToCrossingM": 2.4,
+     "cityXY": [
+      1649.0,
+      807.3
+     ],
+     "atReferencePose": {
+      "vehFwdM": 15.5,
+      "vehLatM": -2.6,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    }
+   ],
+   "notes": "Current app scene (av2-pao-8c52d911-2658849, protocol v2). Development data: images, LiDAR and annotations of this log were used for tuning. Selection-rule vehicle is annotated track 396f15b5; the app first load is Unknown by a 0.025 m margin (see baseline)."
+  },
+  {
+   "role": "development",
+   "logId": "453e5558-6363-38e3-bf9b-42b5ba0a6f1d",
+   "av2Split": "train",
+   "crossingId": "20499018",
+   "mapArchive": "local development map (on disk)",
+   "crossingCentroidCityXY": [
+    -446.82,
+    927.62
+   ],
+   "intersectionCentroidCityXY": [
+    -446.8,
+    927.6
+   ],
+   "expectedBlocked": true,
+   "selectionExpectation": "Blocked (development; not a held-out claim)",
+   "crossingView": {
+    "minForwardM": 9.7,
+    "maxForwardM": 40.0,
+    "spanS": 2.54,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315970633322412937",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "LARGE_VEHICLE",
+     "lenM": 8.4,
+     "stationaryS": 15.6,
+     "nSweeps": 76,
+     "posSpreadM": 0.41,
+     "distToCrossingM": 1.3,
+     "cityXY": [
+      -454.4,
+      920.5
+     ],
+     "atReferencePose": {
+      "vehFwdM": 9.9,
+      "vehLatM": -3.5,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    },
+    {
+     "cat": "LARGE_VEHICLE",
+     "lenM": 8.4,
+     "stationaryS": 8.4,
+     "nSweeps": 81,
+     "posSpreadM": 0.09,
+     "distToCrossingM": 1.6,
+     "cityXY": [
+      -454.6,
+      920.4
+     ],
+     "atReferencePose": {
+      "vehFwdM": 9.7,
+      "vehLatM": -3.3,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    }
+   ],
+   "notes": "On disk, no download needed. Older NVIDIA output for this log failed audit (raw max 90.44 km, copied metadata); the map-first path does not use it; re-audit before use."
+  },
+  {
+   "role": "development-optional",
+   "logId": "c780d53a-2d37-3cd8-9e89-530966aef53e",
+   "av2Split": "train",
+   "crossingId": "2069452",
+   "mapArchive": "local development map (on disk)",
+   "crossingCentroidCityXY": [
+    806.05,
+    -174.8
+   ],
+   "intersectionCentroidCityXY": [
+    806.1,
+    -174.8
+   ],
+   "expectedBlocked": null,
+   "selectionExpectation": "not evaluated (annotations not on disk)",
+   "crossingView": {
+    "minForwardM": 15.8,
+    "maxForwardM": 39.9,
+    "spanS": 1.96,
+    "stationaryEgo": false
+   },
+   "referencePose": null,
+   "stationaryAnnotatedVehiclesInViewWithin12m": null,
+   "notes": "Optional second development crossing; needs one annotations.feather (585,610 B). Earlier visual review put paint 1.47-1.99 m from the mapped edge (image estimate, not established)."
+  },
+  {
+   "role": "held-out-blocked-test",
+   "logId": "88f47a10-87b4-3ea8-a0c7-a07d825b647d",
+   "av2Split": "val",
+   "crossingId": "2659268",
+   "mapArchive": "log_map_archive_88f47a10-87b4-3ea8-a0c7-a07d825b647d____PAO_city_57908.json",
+   "crossingCentroidCityXY": [
+    -2370.31,
+    2995.32
+   ],
+   "intersectionCentroidCityXY": [
+    -2366.0,
+    3000.9
+   ],
+   "expectedBlocked": true,
+   "selectionExpectation": "Blocked",
+   "crossingView": {
+    "minForwardM": 6.7,
+    "maxForwardM": 37.6,
+    "spanS": 15.96,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315967651072412940",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.09,
+     "stationaryS": 15.6,
+     "nSweeps": 157,
+     "posSpreadM": 0.28,
+     "distToCrossingM": 3.9,
+     "cityXY": [
+      -2369.4,
+      2988.1
+     ],
+     "atReferencePose": {
+      "vehFwdM": 14.8,
+      "vehLatM": -2.8,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.59,
+     "stationaryS": 15.4,
+     "nSweeps": 30,
+     "posSpreadM": 0.73,
+     "distToCrossingM": 7.5,
+     "cityXY": [
+      -2374.1,
+      3009.2
+     ],
+     "atReferencePose": {
+      "vehFwdM": 28.6,
+      "vehLatM": 13.9,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": false,
+      "side": "left"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.59,
+     "stationaryS": 13.6,
+     "nSweeps": 85,
+     "posSpreadM": 0.49,
+     "distToCrossingM": 7.6,
+     "cityXY": [
+      -2374.7,
+      3009.7
+     ],
+     "atReferencePose": {
+      "vehFwdM": 28.6,
+      "vehLatM": 14.6,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": false,
+      "side": "left"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.03,
+     "stationaryS": 15.6,
+     "nSweeps": 157,
+     "posSpreadM": 0.18,
+     "distToCrossingM": 10.1,
+     "cityXY": [
+      -2352.8,
+      2995.9
+     ],
+     "atReferencePose": {
+      "vehFwdM": 31.2,
+      "vehLatM": -11.1,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": false,
+      "side": "right"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.03,
+     "stationaryS": 15.6,
+     "nSweeps": 157,
+     "posSpreadM": 0.22,
+     "distToCrossingM": 10.4,
+     "cityXY": [
+      -2373.3,
+      2983.0
+     ],
+     "atReferencePose": {
+      "vehFwdM": 8.4,
+      "vehLatM": -2.9,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.03,
+     "stationaryS": 9.5,
+     "nSweeps": 76,
+     "posSpreadM": 0.97,
+     "distToCrossingM": 11.6,
+     "cityXY": [
+      -2376.5,
+      2984.0
+     ],
+     "atReferencePose": {
+      "vehFwdM": 7.2,
+      "vehLatM": 0.3,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "ego-lane"
+     },
+     "matchesSelectionRule": false
+    }
+   ],
+   "notes": "Right-side stationary vehicle between ego and crossing.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315967651999927214",
+    "nearEdgeM": 11.92,
+    "lidarTimestampNs": "315967651959851000",
+    "lidarDtMs": -40.1,
+    "framesWithNearEdge8to25m": 51,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "held-out-blocked-test",
+   "logId": "3153b5b3-d381-3664-8f82-1d3c5ca841d2",
+   "av2Split": "train",
+   "crossingId": "2659599",
+   "mapArchive": "log_map_archive_3153b5b3-d381-3664-8f82-1d3c5ca841d2____PAO_city_57908.json",
+   "crossingCentroidCityXY": [
+    -735.54,
+    1258.23
+   ],
+   "intersectionCentroidCityXY": [
+    -739.2,
+    1252.2
+   ],
+   "expectedBlocked": true,
+   "selectionExpectation": "Blocked",
+   "crossingView": {
+    "minForwardM": 6.3,
+    "maxForwardM": 39.9,
+    "spanS": 10.82,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315970128607428270",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.7,
+     "stationaryS": 15.6,
+     "nSweeps": 157,
+     "posSpreadM": 0.16,
+     "distToCrossingM": 8.4,
+     "cityXY": [
+      -737.6,
+      1271.9
+     ],
+     "atReferencePose": {
+      "vehFwdM": 9.7,
+      "vehLatM": -5.0,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    }
+   ],
+   "notes": "Right-side stationary vehicle between ego and crossing; a stationary BUS beyond the crossing on neighbouring crossings.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315970130199927216",
+    "nearEdgeM": 11.99,
+    "lidarTimestampNs": "315970130159796000",
+    "lidarDtMs": -40.1,
+    "framesWithNearEdge8to25m": 88,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "held-out-blocked-test",
+   "logId": "d33f667d-7b6c-39aa-9ba9-eac2fa615ae1",
+   "av2Split": "train",
+   "crossingId": "2399287",
+   "mapArchive": "log_map_archive_d33f667d-7b6c-39aa-9ba9-eac2fa615ae1____PAO_city_50116.json",
+   "crossingCentroidCityXY": [
+    -639.34,
+    1429.13
+   ],
+   "intersectionCentroidCityXY": [
+    -631.9,
+    1423.5
+   ],
+   "expectedBlocked": true,
+   "selectionExpectation": "Blocked",
+   "crossingView": {
+    "minForwardM": 5.0,
+    "maxForwardM": 21.4,
+    "spanS": 8.86,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315974928392441189",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.33,
+     "stationaryS": 15.5,
+     "nSweeps": 156,
+     "posSpreadM": 0.21,
+     "distToCrossingM": 9.2,
+     "cityXY": [
+      -651.8,
+      1430.4
+     ],
+     "atReferencePose": {
+      "vehFwdM": 9.4,
+      "vehLatM": -4.8,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "right"
+     },
+     "matchesSelectionRule": true
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.15,
+     "stationaryS": 8.0,
+     "nSweeps": 30,
+     "posSpreadM": 0.6,
+     "distToCrossingM": 9.9,
+     "cityXY": [
+      -650.1,
+      1434.4
+     ],
+     "atReferencePose": {
+      "vehFwdM": 8.3,
+      "vehLatM": -0.6,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "ego-lane"
+     },
+     "matchesSelectionRule": false
+    }
+   ],
+   "notes": "Right-side stationary vehicle between ego and crossing, plus a queued vehicle in the ego lane (8.3 m ahead, 0.6 m left).",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315974930449927222",
+    "nearEdgeM": 12.02,
+    "lidarTimestampNs": "315974930459869000",
+    "lidarDtMs": 9.9,
+    "framesWithNearEdge8to25m": 76,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "held-out-left-side-case",
+   "logId": "fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91",
+   "av2Split": "train",
+   "crossingId": "2659589",
+   "mapArchive": "log_map_archive_fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91____PAO_city_57908.json",
+   "crossingCentroidCityXY": [
+    -702.46,
+    566.39
+   ],
+   "intersectionCentroidCityXY": [
+    -706.8,
+    561.6
+   ],
+   "expectedBlocked": false,
+   "selectionExpectation": "Unknown",
+   "crossingView": {
+    "minForwardM": 10.3,
+    "maxForwardM": 39.9,
+    "spanS": 2.11,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315969741362451246",
+    "crossingFwdM": 20.1
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.89,
+     "stationaryS": 9.8,
+     "nSweeps": 83,
+     "posSpreadM": 0.16,
+     "distToCrossingM": 4.0,
+     "cityXY": [
+      -701.5,
+      572.8
+     ],
+     "atReferencePose": {
+      "vehFwdM": 14.2,
+      "vehLatM": 3.5,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "left"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.89,
+     "stationaryS": 7.3,
+     "nSweeps": 40,
+     "posSpreadM": 0.88,
+     "distToCrossingM": 4.3,
+     "cityXY": [
+      -701.3,
+      572.9
+     ],
+     "atReferencePose": {
+      "vehFwdM": 14.0,
+      "vehLatM": 3.6,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": true,
+      "side": "left"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.32,
+     "stationaryS": 12.7,
+     "nSweeps": 91,
+     "posSpreadM": 0.13,
+     "distToCrossingM": 9.9,
+     "cityXY": [
+      -727.8,
+      568.2
+     ],
+     "atReferencePose": {
+      "vehFwdM": 32.6,
+      "vehLatM": -15.9,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": false,
+      "side": "right"
+     },
+     "matchesSelectionRule": false
+    },
+    {
+     "cat": "REGULAR_VEHICLE",
+     "lenM": 4.32,
+     "stationaryS": 15.6,
+     "nSweeps": 66,
+     "posSpreadM": 0.5,
+     "distToCrossingM": 10.0,
+     "cityXY": [
+      -728.0,
+      568.2
+     ],
+     "atReferencePose": {
+      "vehFwdM": 32.7,
+      "vehLatM": -16.0,
+      "inStereoFov": true,
+      "betweenEgoAndCrossing": false,
+      "side": "right"
+     },
+     "matchesSelectionRule": false
+    }
+   ],
+   "notes": "Stationary vehicles are on the LEFT (lateral +3.5 / +3.6 m); protocol v2 puts the approach curb on the right, so this is not a Blocked test. fd5c6932 frames at the development-exposed 453e5558/756f4ed0 intersection (city XY [-563.3, 749.9]) are excluded.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315969741799927215",
+    "nearEdgeM": 12.1,
+    "lidarTimestampNs": "315969741759841000",
+    "lidarDtMs": -40.1,
+    "framesWithNearEdge8to25m": 23,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "held-out-control",
+   "logId": "25e5c600-36fe-3245-9cc0-40ef91620c22",
+   "av2Split": "val",
+   "crossingId": "2659878",
+   "mapArchive": "log_map_archive_25e5c600-36fe-3245-9cc0-40ef91620c22____PAO_city_57908.json",
+   "crossingCentroidCityXY": [
+    661.16,
+    -22.44
+   ],
+   "intersectionCentroidCityXY": [
+    670.8,
+    -31.0
+   ],
+   "expectedBlocked": false,
+   "selectionExpectation": "Unknown",
+   "crossingView": {
+    "minForwardM": 8.2,
+    "maxForwardM": 23.2,
+    "spanS": 15.94,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315966104737425432",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [],
+   "notes": "Ego waits about 16 s; the only stationary vehicle within 12 m is 13.9 m right of the ego, outside the stereo view.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315966105899927210",
+    "nearEdgeM": 12.05,
+    "lidarTimestampNs": "315966105859787000",
+    "lidarDtMs": -40.1,
+    "framesWithNearEdge8to25m": 60,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "held-out-control-declared-only",
+   "logId": "e1d68dde-22a9-3918-a526-0850b21ff2eb",
+   "av2Split": "val",
+   "crossingId": "5987490",
+   "mapArchive": "log_map_archive_e1d68dde-22a9-3918-a526-0850b21ff2eb____PAO_city_72257.json",
+   "crossingCentroidCityXY": [
+    -2863.11,
+    2035.54
+   ],
+   "intersectionCentroidCityXY": [
+    -2866.8,
+    2021.6
+   ],
+   "expectedBlocked": false,
+   "selectionExpectation": "Unknown",
+   "crossingView": {
+    "minForwardM": 13.4,
+    "maxForwardM": 40.0,
+    "spanS": 7.16,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315969777549927222",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [],
+   "notes": "No stationary vehicle clusters in this log (904 vehicle rows); only declared what-if vehicles exist here.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315969781099927217",
+    "nearEdgeM": 12.0,
+    "lidarTimestampNs": "315969781059966000",
+    "lidarDtMs": -40.0,
+    "framesWithNearEdge8to25m": 108,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "reserve",
+   "logId": "a91d4c7b-bf55-3a0e-9eba-1a43577bcca8",
+   "av2Split": "val",
+   "crossingId": "2069102",
+   "mapArchive": "log_map_archive_a91d4c7b-bf55-3a0e-9eba-1a43577bcca8____PAO_city_41723.json",
+   "crossingCentroidCityXY": [
+    212.97,
+    2174.0
+   ],
+   "intersectionCentroidCityXY": [
+    218.9,
+    2183.3
+   ],
+   "expectedBlocked": false,
+   "selectionExpectation": "Unknown",
+   "crossingView": {
+    "minForwardM": 18.7,
+    "maxForwardM": 39.9,
+    "spanS": 2.51,
+    "stationaryEgo": false
+   },
+   "referencePose": {
+    "t": "315970709322412935",
+    "crossingFwdM": 20.0
+   },
+   "stationaryAnnotatedVehiclesInViewWithin12m": [],
+   "notes": "No stationary vehicle within 12 m of this crossing: cannot replace a lost Blocked test.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315970709049927219",
+    "nearEdgeM": 20.22,
+    "lidarTimestampNs": "315970709060087000",
+    "lidarDtMs": 10.2,
+    "framesWithNearEdge8to25m": 12,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "reserve",
+   "logId": "4a60c567-f167-3890-aa7e-01e75ccc40e0",
+   "av2Split": "test",
+   "crossingId": "4885028",
+   "mapArchive": "log_map_archive_4a60c567-f167-3890-aa7e-01e75ccc40e0____PAO_city_71741.json",
+   "crossingCentroidCityXY": [
+    -1521.29,
+    2032.08
+   ],
+   "intersectionCentroidCityXY": [
+    -1516.3,
+    2038.7
+   ],
+   "expectedBlocked": null,
+   "selectionExpectation": "not evaluable from annotations (AV2 test split: no public boxes)",
+   "crossingView": {
+    "minForwardM": 7.8,
+    "maxForwardM": 39.9,
+    "spanS": 9.26,
+    "stationaryEgo": false
+   },
+   "referencePose": null,
+   "stationaryAnnotatedVehiclesInViewWithin12m": null,
+   "notes": "LiDAR-only reserve; cannot replace a lost Blocked test (no annotated stationary vehicle can be confirmed).",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315967233349927212",
+    "nearEdgeM": 12.07,
+    "lidarTimestampNs": "315967233359639000",
+    "lidarDtMs": 9.7,
+    "framesWithNearEdge8to25m": 55,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  },
+  {
+   "role": "reserve",
+   "logId": "b6c4361a-7dd8-32a0-83d4-7f9d2beaed08",
+   "av2Split": "test",
+   "crossingId": "2069440",
+   "mapArchive": "log_map_archive_b6c4361a-7dd8-32a0-83d4-7f9d2beaed08____PAO_city_41723.json",
+   "crossingCentroidCityXY": [
+    1091.48,
+    -599.16
+   ],
+   "intersectionCentroidCityXY": [
+    1104.7,
+    -618.2
+   ],
+   "expectedBlocked": null,
+   "selectionExpectation": "not evaluable from annotations (AV2 test split: no public boxes)",
+   "crossingView": {
+    "minForwardM": 17.6,
+    "maxForwardM": 40.0,
+    "spanS": 3.06,
+    "stationaryEgo": false
+   },
+   "referencePose": null,
+   "stationaryAnnotatedVehiclesInViewWithin12m": null,
+   "notes": "LiDAR-only reserve; closest listed frame puts the near edge at 17.6 m; cannot replace a lost Blocked test.",
+   "listingCandidateFrame": {
+    "stereoTimestampNs": "315966527299927211",
+    "nearEdgeM": 17.6,
+    "lidarTimestampNs": "315966527259809000",
+    "lidarDtMs": -40.1,
+    "framesWithNearEdge8to25m": 18,
+    "status": "from S3 listings and poses only; not opened; the frame is chosen by the M5 rule-based scene builder, not by this file"
+   }
+  }
+ ],
+ "developmentExposedIntersections": [
+  {
+   "intersectionCentroidCityXY": [
+    1597.1,
+    860.9
+   ],
+   "logs": [
+    "8c52d911"
+   ],
+   "reason": "second 8c52d911 intersection (2659494-6), viewed 0.27-0.71 s"
+  },
+  {
+   "intersectionCentroidCityXY": [
+    -563.3,
+    749.9
+   ],
+   "logs": [
+    "453e5558",
+    "756f4ed0",
+    "fd5c6932"
+   ],
+   "reason": "453e5558 and 756f4ed0 used in development; fd5c6932 frames here are excluded"
+  },
+  {
+   "intersectionCentroidCityXY": [
+    -2179.5,
+    2334.5
+   ],
+   "logs": [
+    "81d2b40a",
+    "e7547e4c",
+    "9bb1f857"
+   ],
+   "reason": "81d2b40a used in development; repeat traversals share the intersection"
+  },
+  {
+   "intersectionCentroidCityXY": [
+    -1434.8,
+    1533.9
+   ],
+   "logs": [
+    "aedbd525",
+    "d5d6f11c"
+   ],
+   "reason": "counted conservatively: aedbd525 drove through it; d5d6f11c stationary vehicle is on the left"
+  }
+ ],
+ "excluded": [
+  {
+   "logId": "91aab547-1912-3b8e-8e7f-df3b202147bf",
+   "intersectionCentroidCityXY": [
+    [
+     -3037.9,
+     2837.8
+    ],
+    [
+     -2961.8,
+     2901.7
+    ]
+   ],
+   "reason": "crossings seen only at 33-40 m"
+  },
+  {
+   "logIds": [
+    "069cc46d-38bb-309d-88cf-296a3d0c0820",
+    "6d3bfbc9-45dc-316e-a94c-a441371d0571",
+    "798354fc-30ee-36f4-83b4-f49c3b307db5"
+   ],
+   "reason": "no crossing inside the stereo view (6d3bfbc9 and 798354fc map no crossings; 069cc46d never views its 4)"
+  }
+ ],
+ "counts": {
+  "paoLogs": 22,
+  "physicalCrossings": 110,
+  "intersections": 38,
+  "intersectionsWithStereoView": 18,
+  "developmentExposedWithStereoView": 7,
+  "neverUsedWithStereoView": 11,
+  "heldOutIntersections": 6,
+  "heldOutBlockedTests": 3,
+  "heldOutLeftSideCases": 1,
+  "heldOutControls": 2,
+  "reserve": 3
+ },
+ "statistics": {
+  "unit": "one intersection; queries at one intersection (person positions, slider settings) are correlated and do not add units",
+  "method": "one-sided 95% exact binomial (Clopper-Pearson); with 0 errors in k units the upper bound is 1 - 0.05^(1/k)",
+  "heldOutBlockedTests": 3,
+  "zeroErrorUpperBound95": 0.6316,
+  "plannedMinimumBlockedSites": 4,
+  "minimumMet": false,
+  "status": "The visibility gate stays incomplete under the goal contract at this sample size. A held-out result here is reported as development-grade, AV2-referenced evidence and is never presented as a passed gate.",
+  "reserveCanReplaceLostBlockedTest": false,
+  "reserveReason": "a91d4c7b/2069102 has no stationary vehicle within 12 m; 4a60c567 and b6c4361a are AV2 test logs without public boxes."
+ },
+ "clearPolicy": "Clear is removed from the goal (Sean, 2026-10-12): results are Blocked or Unknown only. The false-Clear gate is replaced by this policy (a scope change, not a gate met). Useful coverage = share of reference-blocked cases the app reports as Blocked.",
+ "exposureBeforeFreeze": {
+  "summary": "Annotation column subsets of 8 held-out, reserve or development-exposed logs were downloaded and used to pick these sites; poses and map heads of all 15 never-used logs were read; S3 listings were read. No held-out or reserve image, LiDAR sweep or calibration file was downloaded or opened.",
+  "annotationSubsetsRead": [
+   {
+    "logId": "88f47a10-87b4-3ea8-a0c7-a07d825b647d",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 13353,
+    "httpRangeBytesFetched": 279403,
+    "fullFileBytes": 706002,
+    "subsetFeatherSha256": "2cca196545cae6be0b15d4c7615930e13bb37bddc2e40e873e8861f6b37d2165",
+    "roleInThisSplit": "held-out-blocked-test"
+   },
+   {
+    "logId": "25e5c600-36fe-3245-9cc0-40ef91620c22",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 12291,
+    "httpRangeBytesFetched": 257381,
+    "fullFileBytes": 648394,
+    "subsetFeatherSha256": "120f0339350fcc42960536b2424a8eb0f745f0b65a77656735f22920fdd6c723",
+    "roleInThisSplit": "held-out-control"
+   },
+   {
+    "logId": "e1d68dde-22a9-3918-a526-0850b21ff2eb",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 5950,
+    "httpRangeBytesFetched": 128831,
+    "fullFileBytes": 318602,
+    "subsetFeatherSha256": "17f03c22babdf614d6ca1fb9dca2952cdef1d5a09d2f7c411a02adb48ef3f2a5",
+    "roleInThisSplit": "held-out-control-declared-only"
+   },
+   {
+    "logId": "d33f667d-7b6c-39aa-9ba9-eac2fa615ae1",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 9361,
+    "httpRangeBytesFetched": 197678,
+    "fullFileBytes": 496434,
+    "subsetFeatherSha256": "28706708d0a274de9d8d1393390d9eb6d3842b81aca116298dd9e21d708504f0",
+    "roleInThisSplit": "held-out-blocked-test"
+   },
+   {
+    "logId": "3153b5b3-d381-3664-8f82-1d3c5ca841d2",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 13231,
+    "httpRangeBytesFetched": 276812,
+    "fullFileBytes": 700754,
+    "subsetFeatherSha256": "06eeb8eb85526c4be138ac361bffc9a63ca92a607492d6349dd1adcf4ec857c9",
+    "roleInThisSplit": "held-out-blocked-test"
+   },
+   {
+    "logId": "d5d6f11c-3026-3e0e-9d67-c111233e22de",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 12605,
+    "httpRangeBytesFetched": 266411,
+    "fullFileBytes": 677338,
+    "subsetFeatherSha256": "b31e7d54e133960c09aef10332f196698cc9b65cb8ca8667c38df9f6f54722d0",
+    "roleInThisSplit": "development-exposed group"
+   },
+   {
+    "logId": "fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 11178,
+    "httpRangeBytesFetched": 236058,
+    "fullFileBytes": 595634,
+    "subsetFeatherSha256": "f584d4b3e5f2d38d39fb37b366842773af13ad45588b6be580ddb6d8ce7aad7f",
+    "roleInThisSplit": "held-out-left-side-case"
+   },
+   {
+    "logId": "a91d4c7b-bf55-3a0e-9eba-1a43577bcca8",
+    "columns": [
+     "timestamp_ns",
+     "category",
+     "tx_m",
+     "ty_m",
+     "length_m"
+    ],
+    "rows": 9424,
+    "httpRangeBytesFetched": 200245,
+    "fullFileBytes": 502810,
+    "subsetFeatherSha256": "b48a044a6aeeea95ecc73bb48708e1889aeb601a8cfc0aedd4d372e9d16dd44c",
+    "roleInThisSplit": "reserve"
+   }
+  ],
+  "posesAndMapHeadsRead": {
+   "logs": [
+    "069cc46d-38bb-309d-88cf-296a3d0c0820",
+    "25e5c600-36fe-3245-9cc0-40ef91620c22",
+    "3153b5b3-d381-3664-8f82-1d3c5ca841d2",
+    "4a60c567-f167-3890-aa7e-01e75ccc40e0",
+    "798354fc-30ee-36f4-83b4-f49c3b307db5",
+    "88f47a10-87b4-3ea8-a0c7-a07d825b647d",
+    "91aab547-1912-3b8e-8e7f-df3b202147bf",
+    "9bb1f857-8b61-369f-a537-484c1323ae32",
+    "a91d4c7b-bf55-3a0e-9eba-1a43577bcca8",
+    "b6c4361a-7dd8-32a0-83d4-7f9d2beaed08",
+    "d33f667d-7b6c-39aa-9ba9-eac2fa615ae1",
+    "d5d6f11c-3026-3e0e-9d67-c111233e22de",
+    "e1d68dde-22a9-3918-a526-0850b21ff2eb",
+    "e7547e4c-1ebc-3428-8964-a5b91e81098e",
+    "fd5c6932-2ee2-3cfb-9bdc-0b30bfb33a91"
+   ],
+   "requests": 30,
+   "bytes": 2857726
+  },
+  "readBy": "planning data-inventory lane, 2026-10-12 (read-only scratch work)"
+ },
+ "rules": [
+  "No held-out image, LiDAR sweep or calibration file is downloaded or opened before protocol-lock.json (M6) is written and its hash recorded in current.md.",
+  "Held-out sites run once with the frozen pipeline; thresholds never change after results are seen.",
+  "A held-out site that guides any code, threshold or label change moves to development (recorded here as a new version of this file) and its result is not counted.",
+  "Reference labels are made blind (the labeler never sees the app output), follow the labeling protocol in decisions.md, are hashed before scoring, and are described truthfully (never called human labels).",
+  "Paint-edge measurement uses the same fixed LiDAR sweep count, intensity threshold and agreement rule on development and held-out crossings.",
+  "Held-out evaluation runs when the method is ready, even if after October 30 (Sean, 2026-10-12); the submission reports only what is verified, labeled honestly.",
+  "Any change to this file is a new version with a reason; split.lock.json pins the frozen bytes."
+ ]
+}

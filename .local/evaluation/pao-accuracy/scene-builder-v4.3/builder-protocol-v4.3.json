@@ -1,0 +1,376 @@
+{
+ "schemaVersion": 1,
+ "builderVersion": 4.3,
+ "name": "AV2 rule-based scene builder protocol v4.3 CANDIDATE (Palo Alto accuracy plan, shape-v2): the builder v4.1 rules, placement protocol v3.4, the frozen shape-v2 protocol and its approach-half split addendum, frame-target variants v4-12 and v4-18.5",
+ "status": "Development-only candidate for the M6 lock (Sean decides). Not adopted; builder v3 stays the frozen adopted builder and builder v4, v4.1 and v4.2 stay frozen and unchanged. Neither variant is chosen here.",
+ "frozenUtc": "2026-10-14T05:53:40Z",
+ "frozenBefore": "Hashed in builder-protocol-v4.3-freeze.json before build_av2_scene.py (builder version 4.3) ran on any real log and before any shape-v2 sweep plan, shape-v2 sweep download or grounded-v3.4 output existed. Only the synthetic unit tests (test_build_av2_scene.py including V43RuleTests, test_car_shape.py, test_prepare_av2_ground.py, test_suggest_av2_placements.py) ran on v4.3 code before the freeze. Never edited after results; a change needs a new versioned file with its reason.",
+ "authority": {
+  "shapeProtocol": "shape-v2 protocol.json changes.versions.builder (\"4.2 -> 4.3: pins placement v3.4; SUPPORTED_VERSIONS adds 4.3; parametersByVariant (v4-12, v4-18.5) and every choice rule unchanged; RUNTIME_CODE still includes scripts/california/car_shape.py\") and buildPlan.exclusiveNew (\".local/evaluation/pao-accuracy/scene-builder-v4.3/\").",
+  "sean": "Sean, 2026-10-14T05:23:35Z (chat question tool, option 'More scans'): a new frozen car-shape version that keeps a LiDAR sweep every 0.25 m of ego travel instead of every 1.0 m; everything else in the shape rule stays. decisions.md 2026-10-13 (measured car shape for the annotated stationary vehicle, up to 40 public sweeps per car, report-only approach-half split check) still applies.",
+  "waitingForSean": "goal.md Waiting for Sean item 1 (driver distance / frame rule): keep builder v3 (12 m), builder v4 (near edge about 18.5 m, all anchors >= 12 m) or a fixed first-load driver distance (app + protocol change).",
+  "split": ".local/evaluation/pao-accuracy/split.json sha256 47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4 (unchanged; never edited)."
+ },
+ "placementProtocol": {
+  "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json",
+  "sha256": "330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22",
+  "usedFields": [
+   "protocolVersion (must be 3)",
+   "currentVehicle.pose.rule (averageAllAnnotations)",
+   "pixelSelection.rule (exactProjection)",
+   "declaredDefaults.vehicle",
+   "declaredDefaults.person",
+   "tolerances.boundaryEpsilonMeters",
+   "tolerances.maxRangeMeters",
+   "placementRange.limitMeters",
+   "protocolRevision (must be 3.4)",
+   "carShape.shapeProtocol.sha256 (must be the frozen shape-v2 hash)"
+  ],
+  "notUsed": "Its scene block, crop, ego lane id and current-vehicle track prefix are the hand choices the builder replaces; the builder outputs its own values (protocolSceneValues) for a later per-scene protocol.",
+  "why34": "Placement protocol v3.4 is v3.3 with its carShape section pinning the frozen shape-v2 protocol (ground.json stays schemaVersion 3). Every other field the builder reads is unchanged from v3.3 (checked by this writer)."
+ },
+ "shapeProtocol": {
+  "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+  "sha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a",
+  "freezeRecord": {
+   "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.lock.json",
+   "sha256": "697b3d3a5057f8f1e2596429857952ea29bcdaab710dd07d45f48e24a70ddb86"
+  },
+  "base": {
+   "path": ".local/evaluation/pao-accuracy/shape-v1/protocol.json",
+   "sha256": "07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825"
+  }
+ },
+ "shapeSplitAddendum": {
+  "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+  "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838",
+  "freezeRecord": {
+   "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.lock.json",
+   "sha256": "8118d9fbae0493d023911edf7b5dffb1a87eeb7ef4941909ad38e645b7a20805"
+  },
+  "role": "report-only evaluation check (metric F approach-half split); never changes ground.json or a result the app shows"
+ },
+ "split": {
+  "file": ".local/evaluation/pao-accuracy/split.json",
+  "sha256": "47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4"
+ },
+ "parametersByVariant": {
+  "v4-12": {
+   "site": {
+    "allowedRolesWithoutHeldOutFlag": [
+     "development",
+     "development-optional"
+    ]
+   },
+   "frame": {
+    "windowMinM": 8.0,
+    "windowMaxM": 25.0,
+    "maxBearingDeg": 31.0,
+    "nearRoundingDecimals": 2,
+    "lidarMaxOffsetNs": 50000000,
+    "target": {
+     "measure": "framesNearEdgeFromEgoOrigin",
+     "targetM": 12.0,
+     "roundingDecimals": 2,
+     "minAnchorDistanceM": null
+    }
+   },
+   "rectification": {
+    "divisor": 2,
+    "alpha": 0
+   },
+   "crop": {
+    "width": 736,
+    "height": 320,
+    "supportMarginPx": 1,
+    "anchorMarginPx": 3
+   },
+   "lane": {
+    "maxHeadingDeg": 20.0
+   },
+   "vehicle": {
+    "splitCategories": [
+     "REGULAR_VEHICLE",
+     "LARGE_VEHICLE",
+     "BUS",
+     "BOX_TRUCK",
+     "TRUCK",
+     "TRUCK_CAB",
+     "VEHICULAR_TRAILER",
+     "SCHOOL_BUS",
+     "ARTICULATED_BUS",
+     "MESSAGE_BOARD_TRAILER",
+     "RAILED_VEHICLE"
+    ],
+    "clusterRadiusM": 0.6,
+    "clusterMinSweeps": 30,
+    "nearCrossingM": 12.0,
+    "viewMinForwardM": 5.0,
+    "viewMaxForwardM": 40.0,
+    "viewHalfAngleDeg": 31.0,
+    "referenceCrossingForwardM": 20.0,
+    "minForwardM": 2.0,
+    "betweenMarginM": 2.0,
+    "rightLateralM": -1.5,
+    "trackPrefixMinChars": 8,
+    "frameRuleIgnore": {
+     "clusterCentreOutsideDrivable": true,
+     "trackMaxDisplacementFromFirstOverM": 1.0
+    }
+   },
+   "splitCheck": {
+    "cityXYToleranceM": 0.05
+   }
+  },
+  "v4-18.5": {
+   "site": {
+    "allowedRolesWithoutHeldOutFlag": [
+     "development",
+     "development-optional"
+    ]
+   },
+   "frame": {
+    "windowMinM": 8.0,
+    "windowMaxM": 25.0,
+    "maxBearingDeg": 31.0,
+    "nearRoundingDecimals": 2,
+    "lidarMaxOffsetNs": 50000000,
+    "target": {
+     "measure": "captureDistanceAlongLane",
+     "targetM": 18.5,
+     "roundingDecimals": 2,
+     "minAnchorDistanceM": 12.0
+    }
+   },
+   "rectification": {
+    "divisor": 2,
+    "alpha": 0
+   },
+   "crop": {
+    "width": 736,
+    "height": 320,
+    "supportMarginPx": 1,
+    "anchorMarginPx": 3
+   },
+   "lane": {
+    "maxHeadingDeg": 20.0
+   },
+   "vehicle": {
+    "splitCategories": [
+     "REGULAR_VEHICLE",
+     "LARGE_VEHICLE",
+     "BUS",
+     "BOX_TRUCK",
+     "TRUCK",
+     "TRUCK_CAB",
+     "VEHICULAR_TRAILER",
+     "SCHOOL_BUS",
+     "ARTICULATED_BUS",
+     "MESSAGE_BOARD_TRAILER",
+     "RAILED_VEHICLE"
+    ],
+    "clusterRadiusM": 0.6,
+    "clusterMinSweeps": 30,
+    "nearCrossingM": 12.0,
+    "viewMinForwardM": 5.0,
+    "viewMaxForwardM": 40.0,
+    "viewHalfAngleDeg": 31.0,
+    "referenceCrossingForwardM": 20.0,
+    "minForwardM": 2.0,
+    "betweenMarginM": 2.0,
+    "rightLateralM": -1.5,
+    "trackPrefixMinChars": 8,
+    "frameRuleIgnore": {
+     "clusterCentreOutsideDrivable": true,
+     "trackMaxDisplacementFromFirstOverM": 1.0
+    }
+   },
+   "splitCheck": {
+    "cityXYToleranceM": 0.05
+   }
+  }
+ },
+ "variants": {
+  "v4-12": {
+   "frameTarget": {
+    "measure": "framesNearEdgeFromEgoOrigin",
+    "targetM": 12.0,
+    "roundingDecimals": 2,
+    "minAnchorDistanceM": null
+   },
+   "what": "The v3 frame order (frames.py near edge 12 m from the ego origin), with rules 1 and 2. Differs from v3 only in which vehicle qualifies at a frame and in reporting an occupied default spot as Unknown. Builder v4.1 adds the rule 1 filter (rules.currentVehicleFrameFilter); nothing else in the variant changes. Builder v4.2 changes nothing in the variant (shape-v1 pins and car_shape.py only). Builder v4.3 changes nothing in the variant (shape-v2 pins and code only).",
+   "reason": "Isolates the vehicle rules: comparing v4-12 with v3 shows what rules 1 and 2 change; comparing v4-18.5 with v4-12 shows what the frame target changes."
+  },
+  "v4-18.5": {
+   "frameTarget": {
+    "measure": "captureDistanceAlongLane",
+    "targetM": 18.5,
+    "roundingDecimals": 2,
+    "minAnchorDistanceM": 12.0
+   },
+   "what": "Frame whose capture distance (the app's driverDistance at first load: crossing anchor ahead of the left camera along the lane) is nearest 18.5 m, with every anchor at least 12 m from the camera, plus rules 1 and 2. Builder v4.1 adds the rule 1 filter (rules.currentVehicleFrameFilter); nothing else in the variant changes. Builder v4.2 changes nothing in the variant (shape-v1 pins and car_shape.py only). Builder v4.3 changes nothing in the variant (shape-v2 pins and code only).",
+   "reason": "18.5 m is the middle of the plan's 12-25 m task band (metric B band), so the target comes from the band, not from one site; the 12 m minimum keeps every anchor inside that band. The v3 rule put the 8c anchors 10.2-11.3 m from the camera (below the band) because the ego waited there; the measure is the app's own captureDistance (audit finding 1), not the frames.py ego-origin distance."
+  }
+ },
+ "decision": "Sean chooses at the M6 lock among: builder v3 (frozen), the v4, v4.1, v4.2 or v4.3 rules with frame target v4-12 or v4-18.5, or a fixed first-load driver distance. v4.3 makes the v4.1 choices; it differs from v4.2 only in the pins and the code it names.",
+ "rules": {
+  "site": "The site (log + crossing id) must be one entry of the frozen split; split.json must hash to split.lock.json and to the split sha256 pinned below. A log that has any held-out, control, left-side or reserve role is refused before any of its files is opened unless --held-out-run is given AND protocol-lock.json (the M6 lock) exists at the fixed path .local/evaluation/pao-accuracy/protocol-lock.json (whatever --split names), its sha256 equals --protocol-lock-sha256, and it names split.sha256 = the split sha256, sceneBuilder.protocolSha256 = this file's sha256 and sceneBuilder.code = exactly this file's code object. --held-out-run on any site requires the same valid lock (the flag alone is never enough). The crossing is the split site's crossing; the builder never picks another. Builder v4 also requires the lock to name sceneBuilder.variant = the --protocol-variant run and an approval block (approval.by and approval.utc, non-empty strings). Unchanged in v4.1. Unchanged in v4.2. Unchanged in v4.3.",
+  "splitVehicleRule": "Reproduces the frozen selection evidence: analyze.py crossing view (centroid of all edge vertices 5-40 m ahead of the ego origin within 31 deg); stationary.py greedy clusters (vehicle-category annotation centres within 0.6 m of a seed covering >= 30 distinct sweeps, seeds in timestamp order); clusters within 12 m of the crossing polygon whose time span overlaps the view; relgeom.py reference pose (crossing centroid forward closest to 20 m inside the view window). A cluster matches when at the reference pose it is ahead (> 2 m, within 31 deg), between the ego and the crossing (0 < forward < crossing forward + 2 m) and right of the ego (lateral < -1.5 m). The site vehicle candidates are the annotation tracks with rows in a matching cluster. No matching cluster: the site has no current vehicle and the placement protocol declared default applies. Unchanged in v4: this reference-pose rule alone defines the site vehicle candidates that are cross-checked against split.json.",
+  "frameWindow": "Reproduces frames.py: for every listed left-camera timestamp with an exact ego pose, the nearer of the two crossing edges (mean of its vertices, forward from the ego origin along the ego yaw) must be 8-25 m ahead with bearing < 31 deg (both edge means ahead). The frame needs the right image in the public listing and the nearest listed LiDAR sweep (ties to the earlier) within 50 ms. Order: |round(near, 2) - 12 m|, then timestamp. The first entry is the frames.py frameNear12m choice.",
+  "frameChoice": "The chosen frame is the first window frame in target order that is feasible: an ego lane exists; the near edge is ahead and crosses the lane chord; a curb proxy exists on the near edge; when any track qualifies at the frame (currentVehicleEligibility), at least one is present at the sweep and passes the placement protocol current-vehicle checks with its averaged pose (suggest_av2_placements.annotated_vehicle); every anchor has a mapped ground height, lies within the placement range limit and (when minAnchorDistanceM is set) at least that far from the camera, projects in front of the camera, fits the crop with the anchor margin, and is placed by the runtime ray rule at its exact crop projection; the person top and the vehicle front-face corners fit the crop. If no window frame is feasible: when at least one frame is unknown-real-vehicle-occupies-default-spot, the site status is unknown-real-vehicle-occupies-default-spot with result Unknown, the reason and the first such frame in target order (no plan); otherwise no-feasible-frame. Nothing is filled in. When a frame is chosen, the outcomes of the frames before it in target order are recorded (framesBeforeChosen).",
+  "egoLane": "Mapped VEHICLE lane segments whose outline (left boundary then reversed right boundary) contains the left camera at the frame and whose chord (first to last boundary-midpoint) lies within 20 deg of the ego heading. Order: non-intersection first, smallest chord angle to the ego heading, smallest camera offset from the chord line, smallest numeric id. None: the frame is not feasible.",
+  "currentVehicle": "Among the present qualifying candidates that pass, the one whose averaged front is nearest the near edge along its centre line (smallest front gap), ties by track id. Its track prefix is the shortest prefix of at least 8 characters that is unique among the cuboids at the sweep.",
+  "anchors": "The suggestion script's desired points: crossing = near edge on the current vehicle centre line (declared default: on its lateral line); vehicle front = averaged box front centre (declared default: its front point); person = curb proxy point minus 0.30 m along the near edge toward the lane. Heights are the ground raster cell values (prepare_av2.ground_sample rule). Extent points: person top (declared 1.1 m) and the four front-face corners of the vehicle box.",
+  "crop": "Rectified grid = half the native stereo size (alpha 0, CALIB_ZERO_DISPARITY), as prepare_av2.py. Crop 736x320; origin = floor(centre of the bounding box of all anchor and extent projections - [368, 160]), clamped into the common stereo support rectangle (remap_support.supported_rectangle, margin 1) that prepare_av2.py checks. Anchors need their exact projection at least 3 px inside the crop; extent points must be inside the crop.",
+  "sources": "The ten prepare_av2 roles by publisher names. Left/right images and the LiDAR sweep are searched under the log directory, then under each --sensor-dir (same publisher layout sensors/...); copies found in several places must be identical, and each must match its public listing size and MD5 ETag. Poses, calibration and the single log map come from the log directory; ground raster and Sim2 from the log map directory or the extra --map-dir directories (identical copies only); the license file. When the chosen frame's images or sweep are not on disk, no plan is written: the selection lists the missing files with their listing records and searched paths. Nothing is downloaded.",
+  "plan": "plan.json in the exact plan-v3.json format (schemaVersion 1, sourceClass Argoverse2Sensor, logId, crossingId, cameraTimestampNs, lidarTimestampNs, rectifiedSize, crop, sources {path, bytes, sha256}) with absolute source paths.",
+  "diagnostic": "--diagnostic-camera-timestamp evaluates the same rules at one window frame (for explaining differences from hand choices); its output says mode diagnostic-forced-frame and its plan file is named diagnostic-plan.json. It is never a scene choice. Unchanged in v4 (the forced frame is evaluated with the variant rules). Unchanged in v4.1 (the forced frame is evaluated with the v4.1 rules). Unchanged in v4.2 (the forced frame is evaluated with the v4.2 rules, which are the v4.1 rules). Unchanged in v4.3 (the forced frame is evaluated with the v4.3 rules, which are the v4.1 rules).",
+  "outputs": "A new directory (existing outputs are never overwritten) with selection.json (every evaluated frame and its reasons, the split-rule reproduction, the chosen values, protocolSceneValues, input and code hashes) and plan.json when written. No output uses any form of the word for a vehicle left at the curb. Statuses: plan-written, sources-missing, no-feasible-frame, no-frame-in-window, split-rule-mismatch, unknown-real-vehicle-occupies-default-spot. Dependency versions are the loaded modules' __version__ attributes (numpy, cv2, pyarrow), never package metadata. v4 adds per frame: vehicleRuleAtFrame, captureDistanceM, anchorDistancesM, outcome, rankInTargetOrder, defaultSpotOccupants; per site: builder.variant, frameWindow.target, frameWindow.framesPy12mChoice (diagnostic: the split.json listingCandidateFrame rule), firstInTargetOrder, framesBeforeChosen and result (Unknown only). chosen.rankInWindow is the rank in target order. v4.1 adds per site: frameRuleV41 {parameters, clusters (cityXY, tracks, centreInsideDrivable, trackMotion, motionUnknownTracks, ignoredTracks, reasons), rule}; per frame: vehicleRuleAtFrame.ignoredFrameTracks and, per cluster row, frameRuleV41 {centreInsideDrivable, ignoredTracks, reasons}; a defaultSpotOccupants entry for an ignored track starts with 'ignored by the builder v4.1 frame rule: '. One limitation line starts 'Builder v4.1:'. v4.2 adds per site: carShape {applies, track, sweepPlanDir, shapeProtocol {path, sha256}, shapeSplitAddendum {path, sha256}, rule} (null when no frame is chosen); one limitation line starts 'Builder v4.2:' (v4.3: 'Builder v4.3:'). v4.3 writes the same fields; its shapeProtocol and shapeSplitAddendum name the frozen shape-v2 files.",
+  "freezeGuards": "At start, before any split site or log file is used: this protocol is read by a pinned sha256 (a literal in the run recipe); builderVersion 4.3; parametersByVariant[--protocol-variant] must equal the builder v4.3 parameters for its frame target (identical to the v4.1 and v4.2 parameters; every other value fixed by the code); its code object must name exactly the 9 runtime code files (v3 list plus scripts/rectified_calibration.py and scripts/california/car_shape.py) and each must match the sha256 on disk; the modules imported by name (common, prepare_av2, remap_support, car_shape, and rectified_calibration when loaded) and the two loaded by path must be those hashed files; split.sha256 must equal split.json; placementProtocol.sha256 must equal --placement-protocol-sha256; shapeProtocol.sha256 must equal the frozen shape-v2 protocol and shapeSplitAddendum.sha256 the frozen shape-v2 approach-half split addendum (both literals in car_shape.py). The placement protocol must be revision 3.4 and its carShape.shapeProtocol.sha256 must equal the same shape-v2 hash.",
+  "splitCrossCheck": "After the selection rule is reproduced (splitVehicleRule) and before any frame is evaluated: the clusters that match the rule must pair one-to-one with the split.json stationaryAnnotatedVehiclesInViewWithin12m rows whose matchesSelectionRule is true (same category, same sweep count, centre within splitCheck.cityXYToleranceM = 0.05 m on each axis because split.json rounds centres to 0.1 m), and split.json expectedBlocked (when not null) must equal whether any cluster matches. Otherwise the status is split-rule-mismatch: no frame is evaluated and no plan is written (a site is never silently turned into a declared-default scene). Only a development site may have null evidence (recorded as no-evidence-development-site).",
+  "currentVehicleEligibility": "Builder v4 (rule 1). At each window frame a track qualifies as a current-vehicle candidate when it belongs to a site vehicle candidate (the reference-pose split rule above) OR its near-crossing stationary cluster passes the same pose test at THIS frame: at the ego pose of the camera timestamp, the cluster centre is ahead > 2 m within 31 deg (inStereoFov), between the ego and the crossing (0 < forward < crossing-centroid forward + 2 m) and right of the ego (lateral < -1.5 m). The stationary test (greedy 0.6 m clusters over >= 30 sweeps), the vehicle categories, the 12 m distance to the crossing polygon and the view-window time overlap are unchanged (relgeom.py arithmetic). When any track qualifies at a frame, the frame needs one of them present at the sweep and passing the placement protocol checks, else it is not feasible (never a declared default). Builder v4.1: tracks removed by rules.currentVehicleFrameFilter do not qualify at any frame.",
+  "defaultSpotOccupied": "Builder v4 (rule 2). When no track qualifies at a frame and the declared default footprint (placement protocol declaredDefaults.vehicle, separating-axis test against every annotated cuboid at the sweep) overlaps at least one annotated vehicle (a splitCategories category), the frame outcome is unknown-real-vehicle-occupies-default-spot with result {state: Unknown, reason: 'a real vehicle occupies the default spot'}; every occupying object is recorded with why it does not qualify. It is never built as a declared-default scene. A non-vehicle occupant keeps the v3 reason (frame not feasible).",
+  "frameTarget": "Builder v4 (rule 3). parametersByVariant[variant].frame.target = {measure, targetM, roundingDecimals, minAnchorDistanceM}; every other parameter equals builder v3. measure framesNearEdgeFromEgoOrigin: the frozen frames.py near edge (ego origin to the nearer edge-vertex mean along the ego yaw, rounded to 0.01 m); the window order is |near - targetM|, then time (with targetM 12 exactly the v3 order). measure captureDistanceAlongLane: the app's captureDistance, i.e. the crossing anchor (near edge on the current vehicle centre line, or on the declared default line) forward of the left camera along the ego-lane chord (src/geometry.mjs mappedPlacement, eye at the camera); every window frame is evaluated, then ordered by |round(captureDistance, 2) - targetM|, then time; frames that fail before a crossing anchor exists come last, in time order. minAnchorDistanceM (null or metres): every anchor (crossing, vehicle front, person) must be at least that far (horizontal) from the left camera, else the frame is not feasible.",
+  "currentVehicleFrameFilter": "Builder v4.1 (rule 1 filter; parametersByVariant[variant].vehicle.frameRuleIgnore). Before the frames are evaluated, each near-crossing stationary cluster of the site (the greedy 0.6 m clusters over >= 30 sweeps, within 12 m of the crossing polygon, with their city XY centre) is tested once: (a) clusterCentreOutsideDrivable true: when the cluster centre (city X, Y) is not inside the union of the mapped drivable areas (even-odd point-in-polygon on the city XY outlines, prepare_av2_ground.inside_polygons), every track of the cluster is ignored; (b) motion: for each track of the cluster, all annotations of that track in the log are taken in time order, each centre goes to city XY with the exact ego pose at its own annotation timestamp, xy = (R [tx, ty, tz] + t)[:2], and maxDisplacementFromFirstM is the largest horizontal distance from the first position; a track with maxDisplacementFromFirstM > 1 m (trackMaxDisplacementFromFirstOverM) is ignored. This is the same displacement test and the same 1.0 m limit as the placement protocol stationary rule (prepare_av2_ground.cuboids_from_annotations); the time-span part (>= 3.0 s) is not used here. A track whose motion cannot be computed (an exact ego pose is missing at one of its annotation timestamps) is not ignored. At each frame, the tracks of a cluster that passes the rule 1 pose test at that frame are frame tracks unless ignored. Reference-pose (split rule) tracks are never ignored by this filter and still go through the placement protocol checks. Every cluster is recorded with its centre test, every track motion and each reason (selection.frameRuleV41).",
+  "carShape": "Builder v4.3 (shape-v2). The choice rules are the v4.1 ones (unchanged in v4.2), so the frame, crop, lane, current vehicle and crossing are the v4.1 choices. When a frame is chosen, selection.carShape records whether the car shape applies: applies is true exactly when the chosen current vehicle is the annotated stationary vehicle (status annotated), with its track and the nominal sweep plan folder .local/data/av2/shape-v2-<log>/; otherwise applies is false (declared default vehicle) and track and sweepPlanDir are null. When no frame is chosen (no feasible frame, an occupied default spot, a split mismatch), selection.carShape is null. The builder itself reads metadata only and downloads nothing for the shape: after this step car_shape.py plan (metadata only, hashed plan; shape-v2 thinning step 0.25 m), car_shape.py download (public sweeps, receipted, frozen retry rule) and prepare_av2_ground.py --car-shape-dir with --car-shape-plan-sha256 build ground.json carShape under placement protocol v3.4. Where the shape does not apply, prepare_av2_ground.py --no-car-shape writes carShape null and nothing is planned or downloaded. sweepPlanDir is nominal: development runs write each plan with --out-root under .local/data/av2/shape-v2-<log8>-<scene>/<variant>/ (shape-v2 changes.names.planFolder); the plan used is the one whose sha256 ground.json records in carShape.sweeps.planSha256."
+ },
+ "changes": [
+  {
+   "rule": "shape-v2 pins",
+   "fields": [
+    "shapeProtocol",
+    "shapeSplitAddendum",
+    "rules.freezeGuards",
+    "protocolLockSchema"
+   ],
+   "change": "Pins the frozen shape-v2 protocol and the shape-v2 approach-half split addendum by sha256 in place of shape-v1; a held-out lock must name both (pipeline.shapeProtocol.sha256, pipeline.shapeSplitAddendum.sha256).",
+   "reason": "shape-v2 (Sean 2026-10-14 'More scans'): sweep thinning step 0.25 m instead of 1.0 m."
+  },
+  {
+   "rule": "car shape record",
+   "fields": [
+    "rules.carShape",
+    "rules.outputs"
+   ],
+   "change": "selection.carShape names the shape-v2 files and the nominal shape-v2 sweep plan folder; same fields as v4.2.",
+   "reason": "The record must name the shape version the scene ground.json is built with."
+  },
+  {
+   "rule": "placement protocol",
+   "fields": [
+    "placementProtocol"
+   ],
+   "change": "Pins placement protocol v3.4 (sha256 330f1dcd...) instead of v3.3.",
+   "reason": "shape-v2: placement protocol v3.4 re-pins its carShape section to shape-v2."
+  },
+  {
+   "rule": "code",
+   "fields": [
+    "code"
+   ],
+   "change": "Pins the current hashes of build_av2_scene.py (v4.3), car_shape.py (shape-v2 names, 0.25 m step, pins), prepare_av2_ground.py (placement v3.4; refuses v3.3) and suggest_av2_placements.py (accepts v3.4); the other 5 runtime files are unchanged from v4.2.",
+   "reason": "A code change needs a new builder protocol version (freeze guard)."
+  }
+ ],
+ "unchanged": "Everything else in builder protocol v4.2 (which is v4.1 plus the shape pins): every parameter value of both variants, split selection rule and its cross-check, frame window, frame targets, rule 1 and its v4.1 filter, rule 2 (occupied default spot is Unknown), ego lane, curb proxy, anchors, crop, runtime ray check, sources and plan format, held-out refusal before any held-out file is opened, and the v4 lock fields.",
+ "v3v4Relationship": "A builderVersion 3, 4, 4.1 or 4.2 protocol still runs its own rules in the current build_av2_scene.py (tests V3ReproducibilityTests, V4RuleTests, V41RuleTests, V43RuleTests). The frozen files name older code, so their freeze guards refuse the current files by design: builder-protocol-v3.json reproduces only with the commit cb2f497 builder files, builder-protocol-v4.json only with the commit 772fdce files, builder-protocol-v4.1.json only with the commit 37bf84d files and builder-protocol-v4.2.json only with the commit 8ec75f8 files (git show <commit>:<file>; RealDataTests.test_frozen_protocols_match_this_builder checks the v4, v4.1 and v4.2 code blocks against those commits). None of them is edited.",
+ "explorationBeforeFreeze": [
+  "No v4.3 code ran on a real log before this freeze. Expected effect (shape-v2 predictions 2-3): the same frame, crop, lane, vehicle and crossing as v4.2 at 8c and c780 (both variants), and the same outcome at 453e with no sweep plan and no downloads.",
+  "Before shape-v2 was frozen, a development-only what-if (.local/evaluation/pao-accuracy/shape-whatif-2026-10-14/) rebuilt the shape-v1 shapes and scored a 0.25 m step on the two development logs with extra public sweeps in .local/data/av2/shape-whatif/; shape-v2/protocol.json discloses it (disclosure.chosenAfterDevelopmentResults). No builder output came from it.",
+  "No shape-v2 sweep plan, shape-v2 sweep or shape-v2 result existed at the freeze (checked by this writer: no .local/data/av2/shape-v2-* folder, no grounded-v3.4 folder)."
+ ],
+ "limitations": [
+  "Validated on development data only (8c, 453e, c780; 453e cannot be built: crossing parallel to the ego road). n is tiny.",
+  "The frame target also chooses the driver distance at first load (the eye is the recording camera); a frame rule is not a neutral choice of view.",
+  "Rule 1 can add vehicles that the frozen split evidence does not list, so the current vehicle at a site can differ from the split.json selection-rule vehicle; the split cross-check still uses the reference-pose rule only.",
+  "An Unknown for an occupied default spot is a result about the declared default, not about the real vehicle.",
+  "Stationary means only that the annotation stayed in place; no reason for stopping is stated or implied.",
+  "The motion test uses every annotation of the track in the whole log, so a vehicle that stood near the crossing for part of the log and drove away later is ignored at every frame (the placement protocol would reject it as not stationary).",
+  "The drivable test uses only the cluster centre; a cluster straddling the drivable boundary is judged by its centre.",
+  "A track with unknown motion (missing ego pose) is not ignored; its frames fail the placement checks as in v4.",
+  "Reference-pose (split rule) tracks are not filtered (split.json is frozen); they still go through the placement checks.",
+  "v4.1 has no out-of-sample development evidence: the filter was written from c780, and its expected effect there was stated before the run.",
+  "The car shape is built after this step; a v4.2 or v4.3 selection only says whether it applies. A scene whose shape is refused (too-few-sweeps, not-stationary) still has the v4.1 choices; the app then keeps the box result rules of shape-v1 (unchanged by shape-v2).",
+  "The sweep plan folder named in selection.carShape is where the plan belongs; the builder does not check that it exists.",
+  "The sweep plan folder named in selection.carShape is nominal; development runs use --out-root folders."
+ ],
+ "historyCorrections": [
+  "builder-protocol-v3 limitations quote the hand anchors as 16.3-18.1 m per app contract A5; 16.28 m is the vehicle-front pixel ray hit. For the points the app uses (averaged front) the hand range is 17.31-18.14 m (builderAudit finding 4).",
+  "Placement protocol v3.2 crossingError.perCrossing.2069452.notes says the c780 offset moves about 0.012 m when estimator A's per-laser tail threshold rule is varied. The 0.012 m is right, but the rule named is wrong: in the review probe (review-v4/tail_probe-c780.json, sha256 479e7d3f80aaedb429fed0eb353cc434502eba1f25d16cf8d3549da0d53d20e5) every tail variant leaves A at 0.1942 m, and A moves to 0.1695 m only in the v3like variant (no tail and no 2-of-3 run rule); the shift comes from the 2-of-3 run (onset) rule, as the paint review states. The note is text only: suggestions.json carries only the label, plusMinusM and evidence."
+ ],
+ "code": {
+  "scripts/california/build_av2_scene.py": "9ac4875c5d0a3c6e17e58ad69973e99d8ce6b1fd1d452979280ac260be155490",
+  "scripts/california/prepare_av2.py": "77949e29d8d653f3342c443ef1f5fb6e1ac0e79d8fc4c5692b818e47fc666963",
+  "scripts/california/prepare_av2_ground.py": "60a43091e34f592b2d0e91441135cd8f20c8201a440047e73bd463990d89a771",
+  "scripts/california/suggest_av2_placements.py": "e33867b0bd2d339ebe0e34f8f25e003b7da4b5475780adcba810fc9befb8559b",
+  "scripts/remap_support.py": "5676446090a3e7aec7d34763c4167a02cb02917e74f18fa9ef802e7ecb623054",
+  "scripts/sponsors/common.py": "445d5dd2572c1daef4fc98d0cceceb3c97cbd0f54e2025d6361d8baa5c9f9ec1",
+  "scripts/prepare-stereo-crop.py": "d1d105b55e06df1377cbe7a26a66f504e92b5e0879227058bf98e4b0f3ee7cb4",
+  "scripts/rectified_calibration.py": "9cbe472d0385597f0ad80677ce0d69a7df093ba93c6dccec26440d8422033914",
+  "scripts/california/car_shape.py": "ed45c8446abe47e276ad08bdb77461ee429673699c68d6453c4ce044853367e7"
+ },
+ "testCode": {
+  "tests/california/test_build_av2_scene.py": "e277af84312e9b4bf690c46fe8c69a32100f7eaf59abd26ed347915644775633",
+  "tests/california/test_car_shape.py": "ef123f421539f7824e7d31980ae40af4142d72be5e8f484f82220864d9c46595",
+  "tests/california/test_prepare_av2_ground.py": "e5ee95713e2a75d2ea00c3b4b77f4676178d2f6455ec9bd32ba695baa90428e9",
+  "tests/california/test_suggest_av2_placements.py": "6763657f3618d8b647e79f1ec5e4efbcca3254fb436e72ef468b10026fc9813f",
+  "note": "Recorded for traceability; not enforced at run time (a test edit does not change what the builder does)."
+ },
+ "protocolLockSchema": {
+  "file": ".local/evaluation/pao-accuracy/protocol-lock.json (fixed path)",
+  "requiredFields": {
+   "split.sha256": "sha256 of split.json",
+   "sceneBuilder.protocolSha256": "sha256 of this builder protocol file",
+   "sceneBuilder.code": "exactly the code object below",
+   "sceneBuilder.variant": "the chosen variant (v4-12 or v4-18.5)",
+   "approval.by / approval.utc": "who approved the lock and when (non-empty strings)",
+   "pipeline.shapeProtocol.sha256": "the frozen shape-v2 protocol sha256 (70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a)",
+   "pipeline.shapeSplitAddendum.sha256": "the frozen shape-v2 approach-half split addendum sha256 (953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838)"
+  },
+  "pin": "Its own sha256 is passed as --protocol-lock-sha256.",
+  "status": "Does not exist on the freeze date, so every held-out, control or reserve run is refused.",
+  "shapeV2LockFields": "shape-v2 protocol.json changes.lockFieldChanges lists further lock fields (pipeline.placementProtocol v3.4, pipeline.builder v4.3, result rules, metric F shape-v2 protocol v4, held-out shape sweeps; base entries for unknown reasons and F0 stay). The builder enforces only the two pins above; the other fields belong to the lock document and its writer."
+ },
+ "supersedes": {
+  "file": ".local/evaluation/pao-accuracy/scene-builder-v4.2/builder-protocol-v4.2.json",
+  "sha256": "77ada4bb14f1a472268700a09ae11f2c6dadab0f52c27b6ba58fe5d1b41c23ba",
+  "status": "frozen, unchanged; runs only with the commit 8ec75f8 files; its outputs are history"
+ },
+ "relatedFrozen": {
+  "builderProtocolV3": {
+   "file": ".local/evaluation/pao-accuracy/scene-builder/builder-protocol-v3.json",
+   "sha256": "9c22c1f613ebbbd292fe92ead485ffedafffcbfc2f039fd12ad136dc14172393",
+   "status": "frozen, unchanged; runs only with the commit cb2f497 files"
+  },
+  "builderProtocolV4": {
+   "file": ".local/evaluation/pao-accuracy/scene-builder-v4/builder-protocol-v4.json",
+   "sha256": "bac5d11117c7c82ef85c0756df09668936a99b6b644ef5c72140980678025ffa",
+   "status": "frozen, unchanged; runs only with the commit 772fdce files"
+  },
+  "placementProtocolV31": {
+   "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.1.json",
+   "sha256": "6a7d3369e75dcb9eb5afbd46a66f94760245fe3b0e34733e0f60a106a12f2d92",
+   "status": "frozen, unchanged; pinned by builder v4"
+  },
+  "builderProtocolV41": {
+   "file": ".local/evaluation/pao-accuracy/scene-builder-v4.1/builder-protocol-v4.1.json",
+   "sha256": "91304e6ab0501f89027923efcfd914756acee285cfc5759d4164fdfe9d2d4c13",
+   "status": "frozen, unchanged; runs only with the commit 37bf84d files"
+  },
+  "placementProtocolV32": {
+   "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.2.json",
+   "sha256": "1cef13e625ba8d0c0c00203c0bda6e256536173c4607ac79807e3e40dd173cf7",
+   "status": "frozen, unchanged; pinned by builder v4.1"
+  },
+  "builderProtocolV42": {
+   "file": ".local/evaluation/pao-accuracy/scene-builder-v4.2/builder-protocol-v4.2.json",
+   "sha256": "77ada4bb14f1a472268700a09ae11f2c6dadab0f52c27b6ba58fe5d1b41c23ba",
+   "status": "frozen, unchanged; runs only with the commit 8ec75f8 files"
+  },
+  "placementProtocolV33": {
+   "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.3.json",
+   "sha256": "67117e04f0596866aa0f8feb8cb01e054865557576ea67237db24a9a9cad5af9",
+   "status": "frozen, unchanged; pinned by builder v4.2; runs only with the commit 8ec75f8 files"
+  }
+ }
+}

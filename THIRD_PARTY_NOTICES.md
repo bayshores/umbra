@@ -1,6 +1,6 @@
 # Third-party notices
 
-umbra's own code license is in LICENSE (to be added by the maintainer). This file lists the third-party software, fonts, icons, models, services and data that umbra uses, with their licenses. Dataset terms are separate from the code license.
+umbra's own code is licensed under the Apache License 2.0 ([LICENSE](LICENSE)). This file lists the third-party software, fonts, icons, models, services and data that umbra uses, with their licenses. Dataset terms are separate from the code license.
 
 ## Shipped in the built web app
 
@@ -37,11 +37,11 @@ Vite is also a build and development-server tool. Its two browser helpers are li
 
 `caniuse-lite` is browser-support data under **CC-BY-4.0**. It is used during the build. Its data is not emitted in this app's bundle. Its attribution requirements are separate from ordinary software MIT notices. Redistribution of that data requires the supplied attribution and license information, and a statement of changes. Its [full license text](licenses/CC-BY-4.0-caniuse-lite.txt) is included. No caniuse data was changed by this notices audit.
 
-The next table was generated on 2026-10-16 by a script reading every `packages` entry in `package-lock.json`, and the corresponding installed `package.json` and license files when present. It includes the root entry so nothing is silently omitted. There are 117 dependency entries: 68 installed and 49 absent platform-specific optional packages. All 68 installed versions match the lockfile. The root code license is not declared yet. Every dependency license field contains a standard SPDX identifier. Missing installed license texts are marked separately.
+The next table was generated on 2026-10-16 by a script reading every `packages` entry in `package-lock.json`, and the corresponding installed `package.json` and license files when present. It includes the root entry so nothing is silently omitted. There are 117 dependency entries: 68 installed and 49 absent platform-specific optional packages. All 68 installed versions match the lockfile. The root entry declares Apache-2.0. Every dependency license field contains a standard SPDX identifier. Missing installed license texts are marked separately.
 
 | Package | Locked version | License (SPDX, as declared) | Local evidence |
 | --- | --- | --- | --- |
-| umbra (root entry) | `0.0.0` | **Missing: maintainer has not added LICENSE** | Project itself; not a third-party package |
+| umbra (root entry) | `0.0.0` | `Apache-2.0` | Project itself; not a third-party package; see [LICENSE](LICENSE) |
 | `@babel/code-frame` | `7.29.7` | `MIT` | Installed; metadata and license text read |
 | `@babel/compat-data` | `7.29.7` | `MIT` | Installed; metadata and license text read |
 | `@babel/core` | `7.29.7` | `MIT` | Installed; metadata and license text read |
@@ -309,7 +309,9 @@ The C-FoundationStereo, NV-Grounding-DINO, TAO and BERT rows repeat existing rep
 
 Attribution: **© 2021 Argo AI, LLC. Argoverse 2 Sensor Dataset.** License: **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)**. See the [publisher](https://www.argoverse.org/av2.html), [dataset terms link](https://www.argoverse.org/about.html#terms-of-use) and [license](https://creativecommons.org/licenses/by-nc-sa/4.0/). The terms page was checked online on 2026-10-16. Besides the license, it says: use must be non-commercial (not primarily intended for commercial advantage or monetary compensation); do not try to identify people in the data; do not use Argo's name, logo or trademarks without written permission (attribution excepted); and Argo may end the license for use that breaks these terms. The av2 software API is MIT. The complete CC BY-NC-SA 4.0 text is at the license link; it is not copied here.
 
-AV2 sensor data is not in Git. Source-derived values in the tracked files below remain under CC BY-NC-SA 4.0: retain attribution, use them non-commercially, share adaptations under the same license, and note changes. This covers the data-derived portions, including identifiers, source/derived-file hashes, measured results and transformed coordinates. It does not select a license for umbra's own code. Decisions about distributing prepared scenes remain with the maintainer.
+On the public issue [argoverse/av2-api#340](https://github.com/argoverse/av2-api/issues/340), this project described its use (processing selected AV2 images, LiDAR, calibration and maps into scene geometry and evaluation results; showing attributed images and derived geometry in a public demo and video; open-source application code; entering a cash-prize hackathon with the organizers' judging and promotional use). An Argoverse maintainer replied on 2026-10-05 that this use is fine under the Argoverse 2 terms, that the code may be MIT, Apache 2.0 or another license, and that only the data side is covered by ShareAlike. This clarifies the existing terms for that described use; it is not a waiver of the license conditions or a permission for other commercial use.
+
+AV2 sensor data is not in Git. Source-derived values in the tracked files below remain under CC BY-NC-SA 4.0: retain attribution, use them non-commercially, share adaptations under the same license, and note changes. This covers the data-derived portions, including identifiers, source/derived-file hashes, measured results and transformed coordinates. It does not change the license of umbra's own code (Apache-2.0).
 
 Changes made by umbra include selecting source observations, converting mapped geometry and annotations into scenario coordinates, registering LiDAR sweeps, preparing ground surfaces with explicit holes and calibration, deriving shape and visibility measurements, and reporting development/test results. No publisher endorsement is implied. Frozen legacy source strings keep their existing identifiers.
 

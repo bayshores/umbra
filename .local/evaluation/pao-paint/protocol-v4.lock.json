@@ -1,0 +1,67 @@
+{
+ "kind": "paint-edge-protocol-lock",
+ "lockedUtc": "2026-10-13T00:10:57Z",
+ "statement": "Version 4 locked before any v4 result was computed on real data and before the v4 synthetic validation was run. v1-v3 results, the v3 audit and the real-data and synthetic development work listed in protocol-v4.json preFreezeExposure were seen before this lock. Before the lock the validation script was smoke-tested on a reduced scratch copy (2 trials: continuous/E2-8c and continuous/clean, 1 each); that output was discarded.",
+ "protocol": {
+  "path": "protocol-v4.json",
+  "version": 4,
+  "sha256": "f9a52b440180e84c67d78dfb963849da73d7131f7bcaaf9ea6d0e94fafdfe273"
+ },
+ "supersedes": {
+  "path": "protocol-v3.json",
+  "version": 3,
+  "sha256": "d4488e0228e274a9fc962fbdc7045f8bc4327723617224b17251cb3a8c0272eb",
+  "lock": "protocol-v3.lock.json"
+ },
+ "code": {
+  "scripts/california/measure_paint_edge.py": "bd2c6996551e03fc39160cbcb718f314467334979264816dca4f14fd0f92617a",
+  "tests/california/test_measure_paint_edge.py": "8bf84acab5f61a6c4ad55380c529c5a45635a955ef6c807fc58f53c8f10fdc42",
+  ".local/evaluation/pao-paint/scripts/acquire.py": "8ffd191d78783091611398d3eed3d6b91afce3f57e4f97bc86a68ea3df1e6650",
+  ".local/evaluation/pao-paint/scripts/synthetic_validation_v4.py": "d3e8d2f469090ff9288e8765b5f164cd2b5821ec69d514d42cfb181e9d276b73"
+ },
+ "codeArchives": {
+  "code-v1/measure_paint_edge.py": "f146f57ca9563bb6be974dcd861fa3128bf1206b3c66f6fcbe29508e32cf8fcd",
+  "code-v2/measure_paint_edge.py": "fa6735d412ba887cdd2001e63083d19b75e450947a21b280fdba9f02137972d1",
+  "code-v3/measure_paint_edge.py": "c84a97a9de15ab454fe0b3918121b5ce8ab4e3fe3e86198a2b6b1dbf443770ab",
+  "code-v3/test_measure_paint_edge.py": "fd1d1770c479c6903c3483c6e63609052fbf724f70bae58824a910046cc05e8d",
+  "code-v4/measure_paint_edge.py": "bd2c6996551e03fc39160cbcb718f314467334979264816dca4f14fd0f92617a",
+  "code-v4/test_measure_paint_edge.py": "8bf84acab5f61a6c4ad55380c529c5a45635a955ef6c807fc58f53c8f10fdc42"
+ },
+ "inputs": {
+  "inputs/8c52d911-2658849/config.json": "edd74e13df691c6e7df964303ca665e45e6ded2543b73323196a4545396810d1",
+  "inputs/c780d53a-2069452/config.json": "9b019ddbf98c3b040fe341ac6324ba6a4b851dfd070a44f97e880bc0ac4ae047",
+  "downloads/receipts-8c52d911.json": "362620c63113f4c2e0a1d149ae36eed3624043b79a395e82887984edc06b832f",
+  "downloads/receipts-c780d53a.json": "eeda0b6ce8ef84cfba527b55b0498d12c89d8df3d7194b8616c247f4417a9445"
+ },
+ "developmentEvidence": {
+  "v4-dev/intensity-models-dev.json": "1b33444941562c61ae3ad1b414e18d549bc246f1f35d2c0d668a478db0c72e97",
+  "v4-dev/prototype-rules-a.json": "529a7b14680b093ec806664607c6e388f73f1fe2cf421896f3229fea0ec708de",
+  "v4-dev/prototype-rules-b.json": "e686aba85bfb56c37297dfb1550bae8a9db99af3c2473a1be85d4e3bbd8143d3",
+  "v4-dev/prototype-rules-c.json": "f57c6556d2cb2acfbb87b57261fb99ad94508040b062c596f43ea6d5d7a77c6b",
+  "v4-dev/prototype-uncertainty.json": "a99dd2f4a58ee00210ab4f29f3f1c613fc4a6a3a0c87fb3307b2206cfc906194",
+  "scripts/dev_stack.py": "7b48c6a3bf64a6f8857e3e1dd3c74327fc92f3e85e597b05eca1170041b6829e",
+  "scripts/dev_intensity_models.py": "b791340466914ad598250a409c77e3371a4fa4a615558d06d3a51102e0557880",
+  "scripts/prototype_v4_rules.py": "c5d2966f472f303d97feb4e396100495e8c364d39b7972dfa64c398de445923d",
+  "scripts/prototype_v4_uncertainty.py": "c0648db9cac7dca5f3cca410a752a1bfe2dfaa8339f4b193c2b478543a81f805",
+  "archive/audit-v3/findings.json": "7a0742631d0f0076708739b4a34d946699d979c6cdd69fdae5315d02eab3f289"
+ },
+ "environment": {
+  "python": "CPython 3.13.5 (/Library/Frameworks/Python.framework/Versions/3.13/bin/python3), run with -I",
+  "packages": {
+   "numpy": "2.3.1 BSD-3-Clause",
+   "scipy": "1.16.0 BSD-3-Clause",
+   "pyarrow": "20.0.0 Apache-2.0"
+  },
+  "licenseFileSha256": {
+   "numpy": "d84715000c6b3fd8719b2027238b6f6457cb853b2eb7023821a585949387f7bf",
+   "scipy": "60a7d05d729ed5c763852a324a1cb4223d665d4ad3f4b8a0c130ae5c60c93e49",
+   "pyarrow": "36f65c663f1c9c910af64c73cb4302667d6513c3f0a617e42bd896d767ff4604"
+  },
+  "data": "Argoverse 2: CC BY-NC-SA 4.0, (c) 2021 Argo AI, LLC (development logs only)."
+ },
+ "unitTests": "33 synthetic tests passed (python3 -m unittest discover -s tests/california -p test_measure_paint_edge.py); test parameters equal protocol v4 except bootstrapReps (200 in tests).",
+ "plannedRuns": [
+  "scripts/synthetic_validation_v4.py with 20 trials per cell, 4 workers -> validation/synthetic-validation-v4.json",
+  "select + measure for both development crossings -> selection/*-v4.json, results/*-v4.json"
+ ]
+}

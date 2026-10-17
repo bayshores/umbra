@@ -1,0 +1,51 @@
+{
+  "kind": "shape-v2 protocol freeze record",
+  "protocol": {
+    "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+    "sha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a"
+  },
+  "frozenUtc": "2026-10-14T05:43:09Z",
+  "base": {
+    "path": ".local/evaluation/pao-accuracy/shape-v1/protocol.json",
+    "sha256": "07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825",
+    "verifiedAtFreeze": true
+  },
+  "companions": {
+    "split-addendum.json": {
+      "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+      "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838",
+      "role": "shape-v2 approach-half split addendum, frozen at the same time (split-addendum.lock.json)"
+    }
+  },
+  "workingTree": {
+    "repositoryHead": "8ec75f867e5663de98ecf6fc82c5144d97305867",
+    "gitDiffHeadSha256": "53a650a13e6957b1b4778a7113f4e65b537ed3d86cb08e8aae125f2f2093784c",
+    "gitDiffHeadBytes": 117861,
+    "gitStatusPorcelain": [
+      " M scripts/california/build_av2_scene.py",
+      " M scripts/california/car_shape.py",
+      " M scripts/california/prepare_av2_ground.py",
+      " M scripts/california/suggest_av2_placements.py",
+      " M scripts/evaluation/metric-f.mjs",
+      " M scripts/evaluation/metric_f_car_top.py",
+      " M src/geometry.mjs",
+      " M src/scenario-assistant.mjs",
+      " M src/scene.mjs",
+      " M tests/california/test_build_av2_scene.py",
+      " M tests/california/test_car_shape.py",
+      " M tests/california/test_prepare_av2_ground.py",
+      " M tests/california/test_suggest_av2_placements.py",
+      " M tests/car-shape-fixture.mjs",
+      " M tests/car-shape.test.mjs"
+    ]
+  },
+  "stateAtFreeze": [
+    "No shape-v2 result exists: no shape-v2 sweep plan written, no shape-v2 sweep downloaded, no grounded-v3.4, scene-builder-v4.3 or metric-f-shape-v2 folder, no row computed with a shape-v2 shape.",
+    "Uncommitted working-tree edits (names, constants and report-only summary code; listed in workingTree) exist and have not run on data; car_shape.py still carries the shape-v1 SHA-256 pins until these freeze records exist.",
+    "The development what-if disclosed in protocol.json (disclosure.whatIf) exists; it used development logs 8c52d911 and c780d53a only.",
+    "No held-out, control or reserve data was opened."
+  ],
+  "history": "Draft written 2026-10-14T05:29Z (first freeze at 05:42:46Z withdrawn for wrong revision times only; see challenge.firstFreezeWithdrawn); fresh read-only challenge (verdict revise: 1 blocker, 6 major, 6 minor), all applied; re-check by the same agent (ready to freeze; 8 new minor items), all applied; then frozen.",
+  "authority": "Sean, 2026-10-14T05:23:35Z (chat question tool, option 'More scans'): a new frozen car-shape version that keeps a LiDAR sweep every 0.25 m of ego travel instead of every 1.0 m. Everything else in the shape rule stays.",
+  "changeRule": "After the freeze, any change to a rule or number here is a new version (shape-v3) with a dated reason, frozen before its own first result and before any held-out data is opened. No number may be changed because of which development rows it flips; an exception needs Sean's explicit decision and a disclosure like the one in this file. The shape-v1 and shape-v2 freeze records stay as history."
+}

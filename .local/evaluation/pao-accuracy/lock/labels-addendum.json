@@ -1,0 +1,42 @@
+{
+ "deCode": {
+  "files": {
+   ".local/evaluation/pao-accuracy/lock/de-code/de_score.py": "8162596bdc37f0f98a63781e3ff04d68a7e7d115c207a78d7fb4ea94046c5cb0",
+   ".local/evaluation/pao-accuracy/lock/de-code/heldout_label_tasks.py": "4d81c7acfcd46316bbe8977de1866746468cbd97d009b3a7ab3d2d9adb9a572f"
+  },
+  "review": {
+   "path": ".local/evaluation/pao-accuracy/de-review-2026-10-16/verdict.json",
+   "result": "pass",
+   "sha256": "89fa8ecbb5548f98a98a510e7bc3ae157f40686ec929818333199714794529db"
+  },
+  "scorer": {
+   "file": ".local/evaluation/pao-accuracy/lock/de-code/de_score.py",
+   "sha256": "8162596bdc37f0f98a63781e3ff04d68a7e7d115c207a78d7fb4ea94046c5cb0"
+  }
+ },
+ "gate": {
+  "readme": {
+   "path": ".local/evaluation/pao-accuracy/labels-v2-gate-2026-10-15/README.md",
+   "sha256": "33de7462de5cfbbe2eb75b2b25cb031d752dc5dfc2569bc7f6178e85e1d9cbd8"
+  },
+  "result": "pass",
+  "summary": {
+   "path": ".local/evaluation/pao-accuracy/labels-v2-gate-2026-10-15/result-summary.json",
+   "sha256": "7f0df9eb3113fcb4550a65366a2cb415d642b5134c793ac51545d47667fb6963"
+  }
+ },
+ "gateReview": {
+  "path": ".local/evaluation/pao-accuracy/labels-v2-gate-2026-10-15/independent-review.md",
+  "result": "pass",
+  "sha256": "cfc64189b2d3d552633366be6df97e1d4dfb16ddb6bc05ea5ca4e5075a9255d3"
+ },
+ "protocol": {
+  "path": ".local/evaluation/pao-labels/v2/protocol-v2.json",
+  "sha256": "c35dff1792b737c039a7a324ea3f56e90876cc98e1c329c1a036b284c775367b"
+ },
+ "protocolLock": {
+  "path": ".local/evaluation/pao-labels/v2/protocol-v2.lock.json",
+  "sha256": "deed6614a6fce86c5791aa166abcb70a40ad1571e91baeb8007a6de1b6ed4d93"
+ },
+ "schema": "pao-labels-addendum-v1"
+}

@@ -1,0 +1,773 @@
+{
+ "afterLock": [
+  "Build the v2 known-answer set from the 94 downloaded development files (fetch_dev.py receipts): select_cases.py (locked), build_validation.py and the validation lock, in that order.",
+  "Labeler development gate: three fresh AI labelers, one fresh agent per (labeler, task), then the transcript scan, aggregation, scoring and the labels addendum."
+ ],
+ "aggregation": {
+  "columnSpreadMaxPx": 0,
+  "headsRule": "Each labeler copies the SESSION HEAD line labelkit prints at completion into its final report; the coordinator records them in reported-heads.json; aggregate.py --heads refuses a missing or different head. The answer-log hash chain alone is tamper-evident for partial edits only.",
+  "labelers": 3,
+  "requireAllLabelers": true,
+  "requireReportedHeads": true,
+  "spreadMaxPx": {
+   "line": 3.0,
+   "pixel": 2.0
+  },
+  "statistic": "median",
+  "unresolvedWhen": "any labeler unresolved, or spread (max-min) above spreadMaxPx; never fall back to fewer labelers"
+ },
+ "caseSelection": {
+  "carsPerLog": 2,
+  "excludeFrameWindowS": 0,
+  "excludeFrames": [
+   "315969940599927214",
+   "315969941999927210",
+   "315969943499927208",
+   "315969946299927212",
+   "315969946899927216",
+   "315969947799927211",
+   "315970622399927217",
+   "315970628649927223",
+   "315970632549927212",
+   "315970633049927214",
+   "315970633249927216",
+   "315970633349927213",
+   "315970633399927215",
+   "315970634099927219",
+   "315970634149927213",
+   "315970636599927209",
+   "315971313499927217",
+   "315971315999927221",
+   "315971317999927209",
+   "315971320449927212",
+   "315971320799927215",
+   "315971321199927219"
+  ],
+  "excludeRule": "v2 real cases never use a v1 frame (the 9 v1 synthetic background frames and the 11 v1 real case frames) or a v2 synthetic background frame, and never a v1 vehicle track (track-id prefixes). The 11 v1 real frame ids and 6 v1 track prefixes were confirmed on 2026-10-14 by rebuilding the v1 selection from the locked v1 rules: the rebuilt file's sha256 equals the one recorded for the moved v1 cases/selection.json in isolation-moves-20261014T031706Z.json (71428a68...). excludeFrameWindowS is 0: a window of 1 s pushed paint cases to 30-40 m and dropped an 8c52d911 car. Instead the paint targets moved from v1's 13 and 22 m (and the 18 m app frame) to 16 and 20 m, so every v2 paint image sees the crossing from a different ego position (at least 2 m from any v1 paint range). Car cases are different vehicles; one (8c52d911 374f5502) is 0.05 s from a v1 frame of another vehicle.",
+  "excludeTracks": [
+   "396f15b5",
+   "3d2d7e0d",
+   "63ced8a0",
+   "7a1f4d3b",
+   "7a3ca909",
+   "b4645064"
+  ],
+  "marginPx": 48,
+  "maxRangeM": 25,
+  "maxSpreadM": 0.3,
+  "minAnnotations": 20,
+  "minRangeM": 12,
+  "minVisibleEdgeM": 4.0,
+  "paintTargetRangesM": [
+   16.0,
+   20.0
+  ],
+  "sweepRadiusM": 25,
+  "sweepSpacingM": 2.0,
+  "targetRangeM": 18
+ },
+ "changeLog": [
+  {
+   "date": "2026-10-12",
+   "reason": "initial protocol; parameters set during tool development on synthetic oracle tests and development LiDAR, before any labeler session",
+   "version": "pao-labels-v1"
+  },
+  {
+   "date": "2026-10-12",
+   "reason": "Post-run audit of v1 (after the v1 labeler run and its validation report, gate FAIL): (a) vehicle station columns in the labeler-visible task list were 25/50/75 % of the projected AV2 box, so labels were not blind to the app box (requiredChange 7); v2 takes them from the labeler's own left/right answers and moves every coordinate, guide and hash out of the labeler-visible file; (b) one agent per labeler for all tasks and a shared scratch folder: v2 requires one fresh agent per (labeler, task) and a private scratch folder; (c) the hash chain has no outside anchor: v2 requires coordinator-recorded session heads; (d) labeler instructions were not locked: v2 locks hash them; (e) the self-test seed was per-process random: fixed.",
+   "version": "pao-labels-v2"
+  },
+  {
+   "date": "2026-10-13",
+   "reason": "Second post-run audit of the labels lane (fix round, about 01:40Z): (a) honesty wording: crops, ring and station guides are placed from LiDAR or true geometry, so 'never see LiDAR' now says 'never see LiDAR points' and discloses this; (b) scoring.syntheticGate.minExactPerFamily = 10 added (v1 passed families on n = 2 and 4); (c) isolation block added: answer-bearing outputs outside the repository, clean-tree check before labeling, recorded transcript scan before aggregation; (d) pendingBeforeLock gains the column-tolerance recheck, the per-family feature supply and the isolation set-up. Search, snap, render, spread and gate error limits are unchanged. The multi-seed tool check (tool-selftest-multiseed/) ran on the previous draft, sha256 51d71147...6542.",
+   "version": "pao-labels-v2 (draft)"
+  },
+  {
+   "date": "2026-10-14",
+   "reason": "coverage-design.md (coordinator decision 2026-10-14): (1) search.ambiguity: a cannot_tell during bisection marks the position ambiguous instead of ending the feature; range results with at most 3 interior pixels and at most 4 cannot_tell answers are kept with a stated +/- (rangeHalfWidthPx); bracket cannot_tell expands the bracket; pick questions accept cannot_tell; (2) stations.carColumns labelerExtremesOnGrid and aggregation.columnSpreadMaxPx 0 (was 3); (3) render.tickOnPixelBoundary; (4) synthetic vehicleModels v2 (sedan, hatchback, suv, van with materials, decals and a contact shadow; box refused); (5) new known-answer set parameters: 12 synthetic vehicles on two development frames that are not v1 frames and 4 synthetic paint cases on one of them (the other frame's near road has real yield triangles, a crosswalk, lane dashes and a manhole), seeds 301-312 and 401-404, caseSelection.excludeFrames/excludeTracks, taskOrderSeed 20261014, repeatCases SV05 (a real repeat case is still to be chosen). The oracle self-test gains ambiguousBand and an earlier-draft variant (section 6), records its own session heads, and aggregates oracle sessions without the transcript-scan requirement (they have no transcript). pendingBeforeLock: the coverage redesign and the columnSpreadMaxPx recheck are closed by coverage-design.md; the known-answer set and per-family supply items now have parameters written, lock pending. Spread limits, gate thresholds, the LiDAR coarse check and the use rule are unchanged.",
+   "version": "pao-labels-v2 (draft)"
+  },
+  {
+   "date": "2026-10-14",
+   "reason": "Coordinator: confirmed the v1 exclusions by rebuilding the v1 selection (sha256 matches the moved file); excludeFrameWindowS 0 and paint targets 16 and 20 m instead of 13 and 22 m so v2 paint images differ from v1; real repeat case by rule (most LiDAR interior points); realTiers: every v2 real case is tier 2 apart from the repeat.",
+   "version": "pao-labels-v2 (draft)"
+  },
+  {
+   "date": "2026-10-14",
+   "reason": "Coordinator, closing pendingBeforeLock before the lock: (a) known-answer set: the 94 planned development files are downloaded (fetch_dev.py receipts); the build follows the lock (afterLock). (b) lockStatement written (items 1-7). (c) protocol-v2.md finalized; labeler-instructions-v2.md is left byte-identical to the version the frozen comparison recorded (sha256 4cbb9011...), so its \"DRAFT until locked\" title stays. (d) Synthetic supply: the frozen comparison ran (oracle-comparison-results-2026-10-14.json); reading rule: neither revisit condition held. The perfect oracles resolve 22 of the 23 paint features (V08 P4 is resolved by none; why the smoke run counted 23 was not checked), not the 23 the earlier smoke run reported; every family stays above minExactPerFamily 10 in every condition of this design. (e) Labeler transcript format confirmed: Claude Code subagent jsonl; the scan matched an independent tool_use count on 5 transcripts after the fix in 2e7f140. Gate thresholds, spread limits, the minimum resolved share, the per-family minimum and the use rule are unchanged. Pre-lock review fixes: lockStatement scope, the v1 cannot_tell diagnostic, the per-family minimum's origin, the median qualifier and the recorded deviations; title no longer says draft. Isolation gap closed before the lock: v2/cases/** added to isolation.answerBearingGlobs (the v2 case selection holds AV2 box rectangles, as v1's did), so the clean-tree check covers it and isolation.py move relocates it.",
+   "version": "pao-labels-v2"
+  }
+ ],
+ "createdDate": "2026-10-12",
+ "document": "protocol-v2.md",
+ "honesty": [
+  "Labels are drawn by fresh AI agents (never called human labels).",
+  "Labelers never see LiDAR points, AV2 boxes, map edges or app output, and the task file they read contains no coordinates (v1 did: see protocol-v1.errata.md section 1). What they see is still shaped by reference geometry: the overview crop and the vehicle ring are placed from the LiDAR extent (real vehicles) or the true extent (synthetic), and the crosswalk station guides, crop and its bottom margin (40-90 px below the nearest bar) from LiDAR bars and the mapped crossing (real) or the true bars (synthetic). These show where the target is, never an edge position at pixel level (protocol-v1.errata.md section 8).",
+  "Labels are hashed before scoring; the answer key, task files and labeler instructions are hashed before labeling.",
+  "Session logs are hash-chained (tamper-evident for partial edits); whole-session rewrites are caught only through the coordinator-recorded heads.",
+  "Real-case LiDAR references are development-grade inner bounds with an unresolved registration offset of several pixels; synthetic cases give exact error."
+ ],
+ "isolation": {
+  "answerBearingGlobs": [
+   ".local/evaluation/pao-labels/sealed/**",
+   ".local/evaluation/pao-labels/aggregate/**",
+   ".local/evaluation/pao-labels/scores/**",
+   ".local/evaluation/pao-labels/sessions/**",
+   ".local/evaluation/pao-labels/validation-report.json",
+   ".local/evaluation/pao-labels/validation-tasks.json",
+   ".local/evaluation/pao-labels/cases/**",
+   ".local/evaluation/pao-labels/tool-selftest/**",
+   ".local/evaluation/pao-labels/tool-selftest-multiseed/runs/**",
+   ".local/evaluation/pao-labels/registration-probe/**",
+   ".local/evaluation/pao-labels/v2/cases/**",
+   ".local/evaluation/pao-labels/v2/sealed/**",
+   ".local/evaluation/pao-labels/v2/aggregate/**",
+   ".local/evaluation/pao-labels/v2/scores/**",
+   ".local/evaluation/pao-labels/v2/selftest*/**"
+  ],
+  "answerBearingNote": "v1 files that hold per-feature reference, label or oracle values for these development frames, the v1 task list (its vehicle columns reveal the AV2 box) and the v1 case selection (AV2 box rectangles). Raw sources (downloads/, .local/data, other lanes' evaluation folders, the app) cannot be moved; the transcript scan covers them. v2: the case selection (v2/cases/selection.json, AV2 box rectangles) is moved out right after select_cases.py writes it; build_validation.py reads it with --selection from the coordinator-only folder.",
+  "coordinatorRootEnv": "PAO_LABELS_COORDINATOR_DIR",
+  "forbiddenToolInputPatterns": [
+   "\\.local(?![\\w-])(?!/venv-labels/|/evaluation/pao-labels/v2/)",
+   "pao-labels(?![\\w-])(?!/v2/)",
+   "pao-labels/v2/(?!validation-tasks\\.json|labeler-instructions-v2\\.md|protocol-v2\\.md|validation/|sessions/|scratch/)",
+   "scripts/(?!evaluation/labels/labelkit\\.py)",
+   "(?<![\\w.-])(src|public|worker|dist|tests)/",
+   "sealed|answer[-_ ]?key|kit-internal|tasks-internal|self-?test|oracle|errata|validation-report|validation-lock|registration-probe|labels-manifest|labels-aggregate|reported-heads|selection\\.json|answers\\.jsonl|label\\.json|label\\.sha256",
+   "\\.(feather|npz|parquet|pkl)(?![\\w-])|sensors/lidar|city_SE3|log_map_archive|(?<![\\w-])(av2|argoverse)(?![\\w-])",
+   "\\.claude/projects|\\.codex/|transcript",
+   "(^|[\\s'\\\"=(/])\\.\\.(/|$|[\\s'\\\"])",
+   "os\\.walk|os\\.listdir|scandir|glob\\(|rglob|iterdir|(?<![\\w-])find\\s+[./~'\\\"]|(?<![\\w-])(mdfind|locate)\\s|grep\\s+-[A-Za-z]*[rR]|(?<![\\w-])rg\\s"
+  ],
+  "ownSessionPrefix": ".local/evaluation/pao-labels/v2/",
+  "patternNotes": [
+   "any .local path except the venv and the v2 labeler area",
+   "any v1 path (everything in pao-labels outside v2/)",
+   "v2 files other than the task list, instructions, protocol document, images, sessions and scratch (kit-internal, sealed, locks, aggregates, scores)",
+   "any script except labelkit.py (kit tools compute references; app scripts)",
+   "app code and data, tests",
+   "answer-bearing names anywhere (also after cd)",
+   "LiDAR, annotation and map files, AV2 data",
+   "other agents' transcripts",
+   "parent-folder traversal",
+   "directory walks and recursive searches"
+  ],
+  "requireCleanTree": true,
+  "requireTranscriptScan": true,
+  "rule": "Every agent runs as the same user, so file permissions cannot keep answers from labelers. Answer-bearing outputs (sealed answer key and coverage, aggregates, scores, oracle self-test outputs, report rows) are written only under the coordinator-only folder named by coordinatorRootEnv, outside the repository; tools refuse to write them inside it and no repository file records the folder's path. labelkit refuses every command while a file matching answerBearingGlobs is inside the repository. Before aggregation the coordinator scans every labeler transcript (isolation.py scan); aggregate.py refuses unless the scan uses these rules, covers every labeled session and has no hit, and records its sha256 in the labels manifest.",
+  "scanLimits": "Tool-call inputs only. A path assembled at run time, or a relative path after cd, can evade the path rules; the name rules narrow this. The scan is recorded evidence, not proof.",
+  "scanRules": "Hits also: any sessions/ or scratch/ path other than ownSessionPrefix + sessions|scratch/<own labeler>/<own task>; any --labeler or --task other than its own (one fresh agent per labeler and task); a transcript with no tool call or without a labelkit call for its own labeler and task is refused."
+ },
+ "labelerInstructions": "labeler-instructions-v2.md",
+ "labelers": {
+  "count": 3,
+  "isolation": "required: one fresh agent per (labeler, task); blind repeats always in a separate agent from their original",
+  "kind": "fresh AI agents with no shared context, never shown LiDAR points, AV2 boxes, map edges or app output (crops, ring and station guides are placed using reference geometry; see honesty)",
+  "privateScratch": true,
+  "scratchRule": "labelkit prints a private scratch folder per (labeler, task); helper files go only there; no script outside it is run"
+ },
+ "lidarCar": {
+  "clusterRadiusM": 0.3,
+  "columnHalfWidthPx": 1.5,
+  "extentSlackM": [
+   1.0,
+   0.8
+  ],
+  "groundMarginM": 3.0,
+  "groundRansacM": 0.05,
+  "lowAttachBelowM": 0.6,
+  "lowAttachM": 0.15,
+  "lowMinHeightM": 0.03,
+  "maxHeightM": {
+   "BOX_TRUCK": 4.6,
+   "BUS": 4.6,
+   "LARGE_VEHICLE": 4.6,
+   "SCHOOL_BUS": 4.6,
+   "default": 2.6
+  },
+  "minColumnPoints": 3,
+  "minHeightM": 0.25,
+  "minPoints": 300,
+  "minSweeps": 2,
+  "occluderDepthGapM": 1.0,
+  "occluderRadiusPx": 6,
+  "robustRank": 2,
+  "roiRadiusM": {
+   "BOX_TRUCK": 7.5,
+   "BUS": 9.0,
+   "LARGE_VEHICLE": 7.5,
+   "SCHOOL_BUS": 9.0,
+   "default": 4.0
+  },
+  "seedRadiusM": 1.0,
+  "spacingBandPx": 8,
+  "voxelM": 0.2
+ },
+ "lidarPaint": {
+  "barTrimM": 0.05,
+  "consensusM": 0.5,
+  "groundBandM": 0.08,
+  "groundRansacM": 0.05,
+  "lateralBinM": 0.2,
+  "localGroundMinPoints": 5,
+  "localGroundRadiusM": 0.3,
+  "maxStepM": 0.15,
+  "minAfter": 5,
+  "minBarBins": 2,
+  "minBarRunM": 1.0,
+  "minBefore": 3,
+  "occluderDepthGapM": 0.5,
+  "occluderMinHeightM": 0.2,
+  "occluderRadiusPx": 4,
+  "occluderVoxelM": 0.2,
+  "paintRatio": 3.0,
+  "roadBandM": [
+   -4.0,
+   -1.5
+  ],
+  "roadBeforeM": 0.6,
+  "roadMaxFraction": 0.2,
+  "roiRadiusM": 14.0,
+  "runPaintShare": 0.5,
+  "searchM": [
+   -3.0,
+   3.5
+  ]
+ },
+ "lockStatement": [
+  "Frozen after the following work on the three development logs (8c52d911, 453e5558, c780d53a); no held-out, control or reserve file was opened, and no labeler session has run under v2. Scope: this lists the labels work. Outside the labels kit, the accuracy program's scene building, metric F and M7 scoring code also ran on these development logs (recorded under pao-accuracy); none of it computed a v2 label reference or rendered a v2 case.",
+  "(1) Protocol v1 and its development drafts (2026-10-12): draft case selections, draft LiDAR references, paint threshold tests, the LiDAR-to-photo registration probes that set the 8 px LiDAR allowance, draft synthetic builds and oracle self-tests (protocol-v1.errata.md section 2).",
+  "(2) The v1 run: the locked v1 build, three AI labelers, aggregation, scoring and the report (gate FAIL, 9 of 136 features) with its exploratory cannot_tell diagnostic (validation-report.diagnostic.json, which replays every v1 labeler session; input for design only), then two post-run audits (2026-10-12 and 2026-10-13) and the v1 errata.",
+  "(3) A seeded multi-seed oracle tool check of an earlier v2 draft on the locked v1 set (tool-selftest-multiseed, plan frozen before the runs). Its result (the own-column station rule loses roofline features under answer noise) led to the grid-column station rule.",
+  "(4) coverage-design.md (2026-10-14), written from the v1 report and that tool check, and its implementation, including the implementer's synthetic-only scratch builds and one-seed oracle smoke runs.",
+  "(5) The v2 known-answer set parameters were chosen before any v2 build: synthetic seeds 301-312 and 401-404, the two synthetic background frames, the exclusions and taskOrderSeed. The synthetic part was then built and inspected: the coordinator viewed the rendered vehicles, and a one-seed perfect-oracle smoke run on an earlier scratch build counted exact features per family (extremes 52, roofline 39, tire contacts 25, paint 23). The frozen comparison (7) built the same 17 synthetic tasks again: 23 paint features, of which the perfect oracles resolve 22 in every seed (V08 P4 is resolved by none of the three; its aggregate is in the comparison runs in the coordinator-only folder named by PAO_LABELS_COORDINATOR_DIR; its station column crosses the slanted side of a crosswalk bar in the synthetic paint polygon), so the binding paint count is 22. Why the smoke run counted 23 was not checked.",
+  "(6) The v2 real case plan: select_cases.py --draft runs on development annotations and poses (v1 rule rebuild to confirm the v1 exclusions; rule variants with a 1 s frame window and with paint targets 13/22 m, rejected; paint targets 16/20 m chosen so v2 paint photos differ from v1), then the download of the planned 94 camera and LiDAR files. No reference, LiDAR profile or render of a v2 real case was computed before the lock.",
+  "(7) The frozen pre-lock oracle comparison (oracle-comparison-plan-2026-10-14.json, frozen 08:49:20Z before any run): the synthetic part of this exact set, 10 seeds, 8 conditions (this design and the earlier-draft rules, each with perfect, honest-band, honest-band + 2 % and honest-band + 5 % oracles). Result (oracle-comparison-results-2026-10-14.json): with perfect oracles this design passed every synthetic check in all 10 seeds (138 of 139 features resolved; exact features per family 52/39/25/22), and under every honest condition it resolved at least as many features per family (median over the 10 seeds) as the earlier-draft rules (honest-band medians 52/39/25/22 vs 26/22/15/17; the earlier draft also missed the minimum resolved share in every honest seed), so neither revisit condition held and the lock proceeded unchanged. Deviations recorded in the results file: the runner was restarted once; the labels code at run time differed from the plan commit fd724c4 only in isolation.py tool_inputs (commit 2e7f140, the transcript scan), which selftest.py never calls.",
+  "Gate error limits, value spread limits, the minimum resolved share and the use rule are as in v1. The per-family minimum (10) was added on the second audit's suggestion, not fitted to a result. Nothing in items (3)-(7) changed any of them. No threshold or parameter was fitted to labeler answers; the v1 cannot_tell diagnostic in item (2) informed the search design (coverage-design.md)."
+ ],
+ "overview": {
+  "cellChoices": [
+   8,
+   12,
+   16,
+   20,
+   24,
+   32,
+   40
+  ],
+  "marginJitter": 0.5,
+  "marginMin": 0.35,
+  "maxDisplayWidth": 820,
+  "paint": {
+   "marginBottomPx": [
+    40,
+    90
+   ],
+   "marginTopPx": [
+    60,
+    120
+   ],
+   "marginXFraction": [
+    0.08,
+    0.2
+   ]
+  },
+  "ringJitterFraction": 0.08,
+  "targetColumns": 18
+ },
+ "pendingBeforeLock": [],
+ "pixelConvention": "Raw full-resolution AV2 stereo_front_left image (2048x1550, already undistorted, pinhole). Pixel (i,j) centre at (i,j); boundary between pixels i-1 and i at i-0.5. 1024-px-width units = full-resolution / 2.",
+ "questionBudget": {
+  "note": "Real labelers with occasional contradictions need more (restarts).",
+  "perfectOraclePaintQuestionsPerStation": [
+   7,
+   9
+  ],
+  "perfectOracleQuestionsPerCarTask": [
+   70,
+   120
+  ]
+ },
+ "realTiers": {
+  "rule": "all v2 real cases are tier 2. The v1 tier-1 cases (the app car and paint frames, 453e5558 b4645064 and the c780d53a 13 m paint case) are excluded from v2, so build_validation.real_tier matches none of them; the real repeat case is tier 1 as in v1. Tier is informational and unused by scoring.",
+  "tier1": []
+ },
+ "render": {
+  "contextMargin": 0.25,
+  "enhance": {
+   "gamma": 0.7,
+   "highPercentile": 99,
+   "lowPercentile": 1
+  },
+  "lineWindowAlong": 81,
+  "lineWindowPerp": 33,
+  "lineZoom": 7,
+  "pickMarginPx": 10,
+  "pickMaxPanelPx": 560,
+  "pickMinZoom": 3,
+  "pixelWindow": 49,
+  "pixelZoom": 8,
+  "tickOnPixelBoundary": true,
+  "tickRule": "coverage-design.md section 3: candidate ticks are drawn at the pixel boundary nearest the candidate, floor(c) + 0.5; brackets and snapping keep the sub-pixel candidate."
+ },
+ "repeatCases": [
+  "SV05",
+  "453e5558-5a73a7c9"
+ ],
+ "repeatCasesRule": "One synthetic repeat (SV05) and one real repeat: the real car case with the most LiDAR interior points in the planned v2 selection (453e5558 5a73a7c9, 3147 points), chosen by that rule before any v2 labeling. If the build excludes it, the build stops and the coordinator records the next case by the same rule.",
+ "scoring": {
+  "gateMinimumNote": "minExactPerFamily: each of the four synthetic gate families (extremes, roofline profile, tire contacts, paint) needs at least this many exact aggregated features, else that check fails. v1 had no minimum and 'passed' extremes on n = 2 and paint on n = 4 (post-run audit). 10 is the auditor's suggested value, not fitted to any result.",
+  "lidarCoarse": {
+   "minConsistentShare": 0.8,
+   "note": "LiDAR references are inner bounds; a value is consistent when outward error is within [-registrationAllowancePx, spacingPx + registrationAllowancePx] (one-sided features: only the inward limit applies).",
+   "registrationAllowancePx": 8.0
+  },
+  "repeatPrecision": {
+   "report": "within-labeler |difference| between a task and its blind repeat (repeatCases); planned metric D precondition: aggregated repeat spread <= 3 px at 1024 width (6 px full-res)"
+  },
+  "syntheticGate": {
+   "carExtremeMaxAbsPx": 4.0,
+   "carExtremeMedianAbsPx": 2.0,
+   "carProfileMaxAbsPx": 4.0,
+   "carProfileMedianAbsPx": 2.0,
+   "minExactPerFamily": 10,
+   "minResolvedShare": 0.7,
+   "paintMaxAbsPx": 2.0,
+   "paintMedianAbsPx": 1.0,
+   "wheelContactMaxAbsPx": 4.0,
+   "wheelContactMedianAbsPx": 2.0
+  },
+  "units": "full-resolution pixels; 1024-width = /2",
+  "useRule": "Labels made with this protocol may be used as references only if the aggregated synthetic gate passes and the LiDAR coarse check passes. Otherwise a new protocol version is required (with reason); thresholds are never changed after seeing results."
+ },
+ "search": {
+  "ambiguity": {
+   "maxCannotTell": 4,
+   "maxInteriorPx": 3
+  },
+  "ambiguityRule": "coverage-design.md section 1: a cannot_tell during bisection marks that position ambiguous instead of ending the feature; the next question goes to the interior position nearest the midpoint that is not ambiguous (ties: the lower). Stop at b - a = 1 (ordinary) or when every interior position is ambiguous (range). A range is accepted only with at most maxInteriorPx interior positions and at most maxCannotTell cannot_tell answers in the feature (all question purposes counted); otherwise unresolved. Estimate: line features lower bound (a + 0.5 if qa else a - 0.5) + n/2, pixel features (a + b)/2; rangeHalfWidthPx = n/2 is stored with the value (n = 0 gives the v1 formulas). A cannot_tell at a bracket end expands the bracket; a cannot_tell at a repeat question is a contradiction (as in v1); a pick question accepts cannot_tell (acts like 0). Pixel features snap within max(snap.window, rangeHalfWidthPx).",
+  "bracketMargin": 2,
+  "candidateInsidePixels": {
+   "contact": 2,
+   "paint": 1,
+   "top": 2
+  },
+  "candidateMinSpan": 6,
+  "candidateOutsidePixels": 2,
+  "maxExpansions": 2,
+  "maxRestarts": 1,
+  "pixelExpandStep": 8,
+  "repeatJitter": 6
+ },
+ "selftest": {
+  "oracleSeed": "random.Random(int(sha256(f\"{taskId}|{labeler}|{seed}\")[:8], 16))",
+  "robustnessClaims": "only from >= 10 seeds per flip rate, reported as pass count and range"
+ },
+ "snap": {
+  "appliesTo": "pixel-scan features only (profile stations, wheel contacts, paint stations); extremes use the bisection estimate",
+  "maxCandidates": 4,
+  "minStrength": 2.0,
+  "sigma": 0.7,
+  "window": 1.0
+ },
+ "stations": {
+  "carColumns": "labelerExtremesOnGrid",
+  "carColumnsRule": "Roofline stations S1..S3: targets at carFractions of the span between the labeler's own left and right answers (bisection estimates; the labeler's own grid-box edge for a side it left unresolved), each moved to the nearest grid-cell centre column of the task's overview grid, x0 + k * cell + cell // 2 (coverage-design.md section 2). Two stations on the same grid column are kept once (the later one is unresolved, reason 'same grid column'). No AV2 box, LiDAR or map number is involved and the task file carries no vehicle columns. Wheel-contact columns are cell centres (unchanged).",
+  "carFractions": [
+   0.25,
+   0.5,
+   0.75
+  ],
+  "carMinSpanPx": 4,
+  "insideFraction": 0.45,
+  "paintMaxHalfSpanPx": 350,
+  "paintMaxStations": 6,
+  "paintMinSeparationPx": 40,
+  "paintMinUsableBars": 2
+ },
+ "status": "locked with lock_protocol.py (protocol-v2.lock.json holds the hashes of this file, protocol-v2.md, labeler-instructions-v2.md and the kit code); a change needs a new protocol version",
+ "synthetic": {
+  "blurPx": 0.5,
+  "cases": [
+   {
+    "albedo": 0.45,
+    "forwardM": 14.0,
+    "frame": "315970633399927215",
+    "id": "SV01",
+    "kind": "car",
+    "lateralM": 0.5,
+    "log": "453e5558",
+    "model": "sedan",
+    "seed": 301,
+    "sizeM": [
+     4.7,
+     1.83,
+     1.45
+    ],
+    "tier": 1,
+    "yawDeg": 3.0
+   },
+   {
+    "albedo": 0.07,
+    "forwardM": 20.0,
+    "frame": "315970633399927215",
+    "id": "SV02",
+    "kind": "car",
+    "lateralM": 1.2,
+    "log": "453e5558",
+    "model": "suv",
+    "seed": 302,
+    "sizeM": [
+     4.8,
+     1.95,
+     1.78
+    ],
+    "tier": 1,
+    "yawDeg": 178.0
+   },
+   {
+    "albedo": 0.25,
+    "forwardM": 16.0,
+    "frame": "315970633399927215",
+    "id": "SV03",
+    "kind": "car",
+    "lateralM": 0.8,
+    "log": "453e5558",
+    "model": "hatchback",
+    "seed": 303,
+    "sizeM": [
+     4.2,
+     1.78,
+     1.5
+    ],
+    "tier": 2,
+    "yawDeg": 88.0
+   },
+   {
+    "albedo": 0.6,
+    "forwardM": 22.0,
+    "frame": "315970633399927215",
+    "id": "SV04",
+    "kind": "car",
+    "lateralM": 0.3,
+    "log": "453e5558",
+    "model": "van",
+    "seed": 304,
+    "sizeM": [
+     5.0,
+     1.95,
+     1.98
+    ],
+    "tier": 2,
+    "yawDeg": -4.0
+   },
+   {
+    "albedo": 0.12,
+    "forwardM": 18.0,
+    "frame": "315970633399927215",
+    "id": "SV05",
+    "kind": "car",
+    "lateralM": 1.6,
+    "log": "453e5558",
+    "model": "sedan",
+    "seed": 305,
+    "sizeM": [
+     4.8,
+     1.85,
+     1.44
+    ],
+    "tier": 2,
+    "yawDeg": -92.0
+   },
+   {
+    "albedo": 0.35,
+    "forwardM": 13.0,
+    "frame": "315970633399927215",
+    "id": "SV06",
+    "kind": "car",
+    "lateralM": 0.2,
+    "log": "453e5558",
+    "model": "suv",
+    "seed": 306,
+    "sizeM": [
+     4.7,
+     1.9,
+     1.7
+    ],
+    "tier": 2,
+    "yawDeg": 184.0
+   },
+   {
+    "albedo": 0.08,
+    "forwardM": 15.0,
+    "frame": "315971320799927215",
+    "id": "SV07",
+    "kind": "car",
+    "lateralM": 0.5,
+    "log": "c780d53a",
+    "model": "van",
+    "seed": 307,
+    "sizeM": [
+     5.1,
+     2.0,
+     2.0
+    ],
+    "tier": 1,
+    "yawDeg": 2.0
+   },
+   {
+    "albedo": 0.55,
+    "forwardM": 12.5,
+    "frame": "315971320799927215",
+    "id": "SV08",
+    "kind": "car",
+    "lateralM": -1.0,
+    "log": "c780d53a",
+    "model": "hatchback",
+    "seed": 308,
+    "sizeM": [
+     4.1,
+     1.75,
+     1.48
+    ],
+    "tier": 2,
+    "yawDeg": 176.0
+   },
+   {
+    "albedo": 0.04,
+    "forwardM": 19.0,
+    "frame": "315971320799927215",
+    "id": "SV09",
+    "kind": "car",
+    "lateralM": 0.0,
+    "log": "c780d53a",
+    "model": "sedan",
+    "seed": 309,
+    "sizeM": [
+     4.6,
+     1.8,
+     1.42
+    ],
+    "tier": 2,
+    "yawDeg": 91.0
+   },
+   {
+    "albedo": 0.2,
+    "forwardM": 17.0,
+    "frame": "315971320799927215",
+    "id": "SV10",
+    "kind": "car",
+    "lateralM": 1.5,
+    "log": "c780d53a",
+    "model": "suv",
+    "seed": 310,
+    "sizeM": [
+     4.9,
+     1.98,
+     1.8
+    ],
+    "tier": 1,
+    "yawDeg": -2.0
+   },
+   {
+    "albedo": 0.4,
+    "forwardM": 23.0,
+    "frame": "315971320799927215",
+    "id": "SV11",
+    "kind": "car",
+    "lateralM": -0.5,
+    "log": "c780d53a",
+    "model": "van",
+    "seed": 311,
+    "sizeM": [
+     4.9,
+     1.9,
+     1.95
+    ],
+    "tier": 2,
+    "yawDeg": -88.0
+   },
+   {
+    "albedo": 0.15,
+    "forwardM": 14.0,
+    "frame": "315971320799927215",
+    "id": "SV12",
+    "kind": "car",
+    "lateralM": 2.0,
+    "log": "c780d53a",
+    "model": "hatchback",
+    "seed": 312,
+    "sizeM": [
+     4.3,
+     1.8,
+     1.52
+    ],
+    "tier": 2,
+    "yawDeg": 6.0
+   },
+   {
+    "acrossM": 7.0,
+    "barLengthM": 3.0,
+    "barM": 0.45,
+    "borderGapM": 0.0,
+    "borderM": 0.2,
+    "forwardM": 13.5,
+    "frame": "315970633399927215",
+    "gapM": 0.55,
+    "id": "SQ01",
+    "kind": "paint",
+    "lateralM": 0.5,
+    "log": "453e5558",
+    "pattern": "continental-border",
+    "seed": 401,
+    "tier": 1,
+    "wear": 0.25,
+    "yawDeg": 3.0
+   },
+   {
+    "acrossM": 6.5,
+    "forwardM": 18.0,
+    "frame": "315970633399927215",
+    "id": "SQ02",
+    "kind": "paint",
+    "lateralM": 0.8,
+    "lengthM": 3.2,
+    "lineM": 0.3,
+    "log": "453e5558",
+    "pattern": "lines",
+    "seed": 402,
+    "tier": 2,
+    "wear": 0.2,
+    "yawDeg": -2.0
+   },
+   {
+    "acrossM": 3.0,
+    "barLengthM": 1.8,
+    "barM": 0.55,
+    "forwardM": 7.0,
+    "frame": "315970633399927215",
+    "gapM": 0.6,
+    "id": "SQ03",
+    "kind": "paint",
+    "lateralM": 1.8,
+    "log": "453e5558",
+    "pattern": "continental",
+    "seed": 403,
+    "tier": 2,
+    "wear": 0.3,
+    "yawDeg": 4.0
+   },
+   {
+    "acrossM": 3.5,
+    "barLengthM": 1.8,
+    "barM": 0.5,
+    "borderGapM": 0.1,
+    "borderM": 0.25,
+    "forwardM": 6.0,
+    "frame": "315970633399927215",
+    "gapM": 0.7,
+    "id": "SQ04",
+    "kind": "paint",
+    "lateralM": 1.5,
+    "log": "453e5558",
+    "pattern": "continental-border",
+    "seed": 404,
+    "tier": 1,
+    "wear": 0.2,
+    "yawDeg": -3.0
+   }
+  ],
+  "contactShadow": {
+   "bodyBlurPx": 2.5,
+   "bodyStrength": 0.45,
+   "note": "ground only: body footprint (offset in vehicle metres) plus one patch under each tire, drawn before the vehicle",
+   "offsetM": [
+    0.15,
+    -0.1
+   ],
+   "tireBlurPx": 1.2,
+   "tireStrength": 0.4
+  },
+  "jpegQuality": 92,
+  "materials": {
+   "arch": {
+    "albedo": 0.02,
+    "ambient": 0.6,
+    "diffuse": 0.2
+   },
+   "body": {
+    "ambient": 0.55,
+    "diffuse": 0.55,
+    "sky": 0.02
+   },
+   "glass": {
+    "albedo": 0.035,
+    "ambient": 0.5,
+    "diffuse": 0.3,
+    "gradient": 0.04,
+    "sky": 0.06
+   },
+   "headlight": {
+    "albedo": 0.6,
+    "ambient": 0.7,
+    "diffuse": 0.3,
+    "sky": 0.05
+   },
+   "rim": {
+    "albedo": 0.3,
+    "ambient": 0.6,
+    "diffuse": 0.4,
+    "sky": 0.03
+   },
+   "taillight": {
+    "albedo": 0.15,
+    "ambient": 0.7,
+    "diffuse": 0.3
+   },
+   "tire": {
+    "albedo": 0.03,
+    "ambient": 0.6,
+    "diffuse": 0.3
+   },
+   "trim": {
+    "albedo": 0.05,
+    "ambient": 0.6,
+    "diffuse": 0.4,
+    "sky": 0.02
+   }
+  },
+  "noise": 1.2,
+  "paintGain": 2.0,
+  "paintStationSpacingPx": 100.0,
+  "roadAlbedo": 0.12,
+  "sunDirection": [
+   0.3,
+   -0.5,
+   0.8
+  ],
+  "supersample": 8,
+  "vehicleModels": "v2",
+  "vehicleModelsRule": "coverage-design.md section 4: sedan, hatchback, suv, van from synth.vehicle_v2 (body, hood, cabin with sloped glass, roof, trunk on the sedan, bumpers, wheels, mirrors; every part convex, so the truth is the union of the convex hulls of the projected parts). The v1 box model is refused. Rims, wheel arches and lights are flat colour patches on existing faces and the contact shadow darkens only the background before the vehicle is drawn: neither changes the coverage map or the truth. materials.body takes its albedo from each case; sunDirection is the city-frame light direction for Lambert shading."
+ },
+ "taskFiles": {
+  "internal": "kit-internal/tasks-internal.json",
+  "public": [
+   "taskId",
+   "kind",
+   "target",
+   "overview",
+   "estimatedQuestions",
+   "answerDir"
+  ],
+  "publicNumbers": [
+   "estimatedQuestions"
+  ],
+  "rule": "Labelers read only validation-tasks.json: task id, kind, target wording, overview image path, question estimate and answer folder. Image paths and hashes, overview geometry, ring position, station columns, guides and tier are kit-only (kit-internal/). build_validation refuses any other number in the public file."
+ },
+ "taskOrderSeed": 20261014,
+ "title": "Palo Alto reference-labeling protocol v2 (development validation)",
+ "version": "pao-labels-v2",
+ "wheels": {
+  "maxCount": 3
+ }
+}

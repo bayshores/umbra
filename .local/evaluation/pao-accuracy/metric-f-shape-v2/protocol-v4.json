@@ -1,0 +1,640 @@
+{
+ "metric": "F shape-v2: false Blocked of the shape result, scored on the scoring sweeps",
+ "version": "metric F shape-v2 (metric F protocol v4)",
+ "shapeVersion": "shape-v2",
+ "status": "Transcription of frozen rules, written and hashed (protocol-v4.lock.json) before any metric F shape-v2 result existed. Report only: it changes no app behaviour, no src/ file, no scene, ground or suggestion data and no other protocol.",
+ "createdUtc": "2026-10-14T06:19:08Z",
+ "authority": {
+  "rules": {
+   "file": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+   "sha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a",
+   "section": "changes (versions.metricF, names), predictions; read with its base",
+   "note": "shape-v2/protocol.json, read with its base, wins on any disagreement with this file"
+  },
+  "rulesBase": {
+   "file": ".local/evaluation/pao-accuracy/shape-v1/protocol.json",
+   "sha256": "07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825",
+   "section": "evaluation.metricFShapeV1, resultRule.allowedChanges"
+  },
+  "design": {
+   "file": ".local/evaluation/pao-accuracy/shape-v1/design.md",
+   "sha256": "91b919c8e277bf50307edc8d151b6117ef875c4ce4d3b4fadfff93f16d61225f",
+   "role": "plain-language version of the base (shape-v1) protocol"
+  },
+  "metricFv2": {
+   "file": ".local/evaluation/pao-accuracy/metric-f-v4.1/protocol-v2.json",
+   "sha256": "33b803c2f89cfa334f583e4bcba81721dc72100a9a1525d4d6f48d3d327fe456",
+   "role": "definition and thresholds copied unchanged"
+  },
+  "approachSplitAddendum": {
+   "file": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+   "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838"
+  },
+  "approachSplitAddendumBase": {
+   "file": ".local/evaluation/pao-accuracy/shape-v1/split-addendum.json",
+   "sha256": "cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626"
+  },
+  "carShapePy": {
+   "file": "scripts/california/car_shape.py",
+   "sha256": "ed45c8446abe47e276ad08bdb77461ee429673699c68d6453c4ce044853367e7",
+   "pin": ".local/evaluation/pao-accuracy/scene-builder-v4.3/builder-protocol-v4.3.json code (SHA-256 5dc0ab06ac1af4f57aa96b9cea4e451e62801d4084f9b3fbc011a2ccdd11bebe)"
+  },
+  "metricFShapeV1": {
+   "file": ".local/evaluation/pao-accuracy/metric-f-shape-v1/protocol-v3.json",
+   "sha256": "3dbdc0c90809b75052cfba0b382969e1895338495e685a6d5fa3d8cca7080ed8",
+   "role": "history: its results are pinned below as report-only comparisons; its box Blocked counts are restated"
+  }
+ },
+ "label": "consistency and code cross-check of the vehicle model; not accuracy evidence for the recorded vehicle's shape",
+ "whyNotAccuracy": "a shape Blocked needs a two-sweep top >= 0.10 m above the line; F calls a row likely false only when the scoring-sweep top is >= 0.05 m below it; the two halves of the same drive would have to disagree by about 0.15 m at the same spot, so zero likely-false is expected by construction; systematic artifacts (mixed pixels, glass reflections, pose errors) are in both halves",
+ "value": "car_shape.py and metric_f_car_top.py are written separately, so F catches frame, index and registration bugs",
+ "words": {
+  "vehicles": "AV2 vehicles are called stationary.",
+  "results": "The app results are only Blocked or Unknown (with a reason). There is no Clear.",
+  "tooCloseToCall": "Too close to call = the line cuts into the box by less than 0.10 m (TOO_CLOSE_TO_CALL_M in src/geometry.mjs); such rows are Unknown, not plain Blocked.",
+  "outputs": "Every output text is checked to not contain the four letters p-a-r-k in a row (case-insensitive).",
+  "shape": "height-not-proven = Unknown: the line cuts into the box, but the recorded vehicle's LiDAR shape does not prove the top reaches the line."
+ },
+ "question": "For each app sweep row that is plain Blocked with the recorded vehicle's LiDAR shape (shape-v2), does the measured car top of the scoring sweeps (the half of the kept sweeps the shape was not built from) still reach the sightline?",
+ "target": {
+  "rule": "0 likely-false rows (a failure means a bug)",
+  "scoredScenes": [
+   "8c52d911-2658849-handmade-v3.4",
+   "8c52d911-2658849-v4-12",
+   "8c52d911-2658849-v4-18.5",
+   "c780d53a-2069452-v4-12",
+   "c780d53a-2069452-v4-18.5"
+  ],
+  "notApplicable": {
+   "453e5558-20499018": {
+    "ground": ".local/evaluation/pao-accuracy/scene-builder-v4.3/453e5558-20499018-guard-check/grounded/ground.json",
+    "sha256": "870ede738f267ee28ca34f163fdfad40dc73e42b7cfb2cf2be8c7a454a23f386",
+    "why": "no annotated vehicle, carShape null, no sweep plan (shape-v2 prediction 11)"
+   }
+  }
+ },
+ "inputs": {
+  "splitRule": "Development logs only: 8c52d911-fe34-3424-9864-d3fdfac38064 (crossing 2658849) and c780d53a-2d37-3cd8-9e89-530966aef53e (crossing 2069452). No held-out, control or reserve data is opened. Nothing is downloaded: only the sweeps already listed in each scene's carShape and present in its shape-v2 sweep folder are used.",
+  "scenes": [
+   {
+    "name": "8c52d911-2658849-handmade-v3.4",
+    "log": "8c52d911",
+    "assembled": ".local/evaluation/av2-map-first-2026-10-11/assembled/",
+    "grounded": ".local/evaluation/av2-map-first-2026-10-11/grounded-v3.4/",
+    "groundSha256": "2add396633d1878330989d5549ef0eb4bf7ff80d6cee98128294b2e092aa78c2",
+    "suggestionsSha256": "e9fb43063191ae0d47d273eae482cf2a2fa522bb458f5d87692c0f7e20ad6809",
+    "app": "current",
+    "placementProtocol": {
+     "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4.json",
+     "sha256": "330f1dcd6725201a624cf3c3e0e9c3bde41319b38a63ed5cf2e74b26c0dcab22",
+     "freeze": {
+      "file": ".local/evaluation/av2-map-first-2026-10-11/protocol-v3.4-freeze.json",
+      "sha256": "c0b0deab2e40bbcce2620d486d918e3a1c6fa89b6871bbe2332b405ea0139f4a"
+     }
+    },
+    "carShape": {
+     "schema": "shape-v2",
+     "status": "measured",
+     "track": "396f15b5-9cf3-462b-9164-4b6f71c4e7d6",
+     "shapeSweeps": 18,
+     "scoringSweeps": 17
+    },
+    "sweepPlan": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/handmade-v3.4/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweep-plan.json",
+     "sha256": "f4455886c9f3b06444cb6d1b5381d128abca0fcf21d49fbf05e2a6be75ccfce7"
+    },
+    "sweepDir": ".local/data/av2/shape-v2-8c52d911-2658849/handmade-v3.4/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweeps/",
+    "receipt": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/handmade-v3.4/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/receipt.json",
+     "sha256": "7676eb26440c167ffd2ade6ad3d3aaefe58a0878208db04b65db4113806c4f33"
+    },
+    "approachOutRoot": ".local/data/av2/shape-v2-8c52d911-2658849/handmade-v3.4",
+    "v2Scene": "8c52d911-2658849-handmade-v3.2",
+    "v2Rows": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/rows-8c52d911-2658849-handmade-v3.2.json",
+    "v2RowsSha256": "ec5eb1f8dbb50a2cdbe135973da37b13251738cc0158bdeed704a2690d8c6e5a",
+    "v2Results": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/results-8c52d911-2658849-handmade-v3.2.json",
+    "v2ResultsSha256": "cbc15c9108cb3757af89b3557d973742193e71630daf0c538abf79d9f8974bdd",
+    "shapeV1Scene": "8c52d911-2658849-handmade-v3.3",
+    "shapeV1Results": ".local/evaluation/pao-accuracy/metric-f-shape-v1/results-8c52d911-2658849-handmade-v3.3.json",
+    "shapeV1ResultsSha256": "99984020df730a124b9c7743a816bdf51e757132c79c0b25219c073eb312079c"
+   },
+   {
+    "name": "8c52d911-2658849-v4-12",
+    "log": "8c52d911",
+    "assembled": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-12/assembled/",
+    "grounded": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-12/grounded/",
+    "groundSha256": "e4d6a839d6cf621e84aea2e9486400fad03aac9da71fecedae804a05667b70fa",
+    "suggestionsSha256": "8ef6c8487d95655cbfa38ebbff4d1d42a0643ae1a9484a66858305c8c7f6e176",
+    "app": "current",
+    "placementProtocol": {
+     "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-12/protocol-v3.4-8c52d911-2658849-v4-12.json",
+     "sha256": "0ce0451c6554d77626e40866f20b3061196be63c37a6c3ed23990c698a686a02",
+     "freeze": {
+      "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-12/protocol-v3.4-8c52d911-2658849-v4-12-freeze.json",
+      "sha256": "b910f17c1cf9ac4a24a28810210d55f2baff98ee913b3488ac405bf577ce90ee"
+     }
+    },
+    "carShape": {
+     "schema": "shape-v2",
+     "status": "measured",
+     "track": "396f15b5-9cf3-462b-9164-4b6f71c4e7d6",
+     "shapeSweeps": 18,
+     "scoringSweeps": 17
+    },
+    "sweepPlan": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/v4-12/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweep-plan.json",
+     "sha256": "4e7854912af6a7e463043294f54dde957487147dad90d11c259fa38a1538ba1c"
+    },
+    "sweepDir": ".local/data/av2/shape-v2-8c52d911-2658849/v4-12/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweeps/",
+    "receipt": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/v4-12/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/receipt.json",
+     "sha256": "d76b903487ad26e0547d1df3bfecc3bed5e2a1e14ddb18f52fb8d02ae19c0333"
+    },
+    "approachOutRoot": ".local/data/av2/shape-v2-8c52d911-2658849/v4-12",
+    "v2Scene": "8c52d911-2658849-v4-12",
+    "v2Rows": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/rows-8c52d911-2658849-v4-12.json",
+    "v2RowsSha256": "18a486083d564aef766ab6e4e3712edb81e8a81e94e560b3a962d76b49bf9efa",
+    "v2Results": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/results-8c52d911-2658849-v4-12.json",
+    "v2ResultsSha256": "94c9bcd58893f2120d7d25d9abba30c4c4d287c5fc28a77260eaba09eb156aa4",
+    "shapeV1Scene": "8c52d911-2658849-v4-12",
+    "shapeV1Results": ".local/evaluation/pao-accuracy/metric-f-shape-v1/results-8c52d911-2658849-v4-12.json",
+    "shapeV1ResultsSha256": "071dae4bc58963fb696d4dc3ca1d2c357acc9d39327cc53060ebd41f7bee0aea"
+   },
+   {
+    "name": "8c52d911-2658849-v4-18.5",
+    "log": "8c52d911",
+    "assembled": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-18.5/assembled/",
+    "grounded": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-18.5/grounded/",
+    "groundSha256": "dcf1c0d5134ae7223e5567fab6c0cfa19648dd9e54a256361bc06e5cf31f3088",
+    "suggestionsSha256": "e6d0ede79a55f97dfa900517d0e781ff945a30848c7b75f89e6490f273d64ca8",
+    "app": "current",
+    "placementProtocol": {
+     "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-18.5/protocol-v3.4-8c52d911-2658849-v4-18.5.json",
+     "sha256": "3e4d636d33f2dd9fb3328c0a7b336334bcfc3ddea3bd40067693c9248be4f08e",
+     "freeze": {
+      "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/8c52d911-2658849-v4-18.5/protocol-v3.4-8c52d911-2658849-v4-18.5-freeze.json",
+      "sha256": "6d087c4dda633aa4b4fae831a9193e2d2007c907188bfe42010dfb3ed1fde2ab"
+     }
+    },
+    "carShape": {
+     "schema": "shape-v2",
+     "status": "measured",
+     "track": "396f15b5-9cf3-462b-9164-4b6f71c4e7d6",
+     "shapeSweeps": 18,
+     "scoringSweeps": 17
+    },
+    "sweepPlan": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/v4-18.5/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweep-plan.json",
+     "sha256": "7c841a27f9053b0bd4f4ff0f1a91291d377f6eef9b75b19e863eb3a2587173d3"
+    },
+    "sweepDir": ".local/data/av2/shape-v2-8c52d911-2658849/v4-18.5/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/sweeps/",
+    "receipt": {
+     "file": ".local/data/av2/shape-v2-8c52d911-2658849/v4-18.5/shape-v2-8c52d911-fe34-3424-9864-d3fdfac38064/receipt.json",
+     "sha256": "b0142865bd96febaa86370ec2053415854c70f2d7b3cccbbee2fbf0f39ae501a"
+    },
+    "approachOutRoot": ".local/data/av2/shape-v2-8c52d911-2658849/v4-18.5",
+    "v2Scene": "8c52d911-2658849-v4-18.5",
+    "v2Rows": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/rows-8c52d911-2658849-v4-18.5.json",
+    "v2RowsSha256": "97e4d34b77314b5f379eed514b4bb60e490de29465b82983a9bc65e449d1ef82",
+    "v2Results": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/results-8c52d911-2658849-v4-18.5.json",
+    "v2ResultsSha256": "9732c4845e342e3214aee0974abbf66011ff045e12aec75105e3f5e38c545df4",
+    "shapeV1Scene": "8c52d911-2658849-v4-18.5",
+    "shapeV1Results": ".local/evaluation/pao-accuracy/metric-f-shape-v1/results-8c52d911-2658849-v4-18.5.json",
+    "shapeV1ResultsSha256": "59b38ba64da316ff9442ee6074982f07e8a4ced75e6764f806a82d36a0219944"
+   },
+   {
+    "name": "c780d53a-2069452-v4-12",
+    "log": "c780d53a",
+    "assembled": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-12/assembled/",
+    "grounded": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-12/grounded/",
+    "groundSha256": "a64337851d5b6e1dac71a7ddda192473a5aca55e8a4467fb03ca71ee374386e5",
+    "suggestionsSha256": "1b611847a9a2bbe286c7c577fba36b9e197957b76a176d22c0e1e72bd5e97275",
+    "app": "current",
+    "placementProtocol": {
+     "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-12/protocol-v3.4-c780d53a-2069452-v4-12.json",
+     "sha256": "789220de79ddb73a91ce0d59cfb9706ebda52540077ef652d760639f60c647d7",
+     "freeze": {
+      "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-12/protocol-v3.4-c780d53a-2069452-v4-12-freeze.json",
+      "sha256": "570d02401fe1ec33d22a3729f87627ad07c94ffaaaa8295a3a97813a0827780d"
+     }
+    },
+    "carShape": {
+     "schema": "shape-v2",
+     "status": "measured",
+     "track": "b61c044a-4fa9-4a3f-8803-9a0edfd75a23",
+     "shapeSweeps": 20,
+     "scoringSweeps": 20
+    },
+    "sweepPlan": {
+     "file": ".local/data/av2/shape-v2-c780d53a-2069452/v4-12/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/sweep-plan.json",
+     "sha256": "b4397b4a61477f6387b081fc04c8dd9eee679f95e17fef695b8ccb0a04d4ec62"
+    },
+    "sweepDir": ".local/data/av2/shape-v2-c780d53a-2069452/v4-12/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/sweeps/",
+    "receipt": {
+     "file": ".local/data/av2/shape-v2-c780d53a-2069452/v4-12/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/receipt.json",
+     "sha256": "0ed735ded20251e1c9f9424331b809ea85188012b3fab2f2df2ac1fa1337c421"
+    },
+    "approachOutRoot": ".local/data/av2/shape-v2-c780d53a-2069452/v4-12",
+    "v2Scene": "c780d53a-2069452-v4-12",
+    "v2Rows": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/rows-c780d53a-2069452-v4-12.json",
+    "v2RowsSha256": "b225d76ba5a7b9276c958d15c3d9700b498586a3e1646c7e44bb56f85a17f897",
+    "v2Results": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/results-c780d53a-2069452-v4-12.json",
+    "v2ResultsSha256": "917c1447ca92dd3a1d0e9249736281cfecd99ef8985e38e09e9798090ba9c9f6",
+    "shapeV1Scene": "c780d53a-2069452-v4-12",
+    "shapeV1Results": ".local/evaluation/pao-accuracy/metric-f-shape-v1/results-c780d53a-2069452-v4-12.json",
+    "shapeV1ResultsSha256": "511dcbdb7e2252391204e482477f3887036c8beab8096a666cee1594a8fb81c4"
+   },
+   {
+    "name": "c780d53a-2069452-v4-18.5",
+    "log": "c780d53a",
+    "assembled": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-18.5/assembled/",
+    "grounded": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-18.5/grounded/",
+    "groundSha256": "6af11fa6fa602dff0860a8014948ec90c22430ac5c30d73fa7bd968d63810830",
+    "suggestionsSha256": "9ba15842bb795768595924a12456807c7a3a8b2695eebf9f15a1d6a728e146c3",
+    "app": "current",
+    "placementProtocol": {
+     "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-18.5/protocol-v3.4-c780d53a-2069452-v4-18.5.json",
+     "sha256": "7517168731f34ad10e46f980b20b5520c5df4ed2c5e4ef1aa25494c3ff277570",
+     "freeze": {
+      "file": ".local/evaluation/pao-accuracy/scene-builder-v4.3/c780d53a-2069452-v4-18.5/protocol-v3.4-c780d53a-2069452-v4-18.5-freeze.json",
+      "sha256": "682bab011bffb1f13b4fbcc753331b304d8dba95a4795625e73fb65b5aa4a544"
+     }
+    },
+    "carShape": {
+     "schema": "shape-v2",
+     "status": "measured",
+     "track": "b61c044a-4fa9-4a3f-8803-9a0edfd75a23",
+     "shapeSweeps": 20,
+     "scoringSweeps": 20
+    },
+    "sweepPlan": {
+     "file": ".local/data/av2/shape-v2-c780d53a-2069452/v4-18.5/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/sweep-plan.json",
+     "sha256": "efe578f75c13bf6c83cc9e6dfa77aaa1c53b3a2b765be1273db08eb17556fc60"
+    },
+    "sweepDir": ".local/data/av2/shape-v2-c780d53a-2069452/v4-18.5/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/sweeps/",
+    "receipt": {
+     "file": ".local/data/av2/shape-v2-c780d53a-2069452/v4-18.5/shape-v2-c780d53a-2d37-3cd8-9e89-530966aef53e/receipt.json",
+     "sha256": "58b4b475111318623e6decab86a1323c4eed14aeb8ebb3dcad96be5394f5adb3"
+    },
+    "approachOutRoot": ".local/data/av2/shape-v2-c780d53a-2069452/v4-18.5",
+    "v2Scene": "c780d53a-2069452-v4-18.5",
+    "v2Rows": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/rows-c780d53a-2069452-v4-18.5.json",
+    "v2RowsSha256": "0d362db9e54618fa9260a32f0f2b3c1facfd97ce91a0f69b1ad638973a665498",
+    "v2Results": ".local/evaluation/pao-accuracy/metric-f-v4.1/v2/results-c780d53a-2069452-v4-18.5.json",
+    "v2ResultsSha256": "dd4c0959ad1397755279a7ac7f2279c3ca0230616c5f96a23ac09aec4c96a445",
+    "shapeV1Scene": "c780d53a-2069452-v4-18.5",
+    "shapeV1Results": ".local/evaluation/pao-accuracy/metric-f-shape-v1/results-c780d53a-2069452-v4-18.5.json",
+    "shapeV1ResultsSha256": "76d70e54480a4b309c821bd3163c3bf19e1345cd5c3d9b2ec87068c92492d555"
+   }
+  ],
+  "logs": {
+   "8c52d911": {
+    "logId": "8c52d911-fe34-3424-9864-d3fdfac38064",
+    "logDir": ".local/data/av2/train/8c52d911-fe34-3424-9864-d3fdfac38064/",
+    "annotations": {
+     "file": ".local/data/av2/train/8c52d911-fe34-3424-9864-d3fdfac38064/annotations.feather",
+     "sha256": "9b94931dad33210e77b06832dabdd19ea73e144fda5c3341fce354fe52562f85"
+    },
+    "poses": {
+     "file": ".local/data/av2/train/8c52d911-fe34-3424-9864-d3fdfac38064/city_SE3_egovehicle.feather",
+     "sha256": "ca16b4a2bf2d07037c821b4faf880ebfc038d56855864de3f7668dfb40454dc5"
+    },
+    "calibration": {
+     "file": ".local/data/av2/train/8c52d911-fe34-3424-9864-d3fdfac38064/calibration/egovehicle_SE3_sensor.feather",
+     "sha256": "a53320553c07d33c52c873d75dfb888d1c1b2ae58c49e25962eb99c2134f652c"
+    }
+   },
+   "c780d53a": {
+    "logId": "c780d53a-2d37-3cd8-9e89-530966aef53e",
+    "logDir": ".local/data/av2/builder-c780-2026-10-12/train/c780d53a-2d37-3cd8-9e89-530966aef53e/",
+    "annotations": {
+     "file": ".local/data/av2/builder-c780-2026-10-12/train/c780d53a-2d37-3cd8-9e89-530966aef53e/annotations.feather",
+     "sha256": "6f201de65d80e777bb237233f46cd65c6f1893147986d28b69434cd7568dc7e9"
+    },
+    "poses": {
+     "file": ".local/data/av2/builder-c780-2026-10-12/train/c780d53a-2d37-3cd8-9e89-530966aef53e/city_SE3_egovehicle.feather",
+     "sha256": "34c2ca947ed621054fb4dc9414ea4e75f0d6d6cb2c1c481bf3b133db4eedd846"
+    },
+    "calibration": {
+     "file": ".local/data/av2/builder-c780-2026-10-12/train/c780d53a-2d37-3cd8-9e89-530966aef53e/calibration/egovehicle_SE3_sensor.feather",
+     "sha256": "ccd06903875cec8108233cd9f722b9fde95a42712d433416ae1fdcea475bc6e5"
+    }
+   }
+  },
+  "apps": {
+   "current": {
+    "source": "src/ in the working tree at repository HEAD 8ec75f867e5663de98ecf6fc82c5144d97305867 plus the uncommitted shape-v2 app changes",
+    "sha256": {
+     "src/geometry.mjs": "fdc15cecf7cf8c102eb1b85d8a866ac32d861ca9a8d79f392e2f7ea71ff48f4f",
+     "src/scene.mjs": "3e5aa8fa6ab538f75457ed7c9e89fbef2214842466113df1e1a590fa5c1c652e",
+     "src/scenario-assistant.mjs": "682ebd7733dcc238eea255329c2b7f7b0adf2d9b3f4aa9efc4e3d53869dbe2bf",
+     "src/suggestions.mjs": "e8fb67b93768dff2b4866f2ef83ae5c20d64eb2987a448369997e5ae74d928f4"
+    }
+   }
+  }
+ },
+ "definition": {
+  "testedBox": "The box the app tests: the ground.json cuboid whose track is suggestions.json vehicle.track (protocol v3 averaged pose on the v3.2 and v4.1 scenes; the v2 sweep-time box on the cross-check). Like the app (annotatedBox in src/geometry.mjs) it is upright: centre = cuboid centre, heading = the horizontal part of worldFromBox column 0, normalised, sizes = the unrounded cuboid length, width, height. Its sub-degree pitch and roll are not used. The Node rows must report the same centre (1e-9 m), heading (1e-12) and sizes (1e-9 m) for the box at its own setback, or the run stops.",
+  "carFrame": "Car-local frame of the tested box: x forward along the heading (front face at x = +L/2), y left (left = up x heading), z = height above the box bottom. World frame as ground.json frame: X = cityX - originX, Y = cityZ - originZ (up), Z = -(cityY - originY).",
+  "heightFrame": "All heights are in the app's vertical frame for the box: z = world Y minus the box bottom (box centre Y - H/2). The app's what-if box at another setback keeps the same centre Y (whatIfBox moves it only along the lane axis, it is not re-grounded), so the same z applies to every sweep row. The mapped ground under each moved box is reported as a diagnostic only. This is not 'height above the road' when the road under the moved box is higher or lower than under the real car.",
+  "returns": {
+   "sweeps": "Every sweep file <timestamp>.feather in the log's sweepDirs, de-duplicated by timestamp (copies with the same timestamp must have the same sha256, else stop), used when annotations.feather has a row for the tested track at exactly that timestamp. A sweep's sha256 is checked against every receipt record naming that file; a mismatch stops the run; a sweep no receipt names is used and flagged receiptVerified false.",
+   "loader": "Reused from v3.1-analysis/metric_k.py (copied, not imported): sweep x, y, z are the ego frame at the sweep timestamp (motion-compensated), so city = city_SE3_egovehicle(sweep timestamp) applied to them, pose by the metric_k capture_poses interpolation (normalised linear quaternion interpolation). Lasers 0-31 are up_lidar and 32-63 down_lidar; the laser assignment check (each laser's elevation spread in its assigned sensor frame at each return's capture time, sweep timestamp + offset_ns) must stay below 0.15 degrees in every sweep, else stop.",
+   "otherObjects": "A return inside another annotated cuboid of the same sweep (annotations.feather rows at that timestamp, other tracks, ego frame) is removed: inside the footprint with no growth, beyond the box ends with the cuboid grown by 0.30 m on every side. Removed counts are reported per bin.",
+   "kept": "In the footprint: |y| <= W/2, -L/2 <= x <= L/2, z >= 0.25 m (returns less than 0.25 m above the box bottom are excluded) and z <= H + 0.30 m (higher returns are counted and reported, not used)."
+  },
+  "bins": {
+   "primary": "n = round(L / 0.25) equal along-bins over -L/2 .. +L/2 (bin width L/n, nominal 0.25 m), numbered from the front face. A return goes to bin floor((L/2 - x) / (L/n)), clipped to 0 .. n-1. Each bin's top = the largest z of its kept returns over the full footprint width. A bin with at least 5 kept returns is measured; a bin with fewer is unmeasured and has no top.",
+   "secondary": "Report only: 2D cells, the same along-bins times m = round(W / 0.25) equal lateral bins over -W/2 .. +W/2; top = largest z in the cell; at least 5 returns = measured."
+  },
+  "rows": "The app's own setback sweep exactly as scripts/evaluation/pao-baseline.mjs builds it: child 1.1 m and adult 1.5 m target heights, setup from suggestedSetup(scene, scene.suggestions), the same eye (createScenario at the suggested driver distance), setbackSweep(scene, {pixels, driverDistance}, vehicle, height) rows (0.25 m steps from limits.minimumSetback plus the last setback and the 15 ft / 20 ft marks), each box from whatIfBox(createScenario(...).whatIf, setback). Row states and reasons come from the app (assessSightline / classifySightline through setbackSweep), never re-implemented. A plain-Blocked row is a row whose state is 'blocked' (current app: a cut of at least 0.10 m; v2 app: the line touches the box, there was no 10 cm rule then). Each row's eye and person-head target are exported in the car-local frame of that row's moved box. gapM is the app's own (current app) or, for the v2 app that has none, the current src/geometry.mjs sightlineGap on the same box-local points (a pure geometric function).",
+  "lineVersusTop": "The eye-to-target segment is clipped to the footprint (|x| <= L/2, |y| <= W/2). An along-bin is crossed when the clipped segment runs more than 1e-6 m horizontally inside it. For a crossed bin, line z = the lower of the segment's heights where it enters and leaves that bin (the lowest point of a straight segment over an interval), and clearance = line z - bin top (measured bins only).",
+  "classes": {
+   "supported": "Some crossed measured bin has clearance < -0.05 m: the measured car top reaches above the line there.",
+   "unresolved": "Not supported, and at least one crossed bin is unmeasured. An unmeasured bin can never support likely false.",
+   "likelyFalse": "Not supported, every crossed bin is measured, and every crossed bin has clearance >= +0.05 m.",
+   "ambiguous": "Not supported, every crossed bin is measured, and the smallest clearance is in -0.05 .. +0.05 m (below +0.05).",
+   "noFootprintCrossing": "The segment never enters the footprint (cannot happen for a Blocked row; reported if it does).",
+   "precedence": "supported, then unresolved, then likelyFalse or ambiguous.",
+   "scored": "Counts of likely false, ambiguous, unresolved and supported are scored on plain-Blocked rows. Classes of all other rows (including too close to call) are reported, not scored.",
+   "minClearance": "Per row: the smallest clearance over crossed measured bins, the bin where it occurs and the number of crossed unmeasured bins."
+  },
+  "stopBlocking": {
+   "measuredContact": "A row (state not 'overlap') has measured contact when some crossed measured bin has clearance < 0.",
+   "measuredStopBlockingM": "Setback of the first row (state not 'overlap') after the last row with measured contact; null when no row has measured contact or the last such row is the last row. Also reported: first and last measured-contact setbacks and the number of later rows that touch the box (gapM <= 0) while crossing an unmeasured bin.",
+   "appComparison": "Compared with the app's setbackSweep stopsBlockingAt and notBlockedFrom, and with the app's first and last plain-Blocked row setbacks."
+  },
+  "overhang": "Report only, not scored: kept returns beyond the box ends (x > L/2 front, x < -L/2 rear, up to 1.0 m beyond, |y| <= W/2, 0.25 <= z <= H + 0.30), other cuboids grown by 0.30 m removed, in 0.25 m bins: count, number of distinct sweeps and largest z. Summary: frontOverhangReturns and rearOverhangReturns = returns within 0.50 m beyond each end.",
+  "diagnostics": "Per sweep: kept footprint returns, the tested track's annotated centre at that sweep relative to the tested box (along, lateral, vertical), and the 5th and 95th percentile x of its kept footprint returns (stationarity check). Per scene: the largest laser elevation spread.",
+  "sensitivity": "Report only: the same classification with a profile that removes no other-object returns and has no upper height limit."
+ },
+ "thresholds": {
+  "binLengthNominalM": 0.25,
+  "lateralBinNominalM": 0.25,
+  "minHeightAboveBoxBottomM": 0.25,
+  "maxHeightAboveBoxTopM": 0.3,
+  "minReturnsMeasured": 5,
+  "marginM": 0.05,
+  "crossedBinMinLengthM": 1e-06,
+  "overhangReachM": 1.0,
+  "overhangBinM": 0.25,
+  "overhangSummaryReachM": 0.5,
+  "otherObjectBufferBeyondEndsM": 0.3,
+  "laserElevationSpreadLimitDeg": 0.15,
+  "targetHeightsM": {
+   "child": 1.1,
+   "adult": 1.5
+  },
+  "tooCloseToCallM": 0.1,
+  "freeRayBandM": 0.05,
+  "nearGroundFloorM": -0.5
+ },
+ "shapeChanges": {
+  "note": "The base evaluation.metricFShapeV1 rules (metric F shape-v1) carried over unchanged to shape-v2; only the sweep source names the shape-v2 folders. Report files keep the key shapeV1 for this section (shape-v2 changes.names.metricFReportKey).",
+  "sweeps": "only carShape.sweeps.scoring, through the new metric_f_car_top.py option --scoring-sweeps-from GROUND_JSON (every listed sweep present with its listed SHA-256, else the run stops). This replaces definition.returns.sweeps (every sweep in the log folders): only the listed scoring sweeps are read, from the scene's shape-v2 sweep folder; a missing sweep, a different SHA-256 or a sweep without an annotation row of the tested track stops the run.",
+  "laserCheck": "F's frozen laser check (0.15 deg) applies to each scoring sweep; a failing sweep is dropped and listed (v2 stopped the run); fewer than 2 scoring sweeps left -> every row of that scene is F-unresolved",
+  "rows": "The app's own setback sweep with the shape attached (scripts/evaluation/metric-f.mjs). Each row also carries the box result (the same row with the shape removed) and the shape diagnostics (solidCutM, hitXM). A row whose app result differs from its recomputed shape result stops the run.",
+  "scoredRows": "Classes are scored on plain-Blocked rows of the shape result (state blocked). height-not-proven rows are Unknown and are not scored.",
+  "allowedChanges": [
+   {
+    "box": "blocked",
+    "shape": [
+     "blocked (new sentence)",
+     "unknown height-not-proven"
+    ]
+   },
+   {
+    "box": "unknown too-close-to-call",
+    "shape": [
+     "identical object"
+    ]
+   },
+   {
+    "box": "plain unknown (line misses the box)",
+    "shape": [
+     "identical object"
+    ]
+   },
+   {
+    "box": "unknown from steps 1-5",
+    "shape": [
+     "identical object"
+    ]
+   }
+  ],
+  "reports": [
+   "flip table: each row's box result next to its shape result, per scene",
+   "F0 noNewBlocked: 0 rows Blocked with the shape but not with the box (hard check)",
+   "allowedChanges: every row obeys resultRule.allowedChanges (hard check)",
+   "lostSupported: rows Blocked with the box, F-supported on scoring sweeps, Unknown with the shape",
+   "frontHalfFlag (report only): rows still Blocked with the shape whose hitXM > 0, for comparison with metric E",
+   "unresolved Blocked rows listed and counted (never counted as passes)",
+   "box gaps and setbacks reproduce the v2 rows to 1e-9",
+   "shapeV1Comparison (report only): per scene and height, box Blocked, shape Blocked, box-Blocked rows F-supported on the scoring sweeps and how many the shape keeps Blocked, for shape-v1 (its pinned results) next to shape-v2; the two versions are scored on different scoring sweeps"
+  ],
+  "thresholds": "identical to metric F protocol v2 (binLengthNominalM 0.25, lateralBinNominalM 0.25, minHeightAboveBoxBottomM 0.25, maxHeightAboveBoxTopM 0.3, minReturnsMeasured 5, marginM 0.05, crossedBinMinLengthM 1e-6, otherObjectBufferBeyondEndsM 0.3, laserElevationSpreadLimitDeg 0.15, targetHeightsM child 1.1 / adult 1.5, freeRayBandM 0.05)"
+ },
+ "predictions": {
+  "source": "shape-v2 protocol predictions (report only; prediction 1 is also the F0 hard check)",
+  "text": [
+   "1. No new Blocked on any row of any development scene (structural; a violation is a bug).",
+   "2. (Base prediction 2, restated) The 8c first load is unchanged (both results plain Unknown): the line misses the box, so step 6 never runs.",
+   "3. (Base prediction 3, restated) Every row the box does not call Blocked is an identical object.",
+   "4. c780d53a (v4-12 and v4-18.5): 46 candidates thin to 46 at both steps, so the 40 cap picks the same sweeps: the sweep plan lists the same shape and scoring timestamps as shape-v1, and solidTopM, counts, removed and every row result are identical to shape-v1. Metric F child supported kept stays 5 of 17 on both variants.",
+   "5. 8c52d911 (hand-made with placement v3.4, v4-12, v4-18.5; one vehicle, track 396f15b5): 95 candidates thin to 35 (under the cap): 18 shape and 17 scoring sweeps. Of the 17 scoring sweeps, 16 were in neither shape-v1 list and 1 was a shape-v1 scoring sweep; 6 of the 8 shape-v1 scoring sweeps become shape sweeps. Metric F reruns on the 17 scoring sweeps, so classes may move.",
+   "6. 8c52d911 v4-18.5: about 21 of the metric F supported child Blocked rows kept (what-if on shape-v1 F classes, partly circular: see disclosure.whatIf.overlap); expected, not guaranteed. Hand-made and v4-12 expected to keep at least as many as under shape-v1 (12 of 33 and 1 of 20); not guaranteed.",
+   "7. (Base prediction 4, restated) every metric F v2 likely-false Blocked row is height-not-proven under shape-v2: 5 (8c hand-made), 3 (8c v4-12), 4 (8c v4-18.5), 4 (c780 v4-12), 4 (c780 v4-18.5). On 8c this directly tests the risk that a second-highest top over more sweeps admits a noisy high return.",
+   "8. (Base prediction 5, restated) every metric F v2 ambiguous Blocked row (7, 1, 6, 1, 1 in the same scene order) is height-not-proven under shape-v2. Expected, not guaranteed.",
+   "9. Adult Blocked on 8c stays at or near 0 (expected, not guaranteed).",
+   "10. Metric F shape-v2: 0 likely-false rows on every development scene (expected by construction; a consistency result, not accuracy evidence).",
+   "11. 453e5558: unchanged outcome (no vehicle placed; carShape null; no sweep plan, no downloads).",
+   "12. Setback sweep p50 <= 5 ms with the shape.",
+   "13. Neither development vehicle is refused; per-site planned counts are reported from the sweep plan before any build or scoring."
+  ],
+  "scenes": {
+   "8c52d911-2658849-handmade-v3.4": {
+    "boxBlocked": {
+     "adult": 17,
+     "child": 38
+    },
+    "shapeBlockedUpperLimit": {},
+    "heightNotProvenExpectedSetbacksM": {},
+    "supportedKeptExpected": {
+     "child": {
+      "atLeast": 12,
+      "shapeV1": "12 of 33",
+      "strength": "expected, not guaranteed (shape-v2 prediction 6)"
+     }
+    }
+   },
+   "8c52d911-2658849-v4-12": {
+    "boxBlocked": {
+     "adult": 0,
+     "child": 25
+    },
+    "shapeBlockedUpperLimit": {},
+    "heightNotProvenExpectedSetbacksM": {},
+    "supportedKeptExpected": {
+     "child": {
+      "atLeast": 1,
+      "shapeV1": "1 of 20",
+      "strength": "expected, not guaranteed (shape-v2 prediction 6)"
+     }
+    }
+   },
+   "8c52d911-2658849-v4-18.5": {
+    "boxBlocked": {
+     "adult": 17,
+     "child": 38
+    },
+    "shapeBlockedUpperLimit": {},
+    "heightNotProvenExpectedSetbacksM": {},
+    "supportedKeptExpected": {
+     "child": {
+      "about": 21,
+      "shapeV1": "13 of 35",
+      "strength": "expected, not guaranteed (shape-v2 prediction 6); about 21 has no pass/fail"
+     }
+    }
+   },
+   "c780d53a-2069452-v4-12": {
+    "boxBlocked": {
+     "adult": 0,
+     "child": 22
+    },
+    "shapeBlockedUpperLimit": {},
+    "heightNotProvenExpectedSetbacksM": {},
+    "supportedKeptExpected": {
+     "child": {
+      "exactly": 5,
+      "of": 17,
+      "shapeV1": "5 of 17",
+      "strength": "shape-v2 prediction 4 (c780 identical to shape-v1)"
+     }
+    }
+   },
+   "c780d53a-2069452-v4-18.5": {
+    "boxBlocked": {
+     "adult": 0,
+     "child": 22
+    },
+    "shapeBlockedUpperLimit": {},
+    "heightNotProvenExpectedSetbacksM": {},
+    "supportedKeptExpected": {
+     "child": {
+      "exactly": 5,
+      "of": 17,
+      "shapeV1": "5 of 17",
+      "strength": "shape-v2 prediction 4 (c780 identical to shape-v1)"
+     }
+    }
+   }
+  },
+  "notRestated": "shape-v2 does not restate base prediction 6 (shape Blocked upper limits and expected height-not-proven setback lists): shapeBlockedUpperLimit and heightNotProvenExpectedSetbacksM are empty and the summary reports them as None, never as a pass or a miss."
+ },
+ "approachSplit": {
+  "addendum": {
+   "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+   "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838"
+  },
+  "base": {
+   "path": ".local/evaluation/pao-accuracy/shape-v1/split-addendum.json",
+   "sha256": "cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626"
+  },
+  "readingRule": "The base addendum rule with every entry of the shape-v2 addendum changes applied (changes.names: 'metric F shape-v1' reads 'metric F shape-v2', 'protocol v3' reads 'protocol v4').",
+  "baseRule": {
+   "inputList": {
+    "rule": "The frozen selected sweep list of shape-v1 Section 6.1 for that site: the kept list after candidates, 1.0 m thinning and the 40 cap (protocol sweeps.candidate, sweeps.thinning, sweeps.cap), as recorded in the hashed sweep plan, i.e. the union of carShape.sweeps.shape and carShape.sweeps.scoring. Sweeps listed in carShape.sweeps.downloadDropped are not available and are left out. Nothing else is added.",
+    "integrity": "Every sweep used must be present with the SHA-256 listed in carShape.sweeps (shape or scoring entry); otherwise this check stops for that site with no output (same rule as metric F shape-v1 --scoring-sweeps-from).",
+    "count": "K = number of sweeps in this list."
+   },
+   "order": {
+    "key": "distanceM = the horizontal distance from the ego origin at the sweep timestamp ts to the averaged box centre: the same distance shape-v1 rule 6.1 (c) computes, with the ego pose at ts by the shape-v1 Section 6.2 interpolation (protocol sweeps.pose) and the averaged box centre of ground.json (the poseAverage cuboid center), compared in the city frame (cityX = X + originX, cityY = originY - Z). Float64, not rounded.",
+    "sort": "Sort the K sweeps by distanceM from largest to smallest; ties (exactly equal distanceM) are broken by timestampNs ascending, compared as integers.",
+    "deterministic": "The order depends only on metadata already used by the sweep plan (poses, ground.json); no sweep contents are read to order them."
+   },
+   "halves": {
+    "half": "h = floor(K / 2)",
+    "far": "positions 0 .. h-1 of the sorted list (the h farthest sweeps): approach-split shape sweeps",
+    "near": "positions K-h .. K-1 of the sorted list (the h nearest sweeps): approach-split scoring sweeps",
+    "oddCount": "When K is odd, the single middle sweep (position h) is used by neither half and is listed as unused. The two halves are always disjoint and of equal size.",
+    "note": "'Far' and 'near' are by distance only: if the ego drove past the vehicle, departing sweeps are ordered by the same distance as approaching ones."
+   },
+   "shape": {
+    "rule": "Build an evaluation-only shape from the far half with the frozen shape-v1 shape rules unchanged: grid (Section 5.1, protocol representation), height range (5.2), which returns count (5.3, protocol returns), solid top with the two-sweep rule and millimetre floor (5.4, protocol solidTop), pose at ts (6.2) and registration into the averaged box (6.4). Built by the same shape-build code as the app shape (scripts/california/car_shape.py), given the far-half list in place of the alternating shape list.",
+    "refusal": "If the far half has fewer than 2 sweeps (minShapeSweeps 2, i.e. K < 4), the evaluation-only shape is refused for this check (reason code too-few-sweeps) and every row of that site is reported as approach-split unresolved. A refused shape-v1 app shape (not-stationary) also refuses this check.",
+    "where": ".local/evaluation/pao-accuracy/metric-f-shape-v1/approach-split/ (one file per site with the same carShape fields and its own SHA-256); never ground.json."
+   },
+   "rows": {
+    "rule": "The same setback-sweep rows as metric F shape-v1 (metric F v2 definition.rows: child 1.1 m and adult 1.5 m targets, the app's own setbackSweep). Each row's result comes from the app's unchanged shape-v1 result rule (Section 8, assessSightline steps 1-7) with the evaluation-only shape attached to the recorded vehicle's box in place of carShape. Nothing else in the scene changes."
+   },
+   "scoring": {
+    "rule": "Score with the frozen metric F shape-v1 rules (protocol evaluation.metricFShapeV1: thresholds identical to metric F v2; classes supported, unresolved, likely false, ambiguous with the v2 precedence; scored on plain-Blocked rows) using only the near half as the scoring sweeps.",
+    "laserCheck": "Metric F's frozen laser check (0.15 degrees) applies to each near-half sweep: a failing sweep is dropped and listed; fewer than 2 near-half sweeps left means every row of that site is reported approach-split unresolved.",
+    "unresolvedRows": "Unresolved Blocked rows are listed and counted, never counted as passes."
+   },
+   "reports": [
+    "per site: K, h, the far and near timestamp lists with their distanceM, the unused middle sweep (if any), dropped near-half sweeps",
+    "per site: far-half distance range and near-half distance range in metres",
+    "per row: approach-split shape result (state, reasonCode) next to the box result and the alternating-split (app) shape result",
+    "counts on approach-split plain-Blocked rows: likely false, ambiguous, unresolved, supported",
+    "every likely-false row listed with its setback, target height and crossed bins",
+    "approach-split no-new-Blocked check (report only here): rows Blocked with the approach-split shape but not with the box; expected 0 by the same structure as F0"
+   ]
+  },
+  "changes": {
+   "rule.inputList.rule": "The frozen selected sweep list of shape-v2 for that site: the kept list after candidates, 0.25 m thinning and the 40 cap, as recorded in the hashed shape-v2 sweep plan, i.e. the union of carShape.sweeps.shape and carShape.sweeps.scoring. Sweeps in carShape.sweeps.downloadDropped are already absent from both lists and are not available. Nothing else is added.",
+   "rule.shape.rule": "Build an evaluation-only shape from the far half with the frozen shape-v2 shape rules (the shape-v1 rules of base rule.shape.rule unchanged; the thinning step does not apply inside a half). Built by the same shape-build code as the app shape (scripts/california/car_shape.py), given the far-half list in place of the alternating shape list.",
+   "rule.shape.where": ".local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split/ (one file per site, schema 'shape-v2-approach-split'); never ground.json.",
+   "rule.rows.rule": "The same setback-sweep rows as metric F shape-v2 (metric F v2 definition.rows: child 1.1 m and adult 1.5 m targets, the app's own setbackSweep). Each row's result comes from the app's unchanged shape-v2 result rule with the evaluation-only shape attached to the recorded vehicle's box in place of carShape. Nothing else in the scene changes.",
+   "rule.scoring.rule": "Score with the frozen metric F shape-v2 rules (protocol v4: thresholds and classes identical to metric F shape-v1 and v2; scored on plain-Blocked rows) using only the near half as the scoring sweeps.",
+   "scenes.development": "The five development scenes of metric F shape-v2 (8c52d911-2658849 hand-made, v4-12, v4-18.5; c780d53a-2069452 v4-12, v4-18.5). 453e5558-20499018: not applicable.",
+   "names": "Every 'metric F shape-v1' in the base (notAGate, scenes.heldOut, unchanged, rule texts not replaced above) reads 'metric F shape-v2', and where it names metric F shape-v1's protocol, 'protocol v3' reads 'protocol v4'; every other shape-v1 identifier reads through the shape-v2 protocol's changes.names. The metric F summary applies exactly these two text substitutions to the base texts it copies (notAGate, dependenceThatRemains, whatDiffers, limits) and says so."
+  },
+  "unchanged": [
+   "order: by distanceM from the averaged box centre, largest first; ties by timestampNs ascending",
+   "halves: h = floor(K / 2); far = first h, near = last h; an odd middle sweep is unused",
+   "refusal: fewer than 2 far-half sweeps refuses the check for that site (too-few-sweeps)",
+   "laser check on near-half sweeps (0.15 degrees), drop and list; fewer than 2 left -> all rows approach-split unresolved",
+   "reports, dependenceThatRemains, whatDiffers, limits, words",
+   "not a gate; not used by the app; downloads nothing; held-out only at M7 after the lock, from that site's hashed sweep plan",
+   "the other fields of rule.inputList (integrity, count), rule.shape (refusal) and rule.scoring (laserCheck, unresolvedRows)"
+  ],
+  "notAGate": [
+   "Not a gate: it has no pass or fail target, does not stop any build, and is not a lock or release condition.",
+   "Not used by the app: the evaluation-only shape is never written into ground.json, never loaded by src/scene.mjs and never changes a result the app shows.",
+   "It does not replace metric F shape-v2 (alternating split), F0 or metric E. Metric E stays the main independent check of a shape Blocked."
+  ],
+  "folder": ".local/evaluation/pao-accuracy/metric-f-shape-v2/approach-split/"
+ },
+ "codePaths": {
+  "appRows": "scripts/evaluation/metric-f.mjs",
+  "lidarProfileAndScoring": "scripts/evaluation/metric_f_car_top.py",
+  "approachShape": "scripts/california/car_shape.py approach-split",
+  "tests": [
+   "tests/evaluation/test_metric_f_car_top.py",
+   "tests/metric-f.test.mjs"
+  ],
+  "runner": ".local/evaluation/pao-accuracy/metric-f-shape-v2/run-metric-f-shape-v2.sh",
+  "approachRunner": ".local/evaluation/pao-accuracy/metric-f-shape-v2/run-approach-split.sh",
+  "codeHashes": "recorded in run-receipt.json with every input hash and command"
+ },
+ "outputs": [
+  "protocol-v4.json",
+  "protocol-v4.lock.json",
+  "write_protocol_v4.py",
+  "run-metric-f-shape-v2.sh",
+  "run-approach-split.sh",
+  "rows-<scene>.json",
+  "profile-<scene>.json",
+  "results-<scene>.json",
+  "summary.json",
+  "run-receipt.json",
+  "approach-split/<scene>.json (evaluation-only shapes)",
+  "approach-split/rows-, profile-, results-<scene>.json",
+  "approach-split/summary.json",
+  "approach-split/run-receipt.json",
+  "README.md"
+ ],
+ "changeRule": "This file is not edited after its lock. A change to a rule or number is a new version with a dated reason (shape-v2 changeRule), frozen before its own first result and before any held-out data is opened."
+}

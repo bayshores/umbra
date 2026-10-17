@@ -1,0 +1,224 @@
+{
+ "protocol": "pao-paint-edge",
+ "version": 4,
+ "createdUtc": "2026-10-12",
+ "task": "M3: LiDAR-first painted crosswalk near edge for DEVELOPMENT crossings 8c52d911/2658849 and c780d53a/2069452; signed offset from the HD-map near edge.",
+ "bindingReferences": [
+  "AGENTS.md",
+  ".local/project/pao-accuracy-2026-10-12/decisions.md (decision 5: keep the mapped edge with a measured +/- label; revisit only if a consistent offset >= 0.30 m is measured on both development crossings)",
+  ".local/project/pao-accuracy-2026-10-12/planning-workflow-result.json challenge requiredChanges 10 and 13",
+  "archive/audit-v3/findings.json (independent audit of v3: 1 major, 8 minor findings; this version answers them)"
+ ],
+ "scope": {
+  "split": "development only",
+  "crossings": [
+   {
+    "logId": "8c52d911-fe34-3424-9864-d3fdfac38064",
+    "crossingId": "2658849"
+   },
+   {
+    "logId": "c780d53a-2d37-3cd8-9e89-530966aef53e",
+    "crossingId": "2069452"
+   }
+  ],
+  "heldOutUse": "Not approved. Before any held-out paint measurement: a fresh independent review of this v4 (code, protocol, validation and development results), then a new lock that reuses these exact parameters (same sweep count, thresholds, agreement and precision rules), written before any held-out data is opened. Challenge item 13 still applies.",
+  "appChange": "None. Measurement only; the mapped edge stays the app reference (decision 5)."
+ },
+ "coordinates": {
+  "S": "Signed distance along the approach travel direction t from the mapped near-edge line (positive = into the crossing, away from the approaching driver).",
+  "t": "Normalized mean ego heading (x-axis of city_SE3_egovehicle) over the selected sweeps.",
+  "L": "Lateral coordinate along r = t rotated 90 degrees clockwise (positive = right of travel), measured from the mean point where the selected sweeps' headings meet the mapped near edge.",
+  "offset": "Paint-edge S at the evaluation lateral position. Positive = paint starts beyond the mapped near edge; negative = paint starts before it (toward the approaching driver)."
+ },
+ "parameters": {
+  "sweepSelection": {
+   "count": 15,
+   "lidarSensor": "up_lidar",
+   "edgeAheadRangeM": [
+    5.0,
+    30.0
+   ],
+   "maxHeadingToEdgeNormalDeg": 30.0
+  },
+  "groundBand": {
+   "belowM": -0.1,
+   "aboveM": 0.1
+  },
+  "corridor": {
+   "laneTypes": [
+    "VEHICLE",
+    "BIKE",
+    "BUS"
+   ],
+   "approachLaneMaxAngleDeg": 45.0,
+   "trimM": 0.25,
+   "minWidthM": 1.0
+  },
+  "windows": {
+   "searchS": [
+    -3.0,
+    3.0
+   ],
+   "roadReferenceS": [
+    -7.0,
+    -3.0
+   ]
+  },
+  "estimatorA": {
+   "stripWidthM": 0.15,
+   "stripOffsetM": 0.0,
+   "minStripWidthM": 0.075,
+   "minReferenceReturns": 20,
+   "roadMedianFloor": 1.0,
+   "ratio": 3.0,
+   "laserReferenceMinReturns": 20,
+   "laserTailQuantile": 0.9,
+   "onsetLookaheadReturns": 3,
+   "onsetMinPaintInLookahead": 2,
+   "confirmWindowM": 0.5,
+   "confirmMinPaintReturns": 3,
+   "confirmMinPaintFraction": 0.5,
+   "continuityWindowM": 1.0,
+   "maxIntervalM": 0.5,
+   "minStrips": 6
+  },
+  "estimatorB": {
+   "stripWidthM": 0.15,
+   "stripOffsetM": 0.075,
+   "minStripWidthM": 0.075,
+   "minLaserReferenceReturns": 30,
+   "gainFloor": 1.0,
+   "segmentLengthM": 0.05,
+   "minReturnsPerSegment": 1,
+   "minSegments": 20,
+   "minSegmentsEachSide": 6,
+   "alpha": 0.0001,
+   "minAuc": 0.7,
+   "minStrips": 5
+  },
+  "agreementToleranceM": 0.15,
+  "uncertainty": {
+   "bootstrapReps": 1000,
+   "minLeaveOneOutMeasuredFraction": 0.9,
+   "seed": 20261012,
+   "maxSlopeDeg": 10.0,
+   "slopeStep": 0.002
+  },
+  "coverage": {
+   "stripWidthM": 0.25,
+   "halfWindowM": 0.5,
+   "minReturns": 3
+  },
+  "shadow": {
+   "obstacleHeightM": [
+    0.3,
+    3.0
+   ],
+   "skipNearLidarM": 1.0,
+   "stopBeforeTargetM": 0.5,
+   "corridorHalfWidthM": 0.25,
+   "minObstacleReturns": 3,
+   "minObstructedFraction": 0.5,
+   "egoBoxM": [
+    -1.5,
+    4.5,
+    1.2
+   ]
+  },
+  "maxEstimatorSdM": 0.075,
+  "evaluationPoint": "centerOfLongestCoveredRun"
+ },
+ "method": {
+  "selection": "From the public sweep listing, exact poses and the map only (no LiDAR content): near edge = crossing edge first met along the heading of the approach sweep closest to the crossing; candidates = sweeps whose up_lidar sees the near edge ahead at 5-30 m along its heading (heading within 30 deg of the edge normal, ray hitting the edge segment); choose the fixed count with distances nearest to evenly spaced targets between the nearest and farthest candidate (ties: earlier timestamp). Fewer candidates than the count = crossing unresolved.",
+  "corridor": "Approach side of the mapped near edge: from the leftmost approach-lane boundary crossing (VEHICLE/BIKE/BUS lanes within 45 deg of travel) to the first drivable-area boundary right of the rightmost approach-lane boundary (curb), clipped to the edge segment and trimmed 0.25 m each side. Evaluation lateral position (evalL) = center of the longest contiguous run of 0.25 m corridor strips holding >=3 ground returns within +/-0.5 m of the mapped near edge (counts only; corridor center if the corridor is fully covered or no strip is covered). The corridor-center value is reported as an extrapolation diagnostic.",
+  "stacking": "Each selected sweep (publisher ego-frame XYZ, already motion compensated) is transformed by its exact city_SE3_egovehicle pose. Ground returns = within -0.10..+0.10 m of the publisher ground raster (sampling rule of prepare_av2.ground_sample). Annotations, images and the app scene are never used.",
+  "estimatorA": "Intensity ratio + per-laser road tail + first run of paint returns: each laser's road tail = 0.90 quantile of its raw corridor ground intensities in S -7..-3 (lasers with < 20 such returns are not used by A, because their road level is unknown). Per 0.15 m lateral strip, road median = median raw intensity of the strip's returns from those lasers in S -7..-3 (>= 20); a return is paint when its intensity >= 3.0 x the strip road median AND > its laser's road tail. Onset = first paint return such that at least 2 of it and the next 2 returns in S order are paint, and >= 3 paint returns make >= 50% of the strip's returns within the next 0.5 m. Strip interval = from the last non-paint return before the onset to the onset return (none before = strip unresolved; interval > 0.5 m = not localized). A strip with no onset and < 3 returns within +/-0.5 m of the mapped edge is 'noEdgeReturns' (nothing observed there), otherwise 'noPaint'.",
+  "estimatorB": "Per-laser normalized change point: each laser's gain = median raw intensity of its corridor ground returns in S -7..-3 (>=30 returns, else dropped); per 0.15 m lateral strip offset 0.075 m from estimator A, returns in S -3..3 are summarized per (sweep, laser, 0.05 m cell) by medians; one-sided Pettitt (1979) rank test for an increase (p < 1e-4, >=20 cells, >=6 each side) with rank effect size AUC >= 0.70 at the location; location = least-absolute-deviation two-level step; strip interval = between the cells either side of the step.",
+  "lineFit": "Both estimators: Theil-Sen line through strip-interval midpoints, S = value + slope*(L - evalL). The strip bootstrap (1000 reps, seed 20261012) and the interval-L1 fit are reported as diagnostics only.",
+  "precision": "Leave-one-sweep-out: each of the 15 selected sweeps is left out in turn and both estimators are re-run in full on the other 14 (road references, laser tails and laser gains re-derived). Each estimator's precision = delete-1 jackknife sd sqrt((n-1)/n * sum (v_i - mean)^2) over the runs where it measured. The value reported at the evaluation point is still the all-sweep value.",
+  "decision": "Resolved only when (1) both estimators measure an edge on all 15 sweeps (A >= 6 strips, B >= 5 strips); (2) each estimator measures in >= 90% of the leave-one-out runs and has jackknife sd <= 0.075 m; (3) |A - B| <= 0.15 m at evalL. Paint edge = mean of A and B; uncertainty combinedM = sqrt(jackknife sd of (A+B)/2 ^2 + (|A-B|/2)^2), stated as not calibrated. A resolved crossing is labelled 'marginally resolved' when any leave-one-out run does not measure both estimators within 0.15 m of each other, or the jackknife sd of (A+B)/2 exceeds 0.075 m; otherwise 'resolved'. Otherwise unresolved.",
+  "independence": "A and B share the returns, the frame, the ground band, the corridor, the S windows, the reference window that sets per-laser levels (A: 0.90 quantile; B: median gain), the line-fit method and the leave-one-out runs. Their detection rules differ (A: intensity ratio, laser tail and onset counts on raw returns; B: Pettitt rank test, effect size and cell counts on per-laser normalized cell medians). A-B agreement therefore checks the two detection rules only; it is not independent confirmation, and systematic terms (pose/raster registration, beam footprint, float16 storage, intensity-dependent range bias) shift both alike and are not in the stated uncertainty.",
+  "coverage": "Fine 0.25 m strips across the corridor: covered when >=3 ground returns lie within +/-0.5 m of the reference line (resolved paint line, else the mapped edge). Uncovered strips are shadowed when, in >=50% of selected sweeps, >=3 returns 0.3-3.0 m above the raster lie within 0.25 m of the 2D line of sight from the up_lidar to the strip target (excluding 1 m near the LiDAR and 0.5 m before the target); otherwise unobserved.",
+  "diagnostics": "Not gates: even/odd and far/near halves of the selected sweeps; far-edge mirror with identical parameters (paint end vs mapped far edge); strip bootstrap; interval-L1 fit; extrapolated value at the corridor center; paint fraction after the onset (worn or partial paint biases both estimators later)."
+ },
+ "validation": {
+  "script": "scripts/synthetic_validation_v4.py",
+  "design": "54 cells = 6 patterns (continuous, skew 0.05, bars 0.3 on 0.75, bars 0.6 on 1.2, ladder 0.4 m band + 0.6 m bars on 1.2 m, limit line 1.5 m before) x 9 intensity conditions (gain/noise clean, 2% bright outliers, 35% worn, low contrast 2.75x; dark-road 8c-like sampler; E1/E2 empirical samplers from v4-dev/intensity-models-dev.json for 8c and c780); 20 trials per cell; edges uniform -1..1 m; 15 sweeps from 30 m to 9-12 m; seed 20261013; protocol parameters exactly.",
+  "acceptance": {
+   "C1": "Never confidently wrong: of all resolved results, <= 1% have |error| > 0.15 m and none has |error| > 0.30 m.",
+   "C2": "No bias where paint is intact: every cell of the clean, outliers2pct, darkRoad8cLike, E1-*, E2-* conditions (limit-line pattern excluded) with >= 8 resolved results has |mean resolved error| <= 0.05 m.",
+   "C3": "The audited failure: estimator A |mean error| <= 0.05 m in every darkRoad8cLike / E1-8c / E2-8c cell (limit-line pattern excluded) where A measured >= 10 times.",
+   "C4": "Stated uncertainty: >= 90% of all resolved results lie within 2 x combinedM of the truth."
+  },
+  "onFailure": "Results on the development crossings are still computed and reported, with the failed criteria named; v4 is then not proposed for held-out use."
+ },
+ "environment": {
+  "python": "CPython 3.13.5 (python.org macOS framework build, /Library/Frameworks/Python.framework/Versions/3.13), run with -I",
+  "packages": {
+   "numpy": {
+    "version": "2.3.1",
+    "license": "BSD-3-Clause"
+   },
+   "scipy": {
+    "version": "1.16.0",
+    "license": "BSD-3-Clause"
+   },
+   "pyarrow": {
+    "version": "20.0.0",
+    "license": "Apache-2.0"
+   }
+  },
+  "note": "System interpreter, not a dedicated .local venv; evaluation-only, never shipped in the app. Licence files hashed in manifest.json.",
+  "data": "Argoverse 2 sensor data and maps: CC BY-NC-SA 4.0, (c) 2021 Argo AI, LLC. Development logs only."
+ },
+ "preFreezeExposure": [
+  "Prior planning lanes (not this task): 8c 3-sweep LiDAR feasibility put paint onset 0.0-0.5 m beyond the mapped edge in 3 of 4 lanes; 8c image estimate 0.41-0.46 m (p10-p90 0.19-0.65 m); c780 visual review 1.47-1.99 m.",
+  "This task before the freeze: poses, map, lane/drivable geometry and public sweep listings only; per-laser ground-ring radii from x/y/z of one on-disk sweep per log (8c 315969946859994000, c780 315971321260241000; intensity never loaded); synthetic point-cloud tests and Monte Carlo of the method.",
+  "Choices informed by that evidence: count 15 and range 5-30 m (geometry-only predicted worst along-road sampling gap within 1.5 m of the edge: 8c 0.64 -> 0.45 m, c780 0.40 -> 0.34 m versus count 10, range 5-25 m; the c780 approach has 20 candidates in 5-30 m); interval line fit replaced per-strip midpoints after synthetic tests showed sampling gaps dominated midpoint error; estimator B location by L1 step after synthetic tests showed Pettitt-argmax location shifts with imbalanced splits; B strip width 1.0 m kept because 0.5-0.6 m produced more confidently wrong synthetic results on worn bar patterns.",
+  "Before the v2 freeze: v1 results for both crossings, and development diagnostics computed from the downloaded sweeps (top-down stacked median intensity; per-sweep intensity profiles near the mapped edge; lateral paint-fraction profiles inside the crossing). Those diagnostics indicate paint starting near S 0.0-0.05 m at 8c and S 0.1-0.2 m at c780; v2 was designed from the bar geometry and the v1 failure modes, and its decision thresholds are unchanged from v1.",
+  "Before the v3 freeze: v2 results for both crossings (above).",
+  "Before the v4 freeze: v3 results on both crossings (8c resolved -0.059 m: A -0.109, B -0.009; c780 resolved +0.160 m: A 0.155, B 0.166) and the independent audit (archive/audit-v3/: 11.1% of 8c road returns pass A's v3 cutoff of 6; A biased early by about 0.1 m on 8c-like intensities; auditor's independent check -0.02..+0.04 m at 8c; leave-one-sweep-out 13/15 resolved at 8c with jackknife sd 0.074 m, 15/15 at c780 from +0.158 to +0.193 m).",
+  "Before the v4 freeze, real development data (no v4 estimator): cached v3-frame corridor stacks of both crossings (v4-dev/stack-*.npz); an earlier fix attempt's scratch diagnostics (archive/pre-v4-scratch/: pooled intensity quantiles and S profiles of both crossings with a v3 estimator timing run; per-laser road quantiles and the per-S-bin fraction of each laser's returns above its road p95, which on 8c is about 0 before S 0 and about 1 from S 0 to 0.2 for lasers with a road reference); development intensity models v4-dev/intensity-models-dev.json (8c paint zone S 0.10-0.30 m chosen from the v3 estimates and the post-v1 diagnostics).",
+  "Rule choice on synthetic data only (stated criteria in each script): v4-dev/prototype-rules-a/b/c.json compared the v3 rule with laser-tail and lookahead variants on known edges using the gain/noise model, the dark-road sampler and the E1/E2 samplers; round 3 (60 trials per cell) chose tail 0.90 + 2-of-3 lookahead (worst |mean A error| 0.192 m on worn ladder vs 0.168 m for tail-only, a difference below twice the worst cell's standard error, so the tie-break took the smaller worst case on the 8c-derived models: 0.018 vs 0.051 m; v3 rule 0.978 m).",
+  "Precision measure chosen on synthetic data only (v4-dev/prototype-uncertainty.json, rule stated in scripts/prototype_v4_uncertainty.py before it ran): whole-sweep bootstrap ineligible (resamples keep about 9-10 distinct sweeps of 15, widening the along-road gap; its precision rule passed in only 60% of clean continuous trials); strip bootstrap min 2-sigma coverage 0.60; leave-one-sweep-out jackknife adopted, not calibrated (2-sigma coverage of combinedM 0.87-1.00 per case, min on bars 0.3 on 0.75 clean).",
+  "Unit-test fixture behaviour seen before the freeze: the end-to-end synthetic log (ego exactly 1 m apart) resolved under v3 but is unresolved under v4 (A 0.606, B 0.504 m for a 0.40 m edge; A drops far rings without a road reference and the lattice leaves > 0.5 m gaps; jackknife sd of A 0.33 m). An irregular-spacing variant was tried and dropped (0.56 m sampling gap at the edge; A 0.485 m, B 0.245 m, unresolved). The test now asserts the end-to-end outputs and 'resolved within 0.10 m or unresolved'.",
+  "No v4 estimator was run on real crossing data before this freeze."
+ ],
+ "limits": [
+  "Development-grade, AV2-referenced, not surveyed. LiDAR shares AV2 poses with the map frame; the ground raster comes from the same publisher map package (used only for the height band).",
+  "Worn or partial (bar-pattern) paint biases both estimators toward later edges; synthetic validation quantifies this per pattern.",
+  "A limit line or other paint before the crosswalk can make the estimators disagree (unresolved); a crosswalk made of narrow transverse lines is outside the single-step model.",
+  "Not included in the uncertainty: beam footprint on the road, intensity-dependent range bias, pose/raster registration, float16 storage of publisher XYZ (about 0.008-0.016 m at 8-32 m). The jackknife-based combinedM is not calibrated.",
+  "Estimator A uses only lasers with >= 20 road-reference returns. Far rings that never reach S -7..-3 are dropped; where they supplied the only returns near the edge, A's strips are not localized and the crossing is unresolved more often.",
+  "Estimator B reports the midpoint of its strip interval without a width limit; a wide sampling gap at the edge can move B by up to half the gap. A's 0.5 m interval limit and the agreement rule guard against this; B's interval widths are reported.",
+  "Estimator B is less stable on ladder patterns (a border band then bars): its leave-one-out jackknife sd often exceeds 0.075 m there, so such crossings are often unresolved.",
+  "Measurable offsets are limited to the -3..3 m search window; an onset with no road observed before it inside the window is not reported.",
+  "Paint position is not crossing legality, visibility, or safety; no result here changes the app.",
+  "v4 was revised after seeing v1-v3 results and an audit on the same two development crossings; its results there are development evidence, not an independent test. Held-out use requires this exact v4 (or a later version), a fresh independent review, and a lock written before any held-out data is opened.",
+  "The paint offset is evaluated where LiDAR observed the edge; at a laterally shadowed position (for example at a stationary vehicle) the value is an extrapolation along the fitted paint line."
+ ],
+ "supersedes": {
+  "version": 3,
+  "path": "protocol-v3.json",
+  "sha256": "d4488e0228e274a9fc962fbdc7045f8bc4327723617224b17251cb3a8c0272eb",
+  "resultsKept": [
+   "results/8c52d911-2658849-v3.json",
+   "results/c780d53a-2069452-v3.json",
+   "validation/uncertainty-calibration-v3.json"
+  ],
+  "erratum": "protocol-v3.json limits say 'Held-out use requires this exact v2 (or a later version)'; it should have said v3. Corrected here; v3 is not edited because its hash is locked."
+ },
+ "changeReason": [
+  "Audit (major): on the dark 8c road (median 2) estimator A's cutoff 3 x 2 = 6 is passed by 11.1% of road returns, mostly from far lasers whose road reads 6-8 and that never reach the road reference window; A then accepted a single bright road return 0.1-0.3 m early because its 0.5 m confirmation window reached into real paint. A's -0.109 m at 8c is therefore biased early, and the v3 headline -0.059 m is not supported in sign.",
+  "Fix 1 (A): a return must also exceed its own laser's road upper tail (0.90 quantile in S -7..-3); lasers without >= 20 reference returns are not used by A. A laser's ground ring has a fixed radius, so its range and incidence angle are the same in the reference window and near the edge.",
+  "Fix 2 (A): the onset must start a run (2 of 3 consecutive returns paint) in addition to the v3 sustained-paint rule, so a lone bright return before the paint cannot be the onset; 2 of 3 rather than 3 of 3 keeps worn paint from being pushed late (synthetic round 2: 3 of 3 had worst |mean| 0.299 m on worn ladder).",
+  "Audit (minor): the strip bootstrap treats lateral strips as independent and was under-dispersed. v4's precision rule uses a leave-one-sweep-out jackknife (whole sweeps, every estimator step re-run). A whole-sweep bootstrap with replacement was tried on synthetic data and rejected (it changes the sampling design).",
+  "Audit (minor): a 'marginally resolved' label is frozen (any leave-one-out run not in agreement, or jackknife sd of the mean > 0.075 m); leave-one-out, jackknife and halves are reported with every result.",
+  "Audit (minor): strips with no returns near the mapped edge get status 'noEdgeReturns' instead of 'noPaint'.",
+  "Audit (minor): environment, licences and the AV2 data terms are recorded (environment block, manifest); the pre-v2 diagnostics and the auditor's scripts are archived (archive/); the replaced first v2 lock (8850291e...) was overwritten in place and was not kept; its replacement reason is in protocol-v2.lock.json.",
+  "Audit (minor): independence wording corrected (method.independence); the v3 limits erratum is corrected (supersedes.erratum).",
+  "Synthetic validation gains cases drawn from the development crossings' measured intensity distributions (dark-road sampler, E1/E2) and frozen acceptance criteria (validation.acceptance).",
+  "Unchanged from v3: sweep selection, corridor, ground band, windows, estimator B, strip widths, line fit, the 0.15 m agreement tolerance, the 0.075 m precision threshold (now applied to the jackknife sd), shadow/coverage rules and the evaluation point.",
+  "This is the fourth version decided on the same two development crossings after seeing their results; v4 results there are development evidence only."
+ ]
+}

@@ -1,0 +1,622 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 3,
+  "name": "AV2 map-first placement protocol v3.4 (8c52d911 / crossing 2658849; measured paint offsets for 2658849 and 2069452; shape-v2 LiDAR car shape of the annotated stationary vehicle)",
+  "frozenUtc": "2026-10-14T05:51:38Z",
+  "frozenBefore": "Written after the frozen shape-v2 protocol (shape-v2/protocol.json, frozen 2026-10-14T05:43:09Z) and its approach-half split addendum (frozen 2026-10-14T05:43:09Z), and after scripts/california/car_shape.py and its synthetic tests (tests/california/test_car_shape.py, no real data) were updated to shape-v2. Hashed in protocol-v3.4-freeze.json before any shape-v2 sweep plan, shape-v2 sweep download, grounded-v3.4 ground layer, builder v4.3 output or shape-v2 metric existed. Never edited after results; a change requires a new file (protocol-v3.5.json, ...) with a new hash and a recorded reason.",
+  "authority": {
+    "sean": "auto-placement-goal.md 'Decisions (October 11, Sean, via chat questions)': map-only points allowed and labeled 'mapped, not observed'; annotated stationary vehicle 396f15b5 is the current vehicle, labeled stationary, with no reason for stopping stated anywhere; scene 8c52d911 frame 315969946899927216 crossing 2658849 accepted despite inherited October 8 off-crop audit failures.",
+    "coordinatorDefaults": "Pixel-ray placement (a pixel maps to the first hit of its camera ray with the mapped ground raster inside the mapped drivable area; flagged hidden when an annotated cuboid is in front); suggestions stay pixels; paint offset is a +/- label; scene stays local (not public/, not public/scenes/index.json).",
+    "skepticCorrections": "iter3-av2-plan-challenge.md sections 2-6 are binding where they conflict with the plan.",
+    "coordinatorResolutions": "auto-placement-goal.md iteration log, 2026-10-12 build entry: resolutions (1) protocol v2 pixel rule, (2) vehicle model and residuals, (3) wording.",
+    "paoAccuracy": "Sean, October 12 2026 (pao-accuracy-2026-10-12/decisions.md and goal.md): accuracy over speed; Clear removed; 10 cm too-close-to-call rule; placement beyond 30 m refused; the stationary annotated car pose is the average of all its annotations (protocol v3, versioned with reason); the crossing stays the mapped edge with a measured +/- paint offset. Coordinator: plan.md M2 (a)-(d) and M4b; workflow task \"protocol v3 data for 8c\" (2026-10-12).",
+    "audit": "Fresh audit of the v3 data+app deliverable (workflow review, October 12 2026): finding 1 (major, a declared vehicle placed at the shadowed vehicle-front ray hit turns Unknown into Blocked), finding 6 (minor, the held-out fixed-band mode) and the M4c/M4d evaluation definitions (metric K, Blocked-end range) that were missing.",
+    "v3.2": "Coordinator workflow task \"pipeline v3.2\" (October 12 2026), tasks 1-5: missing (NaN) map heights, crossing-model applicability guard (skew over 45 deg, off the mapped edge segment, behind the camera: no crossing point, named refusal), band-method limitation text, crossingError from paint protocol v4 (status measured, the crossing point never moves). Sean, October 12 2026 (decisions.md): the crossing stays the mapped edge with a measured +/- paint offset; Unknown, never Clear, when evidence is missing.",
+    "v3.3": "shape-v1 protocol.json versions.placementProtocol (3.2 -> 3.3) and buildPlan.exclusiveNew (\"placement protocol v3.3 and its freeze record\"). Sean, October 13 2026 (.local/project/pao-accuracy-2026-10-12/decisions.md): use a measured car shape for the annotated stationary vehicle; declared what-if vehicles keep the box; accept the coverage cost; up to 40 public LiDAR sweeps per car; windows count as solid. Coordinator workflow task \"shape-v1 Python side\" (October 13 2026; computed by the coordinator workflow, not a message from Sean): placement protocol v3.3, ground.json schemaVersion 3 with a carShape key, everything else byte-identical to v3.2.",
+    "v3.4": "shape-v2 protocol.json changes.versions.placementProtocol (3.3 -> 3.4) and buildPlan.exclusiveNew ('placement protocol v3.4 and its freeze record'). Sean, 2026-10-14T05:23:35Z (chat question tool, option 'More scans'): a new frozen car-shape version that keeps a LiDAR sweep every 0.25 m of ego travel instead of every 1.0 m; everything else in the shape rule stays."
+  },
+  "scene": {
+    "logId": "8c52d911-fe34-3424-9864-d3fdfac38064",
+    "cameraTimestampNs": "315969946899927216",
+    "lidarTimestampNs": "315969946859994000",
+    "annotationTimestampNs": "315969946859994000",
+    "crossingId": "2658849",
+    "sceneId": "av2-pao-8c52d911-2658849",
+    "plan": "plan-v3.json = October 8 plan-v2.json with crossingId changed from 2658850 to 2658849 and nothing else",
+    "crop": [
+      287,
+      265,
+      736,
+      320
+    ],
+    "split": "development: 8c52d911/2658849 is a development site in the frozen Palo Alto split (.local/evaluation/pao-accuracy/split.json, sha256 47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4)"
+  },
+  "coordinates": {
+    "world": "Assembled scene world: origin at the left camera city position; X = cityX, Y = cityZ (up), Z = -cityY; worldFromCity [[1,0,0],[0,0,1],[0,-1,0]]; meters.",
+    "cityFromWorld": "cityX = worldX + cityOrigin[0]; cityY = -worldZ + cityOrigin[1]; cityZ = worldY + cityOrigin[2]",
+    "horizontal": "Horizontal distances use world X/Z (equivalently city X/Y)."
+  },
+  "groundRaster": {
+    "samplingRule": "Exactly prepare_av2.ground_sample: imageXY = s * (R * cityXY + t) with the publisher Sim2; index = trunc(imageXY); any negative continuous image coordinate is rejected (no value); value = raster[index_y, index_x]; publisher float16 cityZ; NaN means no value; no interpolation, smoothing or hole filling.",
+    "expectedCellMeters": 0.3,
+    "terrainBin": "float32 little-endian exact widening of the float16 raster window; NaN where the publisher has no value; heights stay publisher cityZ (the app subtracts cityOrigin[2] in float64).",
+    "windowHalfWidthMeters": 61.0,
+    "outsideWindow": "No value (treated as NaN)."
+  },
+  "tolerances": {
+    "roadToleranceMeters": 0.08,
+    "roadToleranceSource": "Reused unchanged from the existing Sightline measured-road tolerance (DrivingStereo scene processing.roadToleranceMeters = 0.08). Not fitted to AV2 data. Stored in ground.json, never in scene processing.",
+    "supportHeightAgreementMeters": 0.08,
+    "supportHeightAgreementRule": "A LiDAR return agrees with the mapped ground when |return cityZ - raster cityZ sampled at the return's own XY| <= roadToleranceMeters (single tolerance, not doubled). Returns whose own cell has no value never agree.",
+    "supportRadiusMeters": 0.5,
+    "supportRadiusRule": "Horizontal distance from the placed ground point to the return, <= 0.5 m inclusive.",
+    "maxRangeMeters": 60.0,
+    "maxRangeRule": "Euclidean distance along the unit pixel ray from the left camera origin; a hit beyond 60 m is no hit.",
+    "boundaryEpsilonMeters": 0.01,
+    "noTuning": "None of these values may change after results are seen."
+  },
+  "pixelRay": {
+    "pixelCenter": "A crop position [u, v] may be fractional; integer values are pixel centres. It is valid when 0 <= u <= width-1 and 0 <= v <= height-1 (inclusive). The direction rule applies to fractional values unchanged.",
+    "direction": "Camera direction ((u - cx)/fx, (v - cy)/fy, 1) mapped by scene transform.worldFromCamera, normalized to unit length; ray starts at world origin (left camera).",
+    "terrainModel": "Piecewise-constant raster: every cell is a flat horizontal square at its own height; neighbouring cells meet at vertical steps.",
+    "firstHit": "Walk the ray through raster cells in order of increasing distance t (split at every t where an image coordinate crosses an integer). For each segment [ta, tb] the cell is the sampling-rule cell at the segment midpoint. If that cell has no value, the result is Unknown ('ray crosses a cell without mapped ground height'). If ray height at ta <= cell height, the hit is at ta (vertical step). Else if the ray descends and reaches the cell height at th <= tb, the hit is at th (cell top). The first such hit within maxRange is the hit.",
+    "groundPoint": "The ray point at the hit distance (lies on the pixel ray). terrainHeight = the hit cell's height.",
+    "drivableTest": "The hit's horizontal position must lie inside the union of mapped drivable-area outlines (even-odd per polygon, inside any polygon). Otherwise Unknown ('first mapped-ground hit is outside the mapped drivable area').",
+    "noHit": "No hit within maxRange, or the ray does not descend: Unknown.",
+    "rangeLimit": "After the first hit is found and before the drivable test: a hit farther than placementRange.limitMeters (horizontal) from the left camera is Unknown (placementRange.reason)."
+  },
+  "hidden": {
+    "rule": "hidden = the closed segment from the left camera origin to the ground point intersects any annotated cuboid at annotationTimestampNs (all categories), using an inclusive slab test in each cuboid's own frame. The point is still placed.",
+    "noAnnotations": "When annotations are not supplied, hidden is null (not evaluated), never false by default."
+  },
+  "supportClasses": {
+    "observed-nearby": "At least one camera-visible LiDAR return within supportRadiusMeters (horizontal) whose height agrees with the ground raster (supportHeightAgreementRule). Candidate returns are ALL returns of the sweep; no pre-filtering by height, drivable area or road classification.",
+    "map-only": "The ground point passed the pixel-ray and drivable tests on a valid raster cell, but no such return exists (for example LiDAR shadow). Display label: 'mapped, not observed'.",
+    "unknown": "Everything else (no hit, off the drivable area, missing raster value, beyond range, outside the crop). Never placed.",
+    "cameraVisibleReturn": "leftEligible in the prepared references (finite, positive camera depth, projects inside the crop) AND, when annotations are supplied, the camera-origin-to-return segment intersects no annotated cuboid. Without annotations only leftEligible applies, and the limitation is recorded.",
+    "noLidar": "Without LiDAR returns no point can be observed-nearby; classes fall to map-only or unknown."
+  },
+  "alongRayUncertainty": {
+    "rule": "alongRayUncertaintyM = heightBandMeters / sin(depression), depression = asin(-dirY) of the unit ray through the (possibly fractional) crop position. Descriptive, not a physical accuracy bound. The float16 half-ulp term of v1/v2 is dropped because the band is measured against the stored float16 raster and already contains its quantization.",
+    "replaces": "v1/v2: (roadToleranceMeters 0.08, borrowed from the DrivingStereo scene, + halfUlpFloat16(cityZ)) / sin(depression). roadToleranceMeters itself is unchanged and keeps its other uses.",
+    "heightBand": {
+      "method": "fitThisDevelopmentScene",
+      "allowedOnlyFor": "Development scenes of the frozen split. On a held-out scene the band is a fixed value fitted on development scenes (method \"fixed\" with heightBandMeters and fittedOn), never refit on held-out data. The script refuses to fit on held-out or reserve logs.",
+      "fitSet": "Returns of this scene's sweep that are camera-visible (supportClasses.cameraVisibleReturn, tested against the protocol v3 cuboids), finite, with a raster value at their own XY (groundRaster.samplingRule), inside the mapped drivable union, at most placementRange.limitMeters from the left camera (horizontal), and with |dz| <= groundGateMeters, where dz = return worldY - (raster cityZ at the return - cityOrigin[2]).",
+      "groundGateMeters": 0.25,
+      "groundGateReason": "Same ground gate as the M0 baseline harness (GROUND_GATE_M): it separates ground returns from unannotated objects. Counts removed by the gate are reported.",
+      "statistic": "heightBandMeters = the nearest-rank 95th percentile of |dz| over the fit set (ascending, element ceil(0.95 n) - 1), rounded UP to 0.001 m. Also reported: count, median, mean, standard deviation, robust sigma 1.4826 * MAD, nearest-rank 68th/95th/99th percentiles and maximum of |dz|, fraction within the band.",
+      "minimumCount": 200,
+      "fixedMode": "Method \"fixed\": ground.json records the fixed band, fittedOn, heldOutResiduals (the fit-set statistics of this scene, scope \"test\") and coverage (fractional and integer click). It is a test of the development band, never a fit: minimumCount and the split-half refit do not apply, and an empty test set is recorded with count 0."
+    },
+    "coverageReport": {
+      "bandsMeters": [
+        [
+          0,
+          10
+        ],
+        [
+          10,
+          12
+        ],
+        [
+          12,
+          25
+        ],
+        [
+          25,
+          30
+        ]
+      ],
+      "definition": "Per horizontal-range band of the fit-set returns (last band inclusive of 30 m): fractional click = the pixelRay rule (with placementRange and the drivable test) at the return's floating crop projection (referenceUV); integer click = the same at the nearest integer pixel floor(uv + 0.5) (the M0 harness metric B click). Error = horizontal distance from the hit to the return. Covered when error <= heightBandMeters / sin(depression) of that ray. Split-half: the band refit on even source rows and tested on odd rows (fractional click), and vice versa; a stability diagnostic, not a held-out test. In-sample on this development scene.",
+      "notATarget": "Coverage is reported, never tuned: no parameter changes after it is seen."
+    }
+  },
+  "mapElements": {
+    "roadAxis": "Ego lane segment 43186931 (fixed): direction of travel = unit horizontal chord from the midpoint of the first left/right boundary vertices to the midpoint of the last left/right boundary vertices. Right = direction x up. Lane chord line passes through that first midpoint.",
+    "rightSide": "Approach-side curb is to the right of the direction of travel (US right-hand traffic); fixed, not data-dependent.",
+    "nearEdge": "Of the crossing's edge1 and edge2 (each as the infinite horizontal line through its first and last vertex), the near edge is the one whose midpoint has the smaller forward coordinate along the road axis from the camera. Both midpoints must be ahead (forward > 0); otherwise the crossing model is refused (crossingApplicability, crossing-edge-not-ahead) and the near edge reported is the one with the smaller forward coordinate. Expected edge1; computed and verified.",
+    "skew": "skewDeg = |90 deg - angle between the near-edge direction and the road axis|. Reported. Above crossingApplicability.parameters.maxSkewDeg (45 deg) the crossing model is refused (crossing-skew-over-limit); no other skew limit applies. The DrivingStereo 2 deg curb/stripe limit is not applied.",
+    "curbProxy": "Along a query line, start at its intersection with the lane chord line (the start must be inside the drivable union) and scan drivable-outline intersections moving right; the curb proxy is the first intersection where the point boundaryEpsilonMeters further right is outside the drivable union. Shared internal edges between drivable polygons are therefore not curbs. None within 30 m: Unknown. Label: 'curb (map edge proxy)'.",
+    "noMapLine": "No mapped edge or ray line is drawn on the image (rejected exposed map ray stays removed).",
+    "paintOffset": "Superseded by crossingError (protocol v3)."
+  },
+  "currentVehicle": {
+    "trackPrefix": "396f15b5",
+    "checks": [
+      "exactly one annotation row at annotationTimestampNs whose track_uuid starts with the prefix",
+      "category in {REGULAR_VEHICLE, LARGE_VEHICLE, BUS, SCHOOL_BUS, ARTICULATED_BUS, BOX_TRUCK, TRUCK, TRUCK_CAB, VEHICULAR_TRAILER}",
+      "stationary: track spans >= 3.0 s of annotation sweeps and its maximum horizontal displacement from its first annotated city position is <= 1.0 m (exact ego poses at each annotation timestamp; a missing pose makes motion unknown and the check fails)",
+      "box centre inside the drivable union",
+      "box heading within 15 deg of the direction of travel",
+      "front-centre forward coordinate > 0 and less than the near edge's forward coordinate on the box centre line",
+      "the box checks (centre inside the drivable union, heading within 15 deg, front between the camera and the near edge) are applied to the averaged box (currentVehicle.pose)"
+    ],
+    "centreLine": "Horizontal line through the box centre along the box heading (box +x).",
+    "frontPoint": "Box centre + (length/2) * heading, horizontal; desired ground point uses the terrain height of its cell.",
+    "frontGapReport": "Distance along the centre line from the front point to the near-edge intersection; skeptic expectation about 0.55 m; reported, not a limit.",
+    "dimensions": "width/height/length from the annotation, rounded to 0.01 m for the declared vehicle; unrounded for hidden tests.",
+    "label": "stationary vehicle (AV2 annotation); reason for stopping unknown",
+    "wording": "This vehicle is described only as stationary. No output (UI, hover text, Nemotron context or prompt) states or implies a reason for stopping.",
+    "appModel": "The app draws and tests the current vehicle as the averaged annotated box from ground.json (centre, horizontal heading, dimensions). The vehicle front pixel names it; the box is never re-derived from the pixel or the road axis. A declared or resized vehicle in its place keeps the averaged front point and runs along the lane axis from it (declaredReplacement).",
+    "residualReport": "frontResidualToAnnotatedM = the vehicle groundPoint (pixelUV hit) minus the averaged front point, horizontal: {horizontal, alongRoadAxis (+ = farther along the direction of travel), lateralRight (+ = right of the direction of travel)}; yawToRoadAxisDeg = signed angle from the road-axis direction of travel to the averaged heading (+ = toward the right); headingToRoadAxisDeg stays the unsigned angle. Reported only, never limits.",
+    "fallback": "Annotations not supplied: declared default vehicle. Annotations supplied but the pinned track fails a check: declared default, unless its footprint overlaps any annotated cuboid footprint, then Unknown.",
+    "pose": {
+      "rule": "averageAllAnnotations",
+      "rows": "Every annotation row of the track in the log. The track must pass the stationary check, so every row is a stationary row; a track that fails it, or a prefix matching more than one track at the sweep, is not averaged and the vehicle falls back as before. Each row is mapped to the city frame with the exact ego pose at its own timestamp; a missing pose fails the vehicle.",
+      "centre": "Arithmetic mean of the rows' city-frame centres (x, y, z).",
+      "yaw": "Circular mean atan2(sum sin, sum cos) of each row's city-frame yaw (the box +x axis projected on the horizontal plane).",
+      "upright": "The averaged box is upright (box +z = city up). Row pitch and roll (sub-degree) are not averaged and not used.",
+      "dimensions": "Median of the rows' length, width and height.",
+      "spread": "Recorded in ground.json poseAverage: row centre offsets from the mean along the averaged heading, to its left and vertical (population standard deviation, minimum, maximum), the largest horizontal offset, yaw offsets (standard deviation, largest absolute, wrapped to [-180, 180) deg), dimension ranges, and the sweep-timestamp row's offset from the average.",
+      "scope": "Only the current vehicle (trackPrefix). Every other annotated cuboid stays at annotationTimestampNs. The averaged box replaces the sweep box everywhere: hidden flags, LiDAR support occlusion, the height-band fit set and the app's annotated vehicle. numInteriorPoints keeps the sweep row's count.",
+      "why": "M4b: the single sweep box is one noisy sample (8c: 114 annotations over 11.3 s; the sweep box sits about 0.13 m from their average). Sean decided the stationary car uses the average of all its annotations (decisions.md)."
+    },
+    "frontNudgePx": {
+      "value": 2,
+      "anchor": "suggestions vehicle.pixel (protocol v3: the integer pixel containing the exact projection of the averaged front point).",
+      "rule": "An edited vehicle-front pixel within 2 px on each image axis of the anchor still names the real stationary vehicle: the annotated vehicle keeps its averaged box exactly, and a declared or resized vehicle in its place keeps its front point (declaredReplacement). Only a larger move declares a box at that pixel's ground hit.",
+      "authority": "decisions.md \"Protocol v3 candidate (coordinator, Oct 12, M1(d))\"; app constant ANNOTATED_FRONT_NUDGE_PX in src/geometry.mjs."
+    },
+    "declaredReplacement": {
+      "rule": "While the vehicle-front pixel names the annotated stationary vehicle (an integer pixel within frontNudgePx.value of the anchor on each image axis) and a vehicle replaces it (a declaration, or size fields that differ from the annotation), the replacing vehicle is a declared box whose front-face centre is the averaged box's front point (frontPoint: box centre + length/2 x heading, horizontal; height = the mapped terrain height of its cell; the suggestion's vehicle.mappedPoint). Its axis is the lane axis (roadAxis direction of travel reversed) through that point; it stands on that height and moves along the lane axis like any declared box. A front moved beyond the nudge is a declared box at that pixel's ground hit (pixelRay).",
+      "frontPixel": "The front pixel's own ray hit (pixelUV while untouched, else the nudged pixel) only has to be placeable (pixelRay) and marks the vehicle; no setback, box or result uses it while it names the annotated vehicle.",
+      "support": "The support class and hidden flag of a front that names the annotated vehicle are evaluated at the front point (supportClasses, hidden), for the annotated box and for a vehicle in its place.",
+      "why": "Audit, October 12: under protocol v3 a declared box's front fell at the front pixel's ray hit, which the raster blocks 1.03 m short of the averaged front (pixelOffsetFromMappedM 1.0285 m). A declared box the size of the real car then sat 1.431 m from the crossing instead of 0.420 m, and the child result turned from Unknown (too close to call, 0.008 m cut) into Blocked (0.107 m cut): the false-Blocked direction. decisions.md: declaring a different current vehicle replaces the real car, so the replacing vehicle takes the real car's place.",
+      "notTuning": "No threshold, tolerance or margin changes; the rule follows the existing decision and removes a raster artefact."
+    }
+  },
+  "declaredDefaults": {
+    "vehicle": {
+      "label": "SUV",
+      "dimensions": {
+        "width": 1.9,
+        "height": 1.8,
+        "length": 4.9
+      },
+      "setbackMeters": 6.096,
+      "curbGapMeters": 0.15,
+      "rule": "Front = near-edge forward at the vehicle's lateral line minus 6.096 m along the road axis. Lateral (from the camera, rightward) = min curb-proxy lateral over the vehicle's own length [front-length, front] sampled every 0.05 m (perpendicular query lines) minus 0.15 m minus width/2. Iterate from the curb at the near edge until the lateral changes < 0.001 m (max 10 iterations, else Unknown).",
+      "reason": "declared 20 ft default, not a vehicle in the image"
+    },
+    "person": {
+      "label": "child",
+      "heightMeters": 1.1,
+      "curbOffsetMeters": 0.3,
+      "rule": "On the near-edge line, 0.30 m back from the curb-proxy point toward the lane (along the edge).",
+      "reason": "declared default at the curb end of the crossing near edge"
+    }
+  },
+  "crossingPoint": "Near-edge line intersected with the current vehicle's centre line (the averaged annotated box, or the declared default); without a vehicle, with the lane chord line. Status \"mapped\". The point must lie on the mapped near-edge segment and ahead of the camera (crossingApplicability); otherwise there is no crossing point and the crossing is Unknown with the named refusal.",
+  "pixelSelection": {
+    "rule": "exactProjection",
+    "text": "The desired ground point (x, terrain cell height at x/z, z) is projected with the scene camera to floating [u, v] = pixelUV (no rounding, no search). pixelUV must satisfy pixelRay.pixelCenter, otherwise Unknown (\"Mapped point is outside the recorded image.\"). The object is evaluated at pixelUV with pixelRay (including the range limit and the drivable test); an Unknown result makes the object Unknown with that reason (no fallback pixel). The integer pixel [floor(u + 0.5), floor(v + 0.5)] (the pixel that contains pixelUV) is stored as the display and nudge anchor. pixelOffsetFromMappedM = horizontal distance from the pixelUV hit to the desired point: internal consistency, 0 unless the raster blocks the point along its own ray.",
+    "integerPixelCheck": "The pixelRay rule at the integer pixel is recorded as {groundPoint, residualM} or {reason}; diagnostic only (what an integer evaluation of the anchor would give).",
+    "app": "While a suggestion is untouched (its integer pixel unchanged and not replaced), the app evaluates its pixelUV. Any edited position is evaluated as given.",
+    "notATolerance": "No residual limit is applied.",
+    "shadowedRay": "When the raster blocks an object's exact ray before its mapped point, its pixelUV hit lands short of it (8c vehicle front: 1.0285 m). The hit is recorded as is: no search and no fallback pixel. The crossing and the person are evaluated at their pixelUV hit; the vehicle-front pixelUV hit drives no result (currentVehicle.declaredReplacement). Metric C (target <= 0.05 m, internal consistency) is reported as NOT met for the stored vehicle-front ground point and met for the front point the app uses."
+  },
+  "labels": {
+    "observed-nearby": "observed nearby",
+    "map-only": "mapped, not observed",
+    "unknown": "unknown",
+    "sourceClass": "mappedGround",
+    "license": {
+      "id": "CC-BY-NC-SA-4.0",
+      "attribution": "(c) 2021 Argo AI, LLC"
+    }
+  },
+  "results": "Blocked (declared volume) or Unknown only; never Clear. Mapped ground is not observed road; geometric visibility is not a safety, recognition or compliance judgment.",
+  "report": [
+    "car-front gap on the centre line",
+    "skewDeg",
+    "support class per point",
+    "hidden per point",
+    "pixel-to-desired ground offsets",
+    "alongRayUncertaintyM per point",
+    "support row counts",
+    "vehicle front residual to the annotated front",
+    "annotated box yaw difference to the road axis",
+    "pixelUV and integer pixel per object; pixelOffsetFromMappedM (internal consistency) and the integer pixel check",
+    "averaged pose spread and the sweep box offset from the average",
+    "height band fit statistics and along-ray coverage by range band (fractional and integer click, split-half)",
+    "crossingError status per crossing",
+    "placement range limit refusals",
+    "crossing applicability checks and refusal codes per crossing",
+    "crossingError offsetM, combinedM and signed range per measured crossing",
+    "carShape per scene: applies or not, track, refusal code, shape and scoring sweep counts, solid cells, sweep plan sha256"
+  ],
+  "supersedes": {
+    "file": "protocol-v3.3.json",
+    "sha256": "67117e04f0596866aa0f8feb8cb01e054865557576ea67237db24a9a9cad5af9",
+    "status": "kept unchanged and read-only; it runs only from its committed files (8ec75f8); its outputs in grounded-v3.3/ and scene-builder-v4.2/ are historical once grounded-v3.4/ exists"
+  },
+  "changeReason": "shape-v2 (October 14): under shape-v1 the 1.0 m thinning step kept 16 sweeps on the 8c scene (8 shape sweeps; 395 of 779 cells without a solid top). Sean chose more scans: a new frozen car-shape version that keeps a sweep every 0.25 m of ego travel. The 0.25 m step was chosen after a development-only what-if had been run and shown to Sean; shape-v2/protocol.json discloses this departure from the base change rule (disclosure.chosenAfterDevelopmentResults). The shape-v2 rules were frozen there before any shape-v2 sweep plan, download or ground layer; this protocol only re-pins the carShape section to them.",
+  "changes": [
+    {
+      "fields": [
+        "pixelSelection",
+        "pixelRay.pixelCenter"
+      ],
+      "authority": "plan M2(a), coordinator task 2026-10-12",
+      "change": "exactProjection replaces the nearestHitWindow search: objects store and are evaluated at their exact floating projection (pixelUV); the integer pixel containing it is the display/nudge anchor.",
+      "reason": "v2 residuals were 0.144 m (crossing), 0.177 m (vehicle front) and 0.210 m (person) because only integer pixels were evaluated; fractional evaluation removes this (target < 0.001 m)."
+    },
+    {
+      "fields": [
+        "alongRayUncertainty"
+      ],
+      "authority": "plan M2(b), coordinator task 2026-10-12",
+      "change": "Height band fitted on this development scene's camera-visible LiDAR ground returns (nearest-rank 95th percentile of |dz|) replaces roadToleranceMeters 0.08 + half ulp in the along-ray formula; coverage by range band is reported.",
+      "reason": "The 0.08 m was borrowed from the DrivingStereo scene and never fitted to AV2."
+    },
+    {
+      "fields": [
+        "crossingError",
+        "mapElements.paintOffset"
+      ],
+      "authority": "plan M2(c), decisions.md (mapped edge with a measured +/- paint offset)",
+      "change": "A separate crossingError field (mapped near edge plus a +/- paint offset) replaces paintOffset; 2658849 is \"pending measurement\" until protocol v3.1 fills it.",
+      "reason": "The crossing's shown error must not be the along-ray figure."
+    },
+    {
+      "fields": [
+        "placementRange",
+        "pixelRay.rangeLimit"
+      ],
+      "authority": "decisions.md (Sean: placement beyond 30 m refused), plan M2(d)",
+      "change": "Hits farther than 30 m (horizontal) from the camera are Unknown: \"Too far to place (over 30 m).\"",
+      "reason": "Beyond 30 m the along-ray uncertainty covered only 84.2% of errors and would need about +/-6 m."
+    },
+    {
+      "fields": [
+        "currentVehicle.pose",
+        "currentVehicle.checks",
+        "currentVehicle.appModel",
+        "currentVehicle.residualReport",
+        "crossingPoint"
+      ],
+      "authority": "decisions.md (stationary annotated car pose = average of all its annotations, protocol v3), plan M4b",
+      "change": "The current stationary vehicle is the average of all its annotations (mean centre, circular-mean yaw, median dimensions, upright) with its spread recorded; it replaces the single sweep box everywhere.",
+      "reason": "One sweep box is one noisy sample of a vehicle that did not move."
+    },
+    {
+      "fields": [
+        "currentVehicle.frontNudgePx"
+      ],
+      "authority": "decisions.md protocol v3 candidate (coordinator, Oct 12, M1(d))",
+      "change": "Records the app's 2 px vehicle-front nudge rule; its anchor is now the integer pixel containing the exact front projection.",
+      "reason": "One image row is about 0.9 m at the ~4 degree grazing angle, so a 1-2 px slip must not swap the real car for a declared box."
+    },
+    {
+      "fields": [
+        "resultRules"
+      ],
+      "authority": "Sean, October 12 (decisions.md); implemented in M1",
+      "change": "Records the result rules (Blocked/Unknown only, 10 cm too-close-to-call, Unknown reasons, camera-height eye) in the protocol.",
+      "reason": "Every change to result rules is written into protocol v3 (plan rules)."
+    },
+    {
+      "version": "3.1",
+      "fields": [
+        "currentVehicle.declaredReplacement",
+        "currentVehicle.frontNudgePx.rule",
+        "currentVehicle.appModel"
+      ],
+      "authority": "decisions.md (\"Declaring a different current vehicle replaces the real car (labeled)\"); audit finding 1, option (b)",
+      "change": "A declared or resized vehicle that replaces the stationary vehicle while the front pixel still names it keeps the averaged front point and the lane axis through it; its support is evaluated at that point.",
+      "reason": "The front pixel ray hit sits 1.03 m short of the front in a raster shadow; a same-size declared box there turned Unknown (0.008 m cut) into Blocked (0.107 m cut). An audit found the result-changing defect; not tuning."
+    },
+    {
+      "version": "3.1",
+      "fields": [
+        "pixelSelection.shadowedRay"
+      ],
+      "authority": "audit finding 1",
+      "change": "Records how a raster-shadowed ray is handled and that metric C is not met for the stored vehicle-front ground point.",
+      "reason": "The v3 record said the shadow changes no result; that was false for declared vehicles."
+    },
+    {
+      "version": "3.1",
+      "fields": [
+        "alongRayUncertainty.heightBand.fixedMode"
+      ],
+      "authority": "audit finding 6",
+      "change": "Held-out (fixed) mode records the scene residuals as heldOutResiduals (a test, not a fit), with no minimum count and no split-half refit.",
+      "reason": "The v3 script stored held-out statistics as a fit with an in-sample scope text and could refuse a sparse held-out scene."
+    },
+    {
+      "version": "3.1",
+      "fields": [
+        "crossingError.display",
+        "crossingError.fillLater"
+      ],
+      "authority": "audit finding 7; plan M2(c)",
+      "change": "States the exact crosswalk chip strings; the paint-offset fill moves to protocol v3.2.",
+      "reason": "Plan, protocol and contract wording disagreed; v3.1 is now taken by this fix."
+    },
+    {
+      "version": "3.1",
+      "fields": [
+        "evaluation"
+      ],
+      "authority": "plan M0 (Blocked-end range default), M4c, M4d; audit finding 2",
+      "change": "Pins the Blocked-end range and metric K (LiDAR shadow) definitions before their first computation.",
+      "reason": "Both were missing from the v3 deliverable; pinning them first keeps their thresholds independent of their results."
+    },
+    {
+      "version": "3.2",
+      "fields": [
+        "groundRaster (map outlines, script behaviour)"
+      ],
+      "authority": "pipeline v3.2 task 1",
+      "change": "prepare_av2_ground.py stores drivable outlines from their horizontal coordinates only (world X = cityX - x0, world Z = -(cityY - y0), element-wise), so a NaN publisher height in an outline vertex no longer blanks it. The ego lane boundaries keep full XYZ and a NaN height there is refused with a named error, never filled.",
+      "reason": "453e5558 has 321 NaN-height vertices in 9 of its 14 drivable outlines; the matrix product 0 x NaN made their X/Z NaN and the ground layer failed to write. Outputs for 8c and c780 are byte-identical apart from code hashes."
+    },
+    {
+      "version": "3.2",
+      "fields": [
+        "crossingApplicability",
+        "mapElements.nearEdge",
+        "mapElements.skew",
+        "crossingPoint"
+      ],
+      "authority": "pipeline v3.2 task 2",
+      "change": "New crossing-model applicability guard: refuse (no crossing point, named refusal codes) when an edge is not ahead, the near edge is more than 45 deg from perpendicular to the lane, the lines are parallel, or the centre line meets the near-edge line off the mapped segment or behind the camera.",
+      "reason": "A crossing running along the road (453e) must be an explicit Unknown, not a far-away guessed point."
+    },
+    {
+      "version": "3.2",
+      "fields": [
+        "suggestions limitations (script text)",
+        "roadAxis.reason (script text)"
+      ],
+      "authority": "pipeline v3.2 task 3",
+      "change": "The along-ray limitation names the band method (fitted on this development scene, or fixed and fitted on the named development scenes with this scene only testing it). roadAxis.reason names the 45 deg refusal.",
+      "reason": "The v3.1 text described an in-scene fit even when the band was fixed."
+    },
+    {
+      "version": "3.2",
+      "fields": [
+        "crossingError.statuses.measured",
+        "crossingError.perCrossing",
+        "crossingError.fillLater",
+        "crossingError.display.measured",
+        "crossingError.singleNumber"
+      ],
+      "authority": "pipeline v3.2 task 4; decisions.md (mapped edge with a measured +/- paint offset)",
+      "change": "2658849 measured ±0.18 m (offset +0.05 m, combined spread 0.064 m) and 2069452 measured ±0.26 m (offset +0.18 m, combined spread 0.039 m) from paint protocol v4; plusMinusM = |offset| + 2 x combined; 20499018 unmeasured.",
+      "reason": "The v3.1 \"measured\" definition used the offset magnitude only, which drops the measurement spread; the paint result is now locked and available for both development crossings with paint."
+    },
+    {
+      "version": "3.3",
+      "fields": [
+        "carShape",
+        "protocolRevision",
+        "report"
+      ],
+      "authority": "shape-v1 protocol.json versions.placementProtocol; decisions.md 2026-10-13",
+      "change": "New carShape section pinning the frozen shape-v1 protocol (sha256 07b9535f...) and ground.json schemaVersion 3; prepare_av2_ground.py writes the required carShape key (object or null) and suggest_av2_placements.py checks it against the suggested vehicle.",
+      "reason": "The app replaces the box top of the recorded stationary vehicle with its LiDAR-measured shape only where LiDAR proves it; the shape must be hash-pinned like every other measured input."
+    },
+    {
+      "version": "3.4",
+      "fields": [
+        "carShape",
+        "protocolRevision"
+      ],
+      "authority": "shape-v2 protocol.json changes.versions.placementProtocol; Sean 2026-10-14T05:23:35Z ('More scans')",
+      "change": "carShape pins the frozen shape-v2 protocol (sha256 70cbb24f...) and the shape-v2 split addendum (sha256 953dae5f...) in place of shape-v1; ground.json stays schemaVersion 3 with carShape schema shape-v2. prepare_av2_ground.py refuses protocol v3.3 (history, runs from 8ec75f8).",
+      "reason": "More LiDAR sweeps per recorded vehicle, so more of its shape is proven; every other rule unchanged."
+    }
+  ],
+  "unchanged": "Everything not listed in changes with version \"3.4\" is identical to protocol-v3.3.json: every coordinate, raster sampling, tolerance, pixel-ray, hidden, support-class, band-fit, range-limit, pose-averaging, crossing applicability, crossing error and result rule, the report list, and every threshold that can produce Blocked.",
+  "placementRange": {
+    "limitMeters": 30.0,
+    "measure": "Horizontal (world X/Z) distance from the left camera origin to the ground point.",
+    "inclusive": "A hit at or within 30 m is allowed; farther is refused.",
+    "reason": "Too far to place (over 30 m).",
+    "appliesTo": "Every placement through pixelRay: suggestions, typed or dragged positions in the app, and the along-ray coverage report.",
+    "why": "M0 baseline (pao-accuracy/baseline-2026-10-12.json): beyond 30 m the shown along-ray uncertainty covered only 84.2% of click-to-ground errors and the range needed would be about +/-6 m, which is useless for setbacks; Sean decided placement beyond 30 m is refused (decisions.md)."
+  },
+  "crossingError": {
+    "basis": "The crossing point stays the mapped near edge; paint never moves it.",
+    "field": "suggestions crossing.crossingError = {basis: \"mapped near edge\", status, label, plusMinusM, evidence}",
+    "statuses": {
+      "unmeasured": "label \"paint offset unmeasured\"; plusMinusM null; evidence null.",
+      "pending-measurement": "label \"paint offset pending measurement\"; plusMinusM null; evidence null (a LiDAR measurement is planned, plan M3).",
+      "measured": "plusMinusM = |offsetM| + 2 x combinedM from the frozen LiDAR paint method (paint protocol v4: offsetM = the resolved paint-edge S at evalL, signed along the direction of travel, positive = paint starts beyond the mapped near edge; combinedM = nearEdge.uncertainty.combinedM). It is the largest distance between the mapped near edge and the paint edge within the offset +/- 2 x combinedM range. The suggestion stores plusMinusM rounded UP to 0.01 m and label \"±X.XX m\"; evidence {file, sha256} of the measurement result. The protocol entry also records offsetM, combinedM and the signed range. The crossing point never moves.",
+      "unresolved": "label \"paint offset unresolved\"; plusMinusM null; evidence {file, sha256}. Used when the two LiDAR methods disagree by more than 0.15 m or no paint edge is found."
+    },
+    "perCrossing": {
+      "2658849": {
+        "status": "measured",
+        "plusMinusM": 0.17494991810540614,
+        "offsetM": 0.04613553806463408,
+        "combinedM": 0.06440719002038603,
+        "evidence": {
+          "file": ".local/evaluation/pao-paint/results/8c52d911-2658849-v4.json",
+          "sha256": "2680ec78ac03b6348dc8bb10ca2c78a5c623e664203b5b6fc1b98684dbb6f240"
+        },
+        "paintProtocol": {
+          "file": ".local/evaluation/pao-paint/protocol-v4.json",
+          "sha256": "f9a52b440180e84c67d78dfb963849da73d7131f7bcaaf9ea6d0e94fafdfe273",
+          "version": 4
+        },
+        "paintSummary": {
+          "file": ".local/evaluation/pao-paint/summary.json",
+          "sha256": "2839ba14fd45b22b1f09103eb45fdc81cae9ce53d9d0706733174f264e2a2bc1"
+        },
+        "range": {
+          "nearEdgeOffsetLowM": -0.08267884197613798,
+          "nearEdgeOffsetHighM": 0.17494991810540614,
+          "meaning": "Where the paint near edge probably is, relative to the mapped near edge, along the direction of travel (positive = farther from the approaching driver): offsetM - 2 x combinedM to offsetM + 2 x combinedM. Not shown in the app (the suggestion field carries one +/- number)."
+        },
+        "shown": "±0.18 m",
+        "quality": "Development-grade, AV2-referenced, not surveyed and not calibrated: on synthetic known edges the 2-sigma coverage of combinedM was 0.87-1.00 per case. Systematic terms (pose/raster registration, beam footprint, float16 storage, intensity-dependent range bias) are excluded.",
+        "heldOutUse": "Not cleared. Paint protocol v4 needs a fresh independent review and a new lock before any held-out measurement (pao-paint/summary.json protocol.heldOutUse).",
+        "signEstablished": false,
+        "notes": "The sign of the 8c offset is not established. Estimator A reads about 0.07 m late on this crossing (onset listing review-v4/a_onsets-8c.txt, sha256 5b8bc6b405431429f84587f15362912818ccb8d8f879e9d12170e5c913fd9621), so the true offset is probably about +0.01 to +0.03 m rather than +0.05 m; the +/- covers both. Only 64% of the corridor strips were covered (36% shadowed)."
+      },
+      "2069452": {
+        "status": "measured",
+        "plusMinusM": 0.25803011771657264,
+        "offsetM": 0.1801640186836544,
+        "combinedM": 0.03893304951645912,
+        "evidence": {
+          "file": ".local/evaluation/pao-paint/results/c780d53a-2069452-v4.json",
+          "sha256": "c226714328bcb1754046b21ddf345755fbbfba82f1a815db82b71a7531c47c7c"
+        },
+        "paintProtocol": {
+          "file": ".local/evaluation/pao-paint/protocol-v4.json",
+          "sha256": "f9a52b440180e84c67d78dfb963849da73d7131f7bcaaf9ea6d0e94fafdfe273",
+          "version": 4
+        },
+        "paintSummary": {
+          "file": ".local/evaluation/pao-paint/summary.json",
+          "sha256": "2839ba14fd45b22b1f09103eb45fdc81cae9ce53d9d0706733174f264e2a2bc1"
+        },
+        "range": {
+          "nearEdgeOffsetLowM": 0.10229791965073615,
+          "nearEdgeOffsetHighM": 0.25803011771657264,
+          "meaning": "Where the paint near edge probably is, relative to the mapped near edge, along the direction of travel (positive = farther from the approaching driver): offsetM - 2 x combinedM to offsetM + 2 x combinedM. Not shown in the app (the suggestion field carries one +/- number)."
+        },
+        "shown": "±0.26 m",
+        "quality": "Development-grade, AV2-referenced, not surveyed and not calibrated: on synthetic known edges the 2-sigma coverage of combinedM was 0.87-1.00 per case. Systematic terms (pose/raster registration, beam footprint, float16 storage, intensity-dependent range bias) are excluded.",
+        "heldOutUse": "Not cleared. Paint protocol v4 needs a fresh independent review and a new lock before any held-out measurement (pao-paint/summary.json protocol.heldOutUse).",
+        "signEstablished": true,
+        "notes": "Estimators A and B agree within 0.03 m; the offset moves about 0.012 m when estimator A's per-laser tail threshold rule is varied (review probe review-v4/tail_probe-c780.json, sha256 479e7d3f80aaedb429fed0eb353cc434502eba1f25d16cf8d3549da0d53d20e5). Full corridor coverage (64 of 64 strips)."
+      },
+      "20499018": {
+        "status": "unmeasured",
+        "notes": "No paint measurement; the crossing model is refused here (crossingApplicability)."
+      }
+    },
+    "otherCrossings": "A crossing not listed is \"unmeasured\".",
+    "fillLater": "Filled in protocol v3.2 from paint protocol v4 for 2658849 and 2069452. Any other crossing stays \"unmeasured\" until a later protocol version (new file, new hash, recorded reason) adds it. Paint v4 is not cleared for held-out crossings.",
+    "notTheAlongRayFigure": "The crossing's alongRayUncertaintyM describes its pixel ray, not the crossing position. With pixelUV the crossing point is the mapped point, so the crosswalk display uses crossingError, never the along-ray figure.",
+    "why": "Plan M2(c): the crosswalk chip showed the +/-1.21 m along-ray figure as if it were the crossing's error. Decision: keep the mapped edge with a measured +/- paint offset (decisions.md).",
+    "display": {
+      "measured": "crosswalk chip text \"<crossing label> <crossingError.label>\", e.g. \"crosswalk mapped ±0.18 m\" (2658849) and \"crosswalk mapped ±0.26 m\" (2069452)",
+      "otherStatuses": "crosswalk chip text \"<crossing label> · <crossingError.label>\", e.g. \"crosswalk mapped · paint offset pending measurement\", \"crosswalk mapped · paint offset unmeasured\", \"crosswalk mapped · paint offset unresolved\"",
+      "never": "The crossing's alongRayUncertaintyM is never shown as the crossing's error.",
+      "owner": "src/suggestions.mjs builds the chip text; the frontend shows it unchanged."
+    },
+    "singleNumber": "The app field holds one +/- number around the mapped edge, while the paint result is a signed offset with a spread. |offset| + 2 x combined is the half-width of the smallest interval centred on the mapped edge that contains offset +/- 2 x combined. A signed band display would need a new suggestions schema field (not in v3.2)."
+  },
+  "resultRules": {
+    "states": "Blocked or Unknown only; never Clear (Sean, Oct 12: Clear removed from the goal).",
+    "tooCloseToCallMeters": 0.1,
+    "tooCloseToCall": "A sightline that cuts into the tested vehicle box by less than 0.10 m is Unknown (too close to call), not Blocked.",
+    "unknownReasons": [
+      "too close to call",
+      "person inside a vehicle",
+      "driver inside a vehicle",
+      "person inside a real object",
+      "driver inside a real object",
+      "overlaps a real object"
+    ],
+    "driverEye": "The recording camera position and height (8c: 1.47 m above the mapped ground), labeled as camera height.",
+    "implementation": "src/geometry.mjs (TOO_CLOSE_TO_CALL_M, UNKNOWN_REASONS, assessSightline), landed in M1 (commit 0c555aa).",
+    "authority": "Sean, October 12 (decisions.md); recorded here so the protocol states every result rule. Not used by the preparation scripts."
+  },
+  "protocolRevision": "3.4",
+  "evaluation": {
+    "scope": "Evaluation reports computed after this freeze (plan M4c, M4d). Neither is a result rule, an app state or a target; both are development-grade, AV2-referenced, not surveyed.",
+    "stopsBlockingRange": {
+      "harness": "scripts/evaluation/pao-baseline.mjs (app geometry).",
+      "eye": "Named eye: the recording camera, driverDistance = limits.captureDistance.",
+      "heights": "Child (the suggestion default, 1.1 m) and adult 1.5 m.",
+      "vehicle": "The current annotated vehicle's what-if (whatIfBox) between limits.minimumSetback and limits.maximumSetback.",
+      "ends": {
+        "lineTouchEnd": "Largest setback of the last interval where the eye-to-head line touches the what-if box (signed clearance <= 0): the app's stopsBlockingAt is the first plain-Unknown sweep row after it.",
+        "blockedEnd": "Largest setback of the last interval where the line cuts at least resultRules.tooCloseToCallMeters (0.10 m) into the box: the app's Blocked."
+      },
+      "perturbations": "Every combination of: box centre moved along its own heading by -a, 0, +a (a = the vehicle's poseAverage.centreSpreadM.alongStd), sideways by -l, 0, +l (l = lateralStd), heading turned by -y, 0, +y (y = poseAverage.yawSpreadDeg.std); driver eye moved along the lane axis by -0.40, 0, +0.40 m. 81 combinations; a driver position outside the slider limits is skipped and counted.",
+      "range": "[min, max] of each end over the combinations, with the unperturbed value; a combination with no interval is counted, never given a value. Scan step 0.05 m, then bisection to 1e-6 m (the M1 harness method).",
+      "basis": "plan.md M0 default (box spread +/-1 standard deviation, driver +/-0.40 m along the lane), confirmed here unchanged. The 0.40 m driver term is the plan default, not a measurement. Not a confidence interval.",
+      "likelyFalseRows": "Also report the child sweep row states nearest 0.85, 1.10, 9.85, 10.10 and 10.35 m (plan M4 acceptance: the five rows metric F marked likely false on protocol v2)."
+    },
+    "lidarShadow": {
+      "metric": "K (plan section 2): where the tested box predicts LiDAR blocking versus what the scene's own sweep saw.",
+      "independence": "Partly independent: raw LiDAR returns, but the annotators drew the boxes from the same LiDAR, and the LiDARs sit 0.34-0.46 m above the camera, so they see over the car differently from the camera.",
+      "returns": "Every finite return of the scene sweep (sensors/lidar/<lidarTimestampNs>.feather, rows = prepared references sourceIndex), in the scene world frame (the scene's referencePositions).",
+      "sensor": "laser_number 0-31 = up_lidar, 32-63 = down_lidar, checked per run: each laser's elevation spread in its assigned sensor frame must be below 0.15 deg, else the run stops. Ray origin of a return = city_SE3_egovehicle at (lidarTimestampNs + offset_ns), interpolated linearly between the two nearest poses (rotation: normalized linear quaternion interpolation), applied to the egovehicle_SE3_sensor translation. The ego moved about 6.4 m/s during the 8c sweep, so the origin moves up to about 0.7 m across it.",
+      "box": "The tested current-vehicle box from ground.json (upright: centre, horizontal heading, dimensions). The protocol v2 sweep-time box of the same track is reported beside it as a diagnostic.",
+      "marginMeters": 0.05,
+      "groundMeters": 0.15,
+      "neighbourhoodMeters": 0.5,
+      "otherObjectBufferMeters": 0.2,
+      "seeThrough": "K1: a return more than marginMeters outside the box (max over the box axes of |local| - half > margin) whose segment from its own ray origin touches the box shrunk by marginMeters on every side. The box claims the ray is blocked but the LiDAR saw past it (box too large or misplaced there). Report the count, split into ground (|dz| <= groundMeters from the mapped ground under the return) and above ground, the cut depth of each (the largest equal shrink at which the segment still touches the box, bisection to 1 mm) and the box side where the segment passes deepest (front, rear, left, right, top, bottom).",
+      "unboxed": "K2: a return more than marginMeters outside the box, within neighbourhoodMeters of its footprint (box-local |x| <= length/2 + 0.5 and |y| <= width/2 + 0.5), more than groundMeters above the mapped ground under it, at most otherObjectBufferMeters above the box top, outside every other annotated cuboid grown by otherObjectBufferMeters, and not see-through: a surface the LiDAR hit beside the box (car body the box leaves out, or an unannotated object). Report the count and the largest and 95th-percentile protrusion per side.",
+      "thresholds": "0.05 m margin: about the VLP-32C range accuracy (+/-3 cm) plus annotation rounding; 0.15 m ground: twice the fitted height band (0.075 m); 0.5 m and 0.20 m: a priori. Chosen before any metric K output; none may change after results are seen.",
+      "target": "None (plan section 3 lists no metric K target). Report only."
+    }
+  },
+  "crossingApplicability": {
+    "parameters": {
+      "maxSkewDeg": 45.0,
+      "minForwardMeters": 0.0,
+      "segmentToleranceMeters": 0.0
+    },
+    "refusalCodes": [
+      "crossing-edge-not-ahead",
+      "crossing-skew-over-limit",
+      "crossing-parallel-to-lane",
+      "crossing-point-off-edge-segment",
+      "crossing-point-behind-camera"
+    ],
+    "rules": {
+      "crossing-edge-not-ahead": "Both crossing edge midpoints must have a forward coordinate (along the road axis from the camera) greater than minForwardMeters (0 m).",
+      "crossing-skew-over-limit": "The near edge skewDeg (mapElements.skew) must be at most maxSkewDeg (45 deg).",
+      "crossing-parallel-to-lane": "The lane chord line must meet the near-edge line (not parallel).",
+      "crossing-point-off-edge-segment": "Where the lane chord line (and, once a vehicle is known, the current or declared vehicle centre line) meets the near-edge line, the point must lie on the mapped near-edge segment between its first and last vertex, within segmentToleranceMeters (0 m).",
+      "crossing-point-behind-camera": "That point must have a forward coordinate greater than minForwardMeters (0 m): ahead of the camera."
+    },
+    "order": "Edge midpoints first (crossing-edge-not-ahead). Then skew, parallel, and the lane-chord point (off-segment, behind). After the vehicle step, the vehicle centre-line point is checked again with the same two point rules. Every failing rule is named; codes are listed in the refusalCodes order.",
+    "refusal": "The crossing is not placed: crossing status unknown, supportClass unknown, reason \"Crossing model does not apply to crossing <id>: <each problem with its numbers> Refusal: <codes>.\" The crossing keeps its nearEdge and crossingError. The vehicle, person and curb proxy are anchored on the crossing and are Unknown with \"Not placed: <object> is anchored on the crossing, and the crossing model does not apply here (see the crossing reason).\" roadAxis still reports skewDeg and the near edge. No fallback point, no nearest-vertex snap, no hole filling.",
+    "appliesTo": "suggest_av2_placements.py suggestions for every scene run under protocol v3.2 or a per-scene copy of it.",
+    "why": "453e5558/20499018: the mapped crossing runs along the road (skew 89.996 deg); its near-edge line meets the ego lane chord 43048 m away, outside the mapped drivable area. Protocol v3.1 had no rule for this, so a crossing point could be computed far off the mapped crossing. Missing applicability must be Unknown with a named reason, never a guessed point.",
+    "notTuning": "No threshold that drives a Blocked result changes. On 8c52d911/2658849 and c780d53a/2069452 every check passes and the crossing point is unchanged."
+  },
+  "carShape": {
+    "shapeProtocol": {
+      "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.json",
+      "sha256": "70cbb24fabd1509bcb797d651ba2ec6c094c28c869b4a6ecd061f57a5106a95a",
+      "frozenUtc": "2026-10-14T05:43:09Z",
+      "freezeRecord": {
+        "path": ".local/evaluation/pao-accuracy/shape-v2/protocol.lock.json",
+        "sha256": "697b3d3a5057f8f1e2596429857952ea29bcdaab710dd07d45f48e24a70ddb86"
+      },
+      "base": {
+        "path": ".local/evaluation/pao-accuracy/shape-v1/protocol.json",
+        "sha256": "07b9535ffc6ca3d5ba0c8d7b9e8f471cd5642cbfa8e1b0da853ab2c40bb85825"
+      }
+    },
+    "groundSchemaVersion": 3,
+    "rule": "Every car-shape rule and number (frames, grid, returns, solid top, sweeps, ego pose at each sweep, registration into the averaged box, stationary check, refusals and the carShape data schema) is the frozen shape-v2 protocol pinned here: the frozen shape-v1 protocol it pins as its base, read with every shape-v2 change applied (sweep thinning step 0.25 m instead of 1.0 m and the shape-v2 names). This placement protocol adds no shape rule or number of its own.",
+    "appliesTo": "A scene whose current vehicle is the single annotated stationary vehicle with the averaged pose (currentVehicle.pose averageAllAnnotations): prepare_av2_ground.py --car-shape-dir with --car-shape-plan-sha256 writes its carShape from a hashed shape-v2 sweep plan and receipted public LiDAR sweeps (scripts/california/car_shape.py plan, then download). Any other scene (a declared default vehicle, no single averaged stationary vehicle) is written with --no-car-shape and carShape null. A refused shape (refusal codes below) is written as a carShape object with its refusal, never as a guessed shape.",
+    "refusalCodes": [
+      "not-stationary",
+      "too-few-sweeps"
+    ],
+    "groundJson": "schemaVersion 3 with the required top-level key carShape (an object or null, schema shape-v2). Every other ground.json key is produced by the v3.3 rules unchanged; apart from carShape, the protocol record and the processing code hashes, a v3.4 ground.json equals the v3.3 one for the same inputs.",
+    "suggestions": "suggest_av2_placements.py under v3.4 (as under v3.3) reads only ground.json schemaVersion 3 and refuses it unless carShape is present exactly when the suggested vehicle is annotated, for the same track; under v3 to v3.2 it reads only schemaVersion 2.",
+    "evaluationOnly": {
+      "shapeSplitAddendum": {
+        "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.json",
+        "sha256": "953dae5f24b7ff9ac66fc53001d677bd60c159fbf647f39b9f7966d227f21838",
+        "freezeRecord": {
+          "path": ".local/evaluation/pao-accuracy/shape-v2/split-addendum.lock.json",
+          "sha256": "8118d9fbae0493d023911edf7b5dffb1a87eeb7ef4941909ad38e645b7a20805"
+        },
+        "base": {
+          "path": ".local/evaluation/pao-accuracy/shape-v1/split-addendum.json",
+          "sha256": "cc0713d05d2d5bbb9f71762a4c6fba98b888fc8a522a2240958998ccc274b626"
+        }
+      },
+      "note": "The approach-half split shape (car_shape.py approach-split) is report-only evaluation evidence: it is never written into ground.json and never changes a result the app shows."
+    },
+    "notTuning": "No placement tolerance, band, margin, range limit, pose rule or result rule changes. The shape can only turn a box Blocked into Unknown in the app (shape-v1 resultRule, unchanged by shape-v2); it never adds a Blocked."
+  }
+}

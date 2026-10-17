@@ -1,0 +1,8 @@
+{
+ "file": "split.json",
+ "sha256": "47f64fe007b51d75f4bf1c9891d940fd6393c777e0232a0a4f9428bbbeaafab4",
+ "bytes": 32013,
+ "frozenUtc": "2026-10-12T09:20:27Z",
+ "repositoryHead": "ae1c442a907668ebabbf6b495f68c91981c1537d",
+ "statement": "Hash recorded before any held-out image, LiDAR or calibration fetch. Annotation subsets of held-out and reserve logs were read during site selection (see split.json exposureBeforeFreeze)."
+}
