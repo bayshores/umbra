@@ -156,7 +156,9 @@ function mappedElement(v,scene,role,check) {
   if(!['observed-nearby','map-only'].includes(v.supportClass)||v.supportLabel!==SUPPORT_LABELS[v.supportClass])fail(`${role}.supportClass and supportLabel must match`);
   if(scene.ground.cuboids.available?typeof v.hidden!=='boolean':v.hidden!==null)fail(`${role}.hidden must be a flag, or null without annotations`);
   if(!finiteList(v.groundPoint,3)||!finiteList(v.mappedPoint,3)||!['top','step'].includes(v.hitKind)||!finiteNumber(v.terrainCityZ)||!intPair(v.terrainCell)||
-    !['alongRayUncertaintyM','rangeM','horizontalRangeM'].every(k=>positive(v[k]))||!(finiteNumber(v.pixelOffsetFromMappedM)&&v.pixelOffsetFromMappedM>=0))
+    !['rangeM','horizontalRangeM'].every(k=>positive(v[k]))||
+    // A measured layer (schema 4) may calibrate an exact zero width; earlier layers keep a positive band.
+    !(scene.ground.schemaVersion===4?finiteNumber(v.alongRayUncertaintyM)&&v.alongRayUncertaintyM>=0:positive(v.alongRayUncertaintyM))||!(finiteNumber(v.pixelOffsetFromMappedM)&&v.pixelOffsetFromMappedM>=0))
     fail(`${role} ray diagnostics must be finite`);
   if(!object(v.supportEvidence)||!Object.values(v.supportEvidence).every(n=>n===null||finiteNumber(n)&&n>=0))fail(`${role}.supportEvidence must hold counts`);
   let hit;

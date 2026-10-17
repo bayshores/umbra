@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
+import {existsSync} from 'node:fs';
+import {readFile} from 'node:fs/promises';
 import test from 'node:test';
 import { measuredPoint, placementPreview, createScenario, segmentIntersectsBox, classifySightline, SIZE_LIMITS,
-  mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight } from '../src/geometry.mjs';
+  mappedGroundHit,mappedGroundHeight,mappedGroundReferenceHeight,measuredGroundBand,anchorPoint } from '../src/geometry.mjs';
 import { loadScene } from '../src/scene.mjs';
 import { scene,input,fetchAsset } from './scene-input.mjs';
-import {analytic,loadAnalytic} from './mapped-fixture.mjs';
-import {suggestionConsistency} from '../scripts/evaluation/pao-baseline.mjs';
+import {analytic,loadAnalytic,sha} from './mapped-fixture.mjs';
+import {suggestionConsistency,clickToGround} from '../scripts/evaluation/pao-baseline.mjs';
 test('measured pixels round-trip through the fitted camera transform',()=>{
   const [u,v]=input.pixels.crossing,p=measuredPoint(scene,[u,v]),R=scene.transform.worldFromCamera;
   const camera=scene.transform.cameraOriginGround.map((o,i)=>o+R.reduce((s,row,j)=>s+row[i]*p[j],0));
@@ -88,10 +90,10 @@ test('missing scene and altered buffer fail the loader',async()=>{
 function measuredGrid(ground,slope=[.01,.02]) {
   const columns=21,rows=61,originXZ=[-5,-30],cellMeters=.5,
     heights=Array.from({length:columns*rows},(_,i)=>-2+slope[0]*(originXZ[0]+i%columns*cellMeters)+slope[1]*(originXZ[1]+Math.floor(i/columns)*cellMeters)),
-    sweeps=['1000000000','2000000000','3000000000','4000000000'].map(timestampNs=>({timestampNs,sha256:'e'.repeat(64)}));
+    sweeps=['1000000000','2000000000','3000000000','4000000000'].map((timestampNs,i)=>({timestampNs,sha256:String(i+1).repeat(64)}));
   ground.schemaVersion=4;ground.support={rows:[],count:0};
   ground.alongRayUncertainty={method:'supportSweepHoldout',heightBandMeters:null,rule:'analytic independent integer-click errors',quantile:.975,minimumCount:100,
-    bins:[{minRangeM:0,maxRangeM:30,meters:.3,count:100}]};
+    bins:[{minRangeM:0,maxRangeM:30,meters:.3,count:100}],coverage:{eligible:100,placed:100,unknown:{}}};
   ground.measuredGround={version:'measured-ground-v1',columns,rows,originXZ,cellMeters,heights,heightBounds:[Math.min(...heights),Math.max(...heights)],
     partition:{frameTimestampNs:'124',excludedNearNs:250000000,fit:sweeps.slice(0,3),calibration:sweeps.slice(3)}};
 }
@@ -128,13 +130,64 @@ test('measured ground: independent bands above the gate are displayed unchanged 
   s.ground.alongRayUncertainty.bins=[];
   assert.throws(()=>mappedGroundHit(s,[2,6]),/No independent click-error calibration/);
 });
+test('measured ground: continuous calibrated range widths interpolate without clipping and invalid functions refuse loading',async()=>{
+  const linear=g=>{measuredGrid(g,[0,0]);Object.assign(g.alongRayUncertainty,{rangeRule:'linear',bins:[],knots:[
+    {rangeM:0,meters:.2,count:100},{rangeM:20,meters:.8,count:100},{rangeM:30,meters:1.6,count:100}]});};
+  const s=await loadAnalytic(analytic({ground:linear}));
+  assert.equal(measuredGroundBand(s,0),.2);assert.equal(measuredGroundBand(s,20),.8);assert.equal(measuredGroundBand(s,30),1.6);
+  assert.ok(Math.abs(measuredGroundBand(s,25)-1.2)<1e-12);assert.equal(measuredGroundBand(s,30.01),null);
+  for(const change of [g=>g.alongRayUncertainty.knots[1].rangeM=0,g=>g.alongRayUncertainty.knots[0].meters=-1,
+    g=>g.alongRayUncertainty.knots.pop()&&g.alongRayUncertainty.knots.pop(),g=>g.measuredGround.partition.calibration=[]])
+    await assert.rejects(loadAnalytic(analytic({ground:g=>{linear(g);change(g);}})),/Invalid mapped ground/);
+});
+test('measured ground: exact calibration permits a zero width without a fabricated floor',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.alongRayUncertainty.bins[0].meters=0;}}));
+  assert.equal(mappedGroundHit(s,[2,6]).alongRayUncertaintyM,0);
+  const linear=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);Object.assign(g.alongRayUncertainty,{rangeRule:'linear',bins:[],
+    knots:[{rangeM:0,meters:0,count:100},{rangeM:30,meters:0,count:100}]});}}));
+  assert.equal(mappedGroundHit(linear,[2,6]).alongRayUncertaintyM,0);
+});
 test('measured ground: loader refuses scoring-frame leakage, calibration overlap and false height bounds',async()=>{
   for(const change of [
     g=>g.measuredGround.partition.fit[0].timestampNs='124',
     g=>g.measuredGround.partition.calibration[0].timestampNs='1000000000',
+    g=>g.measuredGround.partition.calibration[0].timestampNs='01000000000',
+    g=>g.measuredGround.partition.calibration[0].sha256=g.measuredGround.partition.fit[0].sha256,
+    g=>g.measuredGround.partition.calibration=[],
+    g=>g.alongRayUncertainty.coverage.placed=99,
     g=>g.measuredGround.heightBounds[0]-=1,
     g=>{g.support={rows:[0],count:1};},
   ])await assert.rejects(loadAnalytic(analytic({ground:g=>{measuredGrid(g);change(g);}})),/Invalid mapped ground/);
+});
+test('measured ground: loader requires a valid scoring sweep identity',async()=>{
+  for(const change of [p=>delete p.originalSources,p=>delete p.originalSources.lidar,p=>delete p.originalSources.lidar.sha256,
+    p=>p.originalSources.lidar.sha256='E'.repeat(64),p=>p.originalSources.lidar.sha256='e'.repeat(63),p=>p.originalSources.lidar.sha256=null]) {
+    const fixture=analytic({ground:g=>measuredGrid(g)});change(fixture.scene.measurements.provenance);
+    await assert.rejects(loadAnalytic(fixture),/Invalid mapped ground: measured support needs the scoring sweep sha256/);
+  }
+  await loadAnalytic(analytic({ground:g=>measuredGrid(g)}));
+});
+test('measured ground: loader refuses a renamed copy of the known scoring sweep',async()=>{
+  const fixture=analytic({ground:g=>measuredGrid(g)});
+  fixture.scene.measurements.provenance.originalSources={lidar:{sha256:'1'.repeat(64)}};
+  await assert.rejects(loadAnalytic(fixture),/Invalid mapped ground/);
+});
+test('measured ground: grid entry inside the possible height envelope stays Unknown',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;}}));
+  const grid=s.ground.measuredGround;
+  grid.originXZ=[-5,-30];grid.rows=31;grid.heights=Array(grid.columns*grid.rows).fill(-2);
+  grid.heights[0]=-3;grid.heights[1]=-1;grid.heightBounds=[-3,-1];
+  assert.throws(()=>mappedGroundHit(s,projectMeasured(s,[0,-2,-20])),/No independently measured ground support/);
+  grid.heights.fill(-2);grid.heightBounds=[-2,-2];
+  assert.ok(Math.abs(mappedGroundHit(s,projectMeasured(s,[0,-2,-20])).point[2]+20)<1e-6);
+});
+test('measured ground: origins below ground and rays approaching a back face are refused',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;}}));
+  const grid=s.ground.measuredGround;
+  grid.rows=62;grid.heights=Array.from({length:grid.columns*grid.rows},(_,i)=>1+.2*(grid.originXZ[1]+Math.floor(i/grid.columns)*grid.cellMeters));grid.heightBounds=[-5,1.1];
+  assert.throws(()=>mappedGroundHit(s,projectMeasured(s,[0,-1,-10])),/Camera origin is not above/);
+  for(let row=59;row<grid.rows;row++)for(let col=0;col<grid.columns;col++)grid.heights[row*grid.columns+col]=null;
+  assert.throws(()=>mappedGroundHit(s,projectMeasured(s,[0,-1,-10])),/No independently measured ground support/);
 });
 test('measured ground: legacy layer hit and reference height keep their existing exact values',async()=>{
   const s=await loadAnalytic(analytic()),hit=mappedGroundHit(s,[2,5]);
@@ -162,3 +215,69 @@ test('measured ground: C preserves a valid fractional hit and reports a rounded 
   assert.equal(result.metricC.pointUsedMet,true);assert.equal(result.metricC.pixelUVRayHitMet,true);
   assert.equal(result.integerAnchorAlone.status,'unknown');assert.match(result.integerAnchorAlone.reason,/measured ground support/);
 });
+test('measured ground: crossing source keeps its own support and hidden state and refuses a source hole',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.placementRangeLimitMeters=30;g.maxRangeMeters=40;}}));
+  const grid=s.ground.measuredGround,point=[0,-2,-18],uv=projectMeasured(s,point),pixel=uv.map(n=>Math.floor(n+.5));
+  for(let row=33;row<=37;row++)for(let col=0;col<grid.columns;col++)grid.heights[row*grid.columns+col]=-1.2;
+  grid.heightBounds=[-2,-1.2];
+  s.ground.crossing.edge1=[[-3,-2,-18],[3,-2,-18]];s.ground.crossing.edge2=[[-3,-2,-21],[3,-2,-21]];
+  s.ground.cuboids.items[0].center=[0,-1,-15];
+  s.suggestions={schemaVersion:3,sourceClass:'mappedGround',sceneId:s.id,crossing:{status:'mapped',nearEdge:'edge1',mappedPoint:point,pixelUV:uv,pixel},vehicle:{status:'unknown'}};
+  const ray=mappedGroundHit(s,uv),source=anchorPoint(s,'crossing',pixel);
+  assert.ok(Math.abs(ray.point[2]-point[2])>1);assert.equal(ray.hidden,false);
+  assert.deepEqual(source.point,point);assert.equal(source.supportClass,'observed-nearby');assert.equal(source.hidden,true);
+  const moved=anchorPoint(s,'crossing',[pixel[0]+1,pixel[1]]);
+  assert.notDeepEqual(moved.point,point);
+  grid.heights[24*grid.columns+10]=null;
+  assert.throws(()=>anchorPoint(s,'crossing',pixel),/no supported mapped drivable ground point/);
+});
+test('measured ground: the evaluation-only refusal option preserves reference candidates and leaves default placement unchanged',async()=>{
+  const s=await loadAnalytic(analytic({ground:g=>{measuredGrid(g,[0,0]);g.measuredGround.heights.fill(-1.4375);g.measuredGround.heightBounds=[-1.4375,-1.4375];
+    g.cuboids.items=[];g.placementRangeLimitMeters=30;g.maxRangeMeters=40;g.alongRayUncertainty.bins[0].meters=.91;}}));
+  const normal=clickToGround(s),option=clickToGround(s,{refuseOverBandMeters:.76});
+  assert.deepEqual(option.bands.map(b=>b.candidates),normal.bands.map(b=>b.candidates));
+  assert.equal(normal.metricBPoints.points.length,1);assert.equal(option.metricBPoints.points.length,0);
+  assert.equal(option.bands[2].unknown['Too uncertain to place.'],1);
+  assert.equal(mappedGroundHit(s,[2,6]).alongRayUncertaintyM,.91);
+});
+
+// Development artifact (local only, never shipped): the round-2 measured fd5c scene with its suggestions, loaded whole.
+const R2=new URL('../.local/evaluation/pao-accuracy/ground-r2-2026-10-16/final/fd5c6932-2659589/',import.meta.url);
+const r2Local=existsSync(new URL('grounded/suggestions.json',R2))&&existsSync(new URL('assembled/positions.bin',R2));
+const r2Skip=r2Local?false:'round-2 measured development scene is local-only and not present';
+const r2Read=name=>readFile(new URL((['scene.json','ground.json','terrain.bin','suggestions.json','catalog-entry.json'].includes(name)?'grounded/':'assembled/')+name,R2));
+async function loadR2({scene:mutateScene,ground:mutateGround,suggestions:mutateSuggestions}={}) {
+  // Each changed file is repinned where the next names it: ground.json in scene.json, both in suggestions.json, then the catalog.
+  const entry=JSON.parse(await r2Read('catalog-entry.json')),bytes={},json=async name=>JSON.parse(await r2Read(name));
+  if(mutateGround){const g=await json('ground.json');mutateGround(g);bytes['ground.json']=Buffer.from(JSON.stringify(g));}
+  if(mutateScene||bytes['ground.json']) {
+    const x=await json('scene.json');
+    if(bytes['ground.json'])Object.assign(x.measurements.ground,{sha256:sha(bytes['ground.json']),bytes:bytes['ground.json'].length});
+    mutateScene?.(x);bytes['scene.json']=Buffer.from(JSON.stringify(x));
+  }
+  if(mutateSuggestions||bytes['scene.json']) {
+    const x=await json('suggestions.json');
+    for(const name of ['ground.json','scene.json'])if(bytes[name])x.inputs[name]=sha(bytes[name]);
+    mutateSuggestions?.(x);bytes['suggestions.json']=Buffer.from(JSON.stringify(x));
+  }
+  const pin=(name,record)=>bytes[name]?{...record,sha256:sha(bytes[name])}:record;
+  const fetch=async path=>{const name=path.split('/').at(-1);
+    if(!path.startsWith(`/scenes/${entry.id}/`))return new Response(null,{status:404});
+    if(bytes[name])return new Response(bytes[name]);
+    try{return new Response(await r2Read(name));}catch{return new Response(null,{status:404});}};
+  return loadScene(fetch,entry.id,bytes['scene.json']?sha(bytes['scene.json']):entry.metadataSha256,undefined,
+    pin('suggestions.json',entry.suggestions),pin('ground.json',entry.ground));
+}
+test('measured ground: a full development scene with suggestions loads with exact zero-width bands',{skip:r2Skip},async()=>{
+  const zero=v=>{if(v&&typeof v==='object'){if(Object.hasOwn(v,'alongRayUncertaintyM')&&typeof v.alongRayUncertaintyM==='number')v.alongRayUncertaintyM=0;Object.values(v).forEach(zero);}};
+  const s=await loadR2({ground:g=>g.alongRayUncertainty.bins.forEach(b=>b.meters=0),suggestions:zero});
+  assert.equal(s.ground.schemaVersion,4);
+  assert.equal(mappedGroundHit(s,s.suggestions.crossing.pixelUV).alongRayUncertaintyM,0);
+  await assert.rejects(loadR2({ground:g=>g.alongRayUncertainty.bins.forEach(b=>b.meters=0)}),/runtime mapped-ground rule/);
+  await assert.rejects(loadR2({ground:g=>g.alongRayUncertainty.bins.forEach(b=>b.meters=-.001),suggestions:zero}),/Invalid mapped ground/);
+});
+test('measured ground: the full development scene refuses a missing scoring sweep identity even when its hash is absent from the partition',{skip:r2Skip},async()=>{
+  await loadR2();
+  await assert.rejects(loadR2({scene:x=>delete x.measurements.provenance.originalSources}),/measured support needs the scoring sweep sha256/);
+});
+

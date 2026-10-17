@@ -1,17 +1,18 @@
 """Build umbra's measured-ground-v1 layer from independent, receipted AV2 sweeps.
 
 The publisher raster remains byte-identical for evaluation reference selection. It is never
-a runtime fallback. Calibration sweeps, the scored frame and its temporal neighbours cannot
-contribute to the fitted surface or support mask. No downloads or optional dependencies.
+a runtime fallback. Calibration sweeps and the scored frame cannot contribute to the fitted
+surface or support mask. The temporal guard is explicit. No downloads or optional dependencies.
 """
 import argparse
 from collections import defaultdict
-from hashlib import sha256
+from hashlib import md5, sha256
 from io import BytesIO
 import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
@@ -26,7 +27,7 @@ EXCLUDE_NS = 250_000_000
 PARAMETERS = dict(cellMeters=.5, fitRadiusMeters=1., nearestSupportMeters=.5,
                   minimumReturns=12, minimumSweeps=3, groundGateMeters=.25,
                   drivableMarginMeters=.5, residualFloorMeters=.025, madMultiplier=3.,
-                  robustRefits=2, maximumSlope=.25, windowHalfWidthMeters=32., maximumSupportSeconds=1.)
+                  robustRefits=2, maximumSlope=.25, windowHalfWidthMeters=32., maximumSupportSeconds=1., bandRangeRule='bins')
 
 
 def require(ok, message):
@@ -66,12 +67,16 @@ def rotation(row):
                      [2*(x*z-y*w), 2*(y*z+x*w), 1-2*(x*x+y*y)]])
 
 
-def partition_sweeps(records, frame_timestamp, maximum_seconds=None):
+def partition_sweeps(records, frame_timestamp, maximum_seconds, scoring_sha256):
+    require(isinstance(scoring_sha256, str) and re.fullmatch(r'[0-9a-f]{64}', scoring_sha256), 'A valid scoring-sweep sha256 is required')
     frame = int(frame_timestamp)
-    ordered = sorted(records, key=lambda r: int(r['timestampNs']))
+    require(all(isinstance(r['timestampNs'], str) and re.fullmatch(r'[0-9]{1,32}', r['timestampNs']) for r in records), 'Invalid support timestamp')
+    ordered = sorted([{**r, 'timestampNs': str(int(r['timestampNs']))} for r in records], key=lambda r: int(r['timestampNs']))
     require(len({r['timestampNs'] for r in ordered}) == len(ordered), 'Duplicate support timestamps')
     within_window = lambda r: maximum_seconds is None or abs(int(r['timestampNs'])-frame) <= maximum_seconds*1e9
     allowed = [r for r in ordered if abs(int(r['timestampNs']) - frame) > EXCLUDE_NS and within_window(r)]
+    require(all(r['sha256'] != scoring_sha256 for r in allowed), 'The scoring frame sweep bytes are refused as support/calibration')
+    require(len({r['sha256'] for r in allowed}) == len(allowed), 'Duplicate support/calibration sweep bytes')
     excluded = [{**r, 'reason': 'scoring frame' if int(r['timestampNs']) == frame else 'within temporal exclusion'}
                 for r in ordered if abs(int(r['timestampNs']) - frame) <= EXCLUDE_NS]
     excluded += [{**r, 'reason': 'outside maximum support time window'} for r in ordered if not within_window(r)]
@@ -83,6 +88,37 @@ def partition_sweeps(records, frame_timestamp, maximum_seconds=None):
 def require_support_timestamp(timestamp, frame_timestamp):
     require(int(timestamp) != int(frame_timestamp), 'The scoring frame sweep is refused as support')
     require(abs(int(timestamp) - int(frame_timestamp)) > EXCLUDE_NS, 'Support sweep lies inside the temporal exclusion')
+
+
+def receipt_sweeps(path, log, frame, ground):
+    receipt = read_json(path)
+    require(receipt['log'] == log, 'Receipt log mismatch')
+    if receipt['schema'] == 'shape-v2-download-receipt':
+        plan = json.loads(pinned(path.parent/'sweep-plan.json', receipt['planSha256']))
+        require(plan['log'] == log, 'Sweep plan log mismatch')
+        require(plan['inputs']['poses']['sha256'] == ground['sources']['poses']['sha256'] and
+                plan['inputs']['annotations']['sha256'] == ground['sources']['annotations']['sha256'], 'Receipt poses/annotations differ from ground inputs')
+        planned = {str(int(r['timestampNs'])): r for r in plan['sweeps']}
+        for row in receipt['sweeps']:
+            expected = planned.get(str(int(row['timestampNs'])))
+            require(expected and row['bytes'] == expected['bytes'] and row['sizeMatches'] is True, 'Invalid shape sweep receipt record')
+    else:
+        require(receipt['schema'] == 'support-sweeps-download-receipt' and int(receipt['frameSweepTimestampNs']) == int(frame) and
+                receipt['rule']['excludesFrameSweep'] is True, 'Support receipt schema/frame mismatch')
+        listing = json.loads(pinned(path.parent/'listing.json', receipt['listingSha256']))
+        prefix = f"datasets/av2/sensor/{receipt['split']}/{log}/sensors/lidar/"
+        require(listing['prefix'] == prefix, 'Support listing log mismatch')
+        objects = {r['key']: r for r in listing['objects']}
+        for row in receipt['sweeps']:
+            expected = objects.get(row['key'])
+            require(row['key'] == prefix+f"{int(row['timestampNs'])}.feather" and expected and
+                    row['bytes'] == row['contentLength'] == expected['size'] and row['status'] == 200 and
+                    row['sizeMatches'] is True and row['md5MatchesEtag'] is True and
+                    row['md5'] == row['etag'] == expected['etag'] and re.fullmatch(r'[0-9a-f]{32}', row['md5']), 'Invalid support sweep receipt record')
+            require(int(row['timestampNs']) != int(frame), 'Support receipt contains the scoring sweep')
+    for row in receipt['sweeps']:
+        require(row['file'] == f"sweeps/{int(row['timestampNs'])}.feather" and re.fullmatch(r'[0-9a-f]{64}', row['sha256']), 'Invalid sweep receipt path/hash')
+    return [{k: r[k] for k in ('timestampNs', 'sha256', 'bytes')} for r in receipt['sweeps']], receipt
 
 
 def inside_polygons(xz, areas, margin=0.):
@@ -187,27 +223,26 @@ def fit_surface(points, sweep_ids, areas, params=PARAMETERS):
             'heightBounds': [float(values.min()), float(values.max())] if len(values) else None}
 
 
-def build(site, output, params=PARAMETERS):
+def build(site, output, params=PARAMETERS, support_receipt=None):
     site = Path(site).resolve(); output = Path(output).resolve()
     require(not output.exists(), 'Output already exists; use a new development variant directory')
+    require(params.get('bandRangeRule', 'bins') in ('bins', 'linear'), 'Unsupported band range rule')
     scene = read_json(site/'grounded/scene.json'); ground = read_json(site/'grounded/ground.json')
     provenance = scene['measurements']['provenance']; log = provenance['logId']; frame = provenance['lidarTimestampNs']
     require(log.startswith(('8c52d911-', 'c780d53a-', '88f47a10-', 'fd5c6932-', 'e1d68dde-')), 'This development build requires an explicitly allowed log')
     receipts = sorted((site/'shape').glob(f'shape-v2-{log}/receipt.json')) if (site/'shape').is_dir() else []
+    if support_receipt is not None:
+        receipts = [Path(support_receipt).resolve()]
+    elif not receipts:
+        extra = ROOT/'.local/evaluation/pao-accuracy/support-sweeps-2026-10-16'/f"{log.split('-')[0]}-{provenance['crossingId']}"/'receipt.json'
+        if extra.is_file():
+            receipts = [extra]
     require(len(receipts) <= 1, 'Ambiguous sweep receipt')
     records = []
     if receipts:
-        receipt = read_json(receipts[0]); require(receipt['log'] == log and receipt['schema'] == 'shape-v2-download-receipt', 'Receipt log/schema mismatch')
-        plan = pinned(receipts[0].parent/'sweep-plan.json', receipt['planSha256'])
-        plan = json.loads(plan); require(plan['log'] == log, 'Sweep plan log mismatch')
-        require(plan['inputs']['poses']['sha256'] == ground['sources']['poses']['sha256'] and
-                plan['inputs']['annotations']['sha256'] == ground['sources']['annotations']['sha256'], 'Receipt poses/annotations differ from ground inputs')
-        planned = {r['timestampNs']: r for r in plan['sweeps']}
-        for row in receipt['sweeps']:
-            ts = row['timestampNs']; expected = planned.get(ts)
-            require(expected and row['file'] == f'sweeps/{ts}.feather' and row['bytes'] == expected['bytes'] and row['sizeMatches'] is True, 'Invalid sweep receipt record')
-            records.append({'timestampNs': ts, 'sha256': row['sha256'], 'bytes': row['bytes']})
-    partition = partition_sweeps(records, frame, params['maximumSupportSeconds'])
+        records, receipt = receipt_sweeps(receipts[0], log, frame, ground)
+    scoring_hash = ((provenance.get('originalSources') or {}).get('lidar') or {}).get('sha256')  # validated by partition_sweeps
+    partition = partition_sweeps(records, frame, params['maximumSupportSeconds'], scoring_hash)
     # The partition is written before loading any sensor bytes or performing a fit.
     output.mkdir(parents=True); write_json(output/'partition.json', partition)
     (output/'measured-ground-source.py').write_bytes(CODE_BYTES)
@@ -228,6 +263,10 @@ def build(site, output, params=PARAMETERS):
             require(ts in poses and ts in annotations, 'Support sweep needs exact timestamp poses and annotations')
             raw = pinned(receipts[0].parent/'sweeps'/f'{ts}.feather', row['sha256'])
             require(len(raw) == row['bytes'], 'Sweep byte count mismatch')
+            require(digest(raw) != scoring_hash, 'The scoring frame sweep bytes are refused as support/calibration')
+            if receipt['schema'] == 'support-sweeps-download-receipt':
+                source_row = next(r for r in receipt['sweeps'] if int(r['timestampNs']) == ts)
+                require(md5(raw).hexdigest() == source_row['md5'], 'Support sweep MD5/ETag mismatch')
             sweep = table(raw, ['x', 'y', 'z']); ego = np.column_stack([np.asarray(sweep[k]) for k in ('x', 'y', 'z')])
             valid = np.isfinite(ego).all(1); ego = ego[valid]; outside = outside_cuboids(ego, annotations[ts]); ego = ego[outside]
             pose = poses[ts]; city = ego@rotation(pose).T+np.array([pose[k] for k in ('tx_m', 'ty_m', 'tz_m')])
@@ -249,6 +288,7 @@ def build(site, output, params=PARAMETERS):
                    sourceGroundSha256=digest((site/'grounded/ground.json').read_bytes()),
                    sourceSuggestionsSha256=digest((site/'grounded/suggestions.json').read_bytes()),
                    receiptSha256=digest(receipts[0].read_bytes()) if receipts else None,
+                   receiptPath=os.path.relpath(receipts[0], output) if receipts else None,
                    processingSha256=CODE_SHA256,
                    sourceSite=os.path.relpath(site, output))
     write_json(output/'support-counts.json', counts)
@@ -272,7 +312,8 @@ def build(site, output, params=PARAMETERS):
     ground['processingCodeHashes']['scripts/california/measured_ground.py'] = CODE_SHA256
     protocol = {'schema': 'measured-ground-v1-development', 'parameters': params, 'excludeWithinNs': EXCLUDE_NS,
                 'calibration': {'split': 'every fourth eligible sweep, excluded from fit and support mask', 'quantile': .975, 'minimumCount': 100,
-                                'rangeEdgesM': [0, 10, 12, 15, 18, 20, 22, 25, 30], 'overLimit': 'display without clipping'},
+                                'rangeEdgesM': [0, 10, 12, 15, 18, 20, 22, 25, 30], 'overLimit': 'display without clipping',
+                                'rangeRule': params.get('bandRangeRule', 'bins'), 'linearKnotStepM': .5, 'linearPoolHalfWidthM': 1.},
                 'legacyPlacementProtocolSha256': ground['protocol']['sha256']}
     write_json(output/'grounded/measured-ground-protocol.json', protocol)
     raw_protocol = (output/'grounded/measured-ground-protocol.json').read_bytes()
@@ -296,13 +337,13 @@ const scene=read('scene.json'),g=read('ground.json'),suggestions=read('suggestio
 scene.ground=g;scene.groundSupportXZ=new Float64Array();
 const c=scene.camera,M=scene.transform.worldFromCamera,project=p=>{const q=[0,1,2].map(k=>p[0]*M[0][k]+p[1]*M[1][k]+p[2]*M[2][k]);return q[2]>0?[c.fx*q[0]/q[2]+c.cx,c.fy*q[1]/q[2]+c.cy]:null;},
   inCrop=uv=>uv&&uv[0]>=0&&uv[0]<=c.width-1&&uv[1]>=0&&uv[1]<=c.height-1,
-  horizontal=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]),edges=[0,10,12,15,18,20,22,25,30],errors=edges.slice(1).map(()=>[]),unknown={};
+  horizontal=(a,b)=>Math.hypot(a[0]-b[0],a[2]-b[2]),edges=[0,10,12,15,18,20,22,25,30],errors=edges.slice(1).map(()=>[]),rangeErrors=[],unknown={};
 let eligible=0,placed=0;
 for(const p of JSON.parse(fs.readFileSync(path.join(dir,'calibration-points.json')))) {
   const uv=project(p);if(!inCrop(uv))continue;
   const pixel=uv.map(n=>Math.floor(n+.5));if(!inCrop(pixel))continue;eligible++;
-  try {const hit=measuredSurfaceHit(scene,pixel),range=Math.hypot(hit.point[0],hit.point[2]),index=edges.findIndex((n,i)=>i<edges.length-1&&range>=n&&range<edges[i+1]);
-    if(index>=0){errors[index].push(horizontal(hit.point,p));placed++;}
+  try {const hit=measuredSurfaceHit(scene,pixel),range=Math.hypot(hit.point[0],hit.point[2]),index=edges.findIndex((n,i)=>i<edges.length-1&&range>=n&&(range<edges[i+1]||i===edges.length-2&&range===edges[i+1]));
+    if(index>=0){const error=horizontal(hit.point,p);errors[index].push(error);rangeErrors.push([range,error]);placed++;}
   }catch(e){unknown[e.message]=(unknown[e.message]??0)+1;}
 }
 const calibrationBins=[];
@@ -316,7 +357,17 @@ for(let i=0;i<errors.length;i++) {
   calibrationBins.push({minRangeM:edges[i],maxRangeM:edges[i+1],meters,count:pool.length,ownCount:errors[i].length,poolMinRangeM:edges[lo],poolMaxRangeM:edges[hi+1]});
 }
 g.alongRayUncertainty.bins=calibrationBins;g.alongRayUncertainty.coverage={eligible,placed,unknown};
-fs.writeFileSync(path.join(dir,'calibration-errors.json'),JSON.stringify({edges,errors,eligible,placed,unknown})+'\n');
+if(g.measuredGround.parameters.bandRangeRule==='linear') {
+  const knots=[],minimum=g.alongRayUncertainty.minimumCount;
+  if(rangeErrors.length>=minimum)for(let rangeM=0;rangeM<=30;rangeM+=.5) {
+    const distances=rangeErrors.map(([r])=>Math.abs(r-rangeM)).sort((a,b)=>a-b),radius=Math.max(1,distances[minimum-1]),
+      sample=rangeErrors.filter(([r])=>Math.abs(r-rangeM)<=radius),pool=sample.map(([,e])=>e).sort((a,b)=>a-b),
+      meters=Math.ceil(pool[Math.ceil(.975*pool.length)-1]*1000)/1000;
+    knots.push({rangeM,meters,count:sample.length,poolMinRangeM:Math.min(...sample.map(([r])=>r)),poolMaxRangeM:Math.max(...sample.map(([r])=>r))});
+  }
+  Object.assign(g.alongRayUncertainty,{rangeRule:'linear',knots,bins:[],rule:'independent end-to-end integer-click errors: .5 m knots, +/-1 m placed-range pools expanded to at least100, linear interpolation without clipping'});
+}
+fs.writeFileSync(path.join(dir,'calibration-errors.json'),JSON.stringify({edges,errors,rangeErrors,eligible,placed,unknown})+'\n');
 const unknownElement=(e,reason)=>({status:'unknown',supportClass:'unknown',reason,label:e.label,...(e.crossingError&&{crossingError:e.crossingError}),...(e.mappedPoint&&{mappedPoint:e.mappedPoint}),...(e.pixelUV&&{pixelUV:e.pixelUV,pixel:e.pixel})});
 for(const role of ['crossing','vehicle','person']) {
   const e=suggestions[role];if(e.status==='unknown')continue;
@@ -353,9 +404,11 @@ def main():
     parser.add_argument('--site', type=Path, required=True); parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--cell-meters', type=float, default=PARAMETERS['cellMeters'])
     parser.add_argument('--fit-radius-meters', type=float, default=PARAMETERS['fitRadiusMeters'])
-    args = parser.parse_args(); params = {**PARAMETERS, 'cellMeters': args.cell_meters, 'fitRadiusMeters': args.fit_radius_meters}
+    parser.add_argument('--support-receipt', type=Path)
+    parser.add_argument('--band-range-rule', choices=('bins', 'linear'), default=PARAMETERS['bandRangeRule'])
+    args = parser.parse_args(); params = {**PARAMETERS, 'cellMeters': args.cell_meters, 'fitRadiusMeters': args.fit_radius_meters, 'bandRangeRule': args.band_range_rule}
     require(.1 <= args.cell_meters <= 1 and .5 <= args.fit_radius_meters <= 2, 'Unsupported grid/radius')
-    print(json.dumps(build(args.site, args.out, params)))
+    print(json.dumps(build(args.site, args.out, params, args.support_receipt)))
 
 
 if __name__ == '__main__':

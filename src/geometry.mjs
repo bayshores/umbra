@@ -1,3 +1,5 @@
+import {mappedCrossingSource} from './suggestions.mjs';
+
 const EPS = 1e-9;
 const dot = (a,b) => a.reduce((s,v,i)=>s+v*b[i],0);
 const sub = (a,b) => a.map((v,i)=>v-b[i]);
@@ -78,6 +80,19 @@ export function mappedGroundHeight(scene,x,z) {
     column=Math.floor(fx),row=Math.floor(fz),plane=measuredTriangle(s,column,row,fz-row>fx-column);
   return plane?plane[0]+plane[1]*x+plane[2]*z:null;
 }
+export function measuredGroundBand(scene,range) {
+  const band=scene.ground.alongRayUncertainty;
+  if(band.rangeRule==='linear') {
+    const knots=band.knots;
+    if(!knots.length||range<knots[0].rangeM||range>knots.at(-1).rangeM)return null;
+    let lo=0,hi=knots.length-1;
+    while(hi-lo>1){const mid=(lo+hi)>>1;if(range<knots[mid].rangeM)hi=mid;else lo=mid;}
+    const a=knots[lo],b=knots[hi];
+    return a.meters+(b.meters-a.meters)*(range-a.rangeM)/(b.rangeM-a.rangeM);
+  }
+  const bins=band.bins;
+  return bins.find((b,i)=>range>=b.minRangeM&&(range<b.maxRangeM||i===bins.length-1&&range===b.maxRangeM))?.meters??null;
+}
 // Shared vertices make this a continuous triangulated surface. A missing vertex leaves its triangle unsupported.
 function measuredTriangle(s,column,row,upper) {
   if(column<0||row<0||column>=s.columns-1||row>=s.rows-1)return null;
@@ -94,12 +109,15 @@ export function measuredSurfaceHit(scene,position) {
   if(!(d[1]<0))throw new Error('Pixel ray does not descend toward the ground.');
   const missing=()=>new Error('No independently measured ground support along this ray.');
   if(s.heightBounds===null)throw missing();
+  const originHeight=mappedGroundHeight(scene,0,0);
+  if(originHeight!==null&&originHeight>=0)throw new Error('Camera origin is not above the measured ground.');
   // Only skip holes while strictly above every measured height. A hole in the possible height envelope is Unknown.
   let start=Math.max(1e-10,s.heightBounds[1]/d[1]),end=Math.min(g.maxRangeMeters,s.heightBounds[0]/d[1]+1e-8);
   for(const [axis,component] of [[0,0],[1,2]]) {
     const lo=s.originXZ[axis],hi=lo+((axis===0?s.columns:s.rows)-1)*s.cellMeters,v=d[component];
     if(v===0){if(lo>0||hi<0)throw missing();continue;}
-    start=Math.max(start,Math.min(lo/v,hi/v));end=Math.min(end,Math.max(lo/v,hi/v));
+    if(Math.min(lo/v,hi/v)>start+1e-8)throw missing();
+    end=Math.min(end,Math.max(lo/v,hi/v));
   }
   if(!(end>start))throw missing();
   let ta=start;
@@ -116,7 +134,7 @@ export function measuredSurfaceHit(scene,position) {
       const a=cuts[k-1],b=cuts[k],mid=(a+b)/2,plane=measuredTriangle(s,column,row,mid*d[2]-z>mid*d[0]-x);
       if(!plane)throw missing();
       const denominator=d[1]-plane[1]*d[0]-plane[2]*d[2];
-      if(Math.abs(denominator)<1e-15)continue;
+      if(denominator>=-1e-15)continue;
       const t=plane[0]/denominator;
       if(t<a-1e-8||t>b+1e-8||t<=0)continue;
       const point=d.map(v=>v*t),limit=g.placementRangeLimitMeters;
@@ -205,10 +223,9 @@ function userPixel(scene,pixel) {
 export function mappedGroundHit(scene,position) {
   const c=scene.camera,g=scene.ground;
   if(g.schemaVersion===4) {
-    const hit=measuredSurfaceHit(scene,position),range=Math.hypot(hit.point[0],hit.point[2]),bins=g.alongRayUncertainty.bins,
-      band=bins.find((b,i)=>range>=b.minRangeM&&(range<b.maxRangeM||i===bins.length-1&&range===b.maxRangeM));
-    if(!band)throw new Error('No independent click-error calibration at this ground range.');
-    return {...hit,alongRayUncertaintyM:band.meters};
+    const hit=measuredSurfaceHit(scene,position),band=measuredGroundBand(scene,Math.hypot(hit.point[0],hit.point[2]));
+    if(band===null)throw new Error('No independent click-error calibration at this ground range.');
+    return {...hit,alongRayUncertaintyM:band};
   }
   if(!cropPosition(c,position))throw new Error('Select a pixel inside the recorded image.');
   const [u,v]=position,q=[(u-c.cx)/c.fx,(v-c.cy)/c.fy,1],raw=scene.transform.worldFromCamera.map(row=>row[0]*q[0]+row[1]*q[1]+row[2]*q[2]);
@@ -303,6 +320,8 @@ export function anchorPoint(scene,key,pixel) {
   userPixel(scene,pixel);
   const hit=mappedGroundHit(scene,evaluatedPosition(scene,key,pixel)),front=key==='parking'?namedFront(scene,pixel):null;
   if(front)return {point:front,...groundEvidence(scene,front),alongRayUncertaintyM:null};
+  const source=scene.ground.schemaVersion===4?mappedCrossingSource(scene,key,pixel):null;
+  if(source)return {point:source,...groundEvidence(scene,source),alongRayUncertaintyM:null};
   return {point:hit.point,supportClass:hit.supportClass,supportLabel:hit.supportLabel,hidden:hit.hidden,alongRayUncertaintyM:hit.alongRayUncertaintyM};
 }
 // Setback of an annotated pose: the distance along the mapped lane axis from the app's crossing point to the centre of

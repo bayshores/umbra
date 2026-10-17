@@ -94,8 +94,11 @@ function validateGround(g,scene) {
   if(measured) {
     need(object(band)&&band.method==='supportSweepHoldout'&&band.heightBandMeters===null&&text(band.rule)&&band.quantile===.975&&
       positiveInt(band.minimumCount)&&Array.isArray(band.bins)&&band.bins.every((b,i)=>object(b)&&finite(b.minRangeM)&&b.minRangeM>=0&&
-        finite(b.maxRangeM)&&b.maxRangeM>b.minRangeM&&finite(b.meters)&&b.meters>0&&positiveInt(b.count)&&b.count>=band.minimumCount&&
+        finite(b.maxRangeM)&&b.maxRangeM>b.minRangeM&&finite(b.meters)&&b.meters>=0&&positiveInt(b.count)&&b.count>=band.minimumCount&&
         (i===0||b.minRangeM>=band.bins[i-1].maxRangeM)),'independent click-error calibration');
+    need(band.rangeRule==='linear'?band.bins.length===0&&Array.isArray(band.knots)&&(band.knots.length===0||band.knots.length>=2)&&
+      band.knots.every((k,i)=>object(k)&&finite(k.rangeM)&&k.rangeM>=0&&finite(k.meters)&&k.meters>=0&&positiveInt(k.count)&&k.count>=band.minimumCount&&
+        (i===0||k.rangeM>band.knots[i-1].rangeM)):!Object.hasOwn(band,'rangeRule')&&!Object.hasOwn(band,'knots'),'calibrated range function');
   }else need(object(band)&&finite(band.heightBandMeters)&&band.heightBandMeters>0&&band.heightBandMeters<=1&&text(band.rule)&&object(band.coverage)&&
     (band.method==='fitThisDevelopmentScene'&&object(band.fit)&&!Object.hasOwn(band,'heldOutResiduals')||
      band.method==='fixed'&&text(band.fittedOn)&&object(band.heldOutResiduals)&&!Object.hasOwn(band,'fit')),'along-ray uncertainty band');
@@ -134,7 +137,7 @@ function validateGround(g,scene) {
   need(object(s)&&Array.isArray(s.rows)&&s.count===s.rows.length&&s.rows.every((r,i)=>Number.isSafeInteger(r)&&r>=0&&r<m.count&&(i===0||r>s.rows[i-1])&&m.referenceEligible[r]===1&&
     Number.isFinite(m.referencePositions[r*3])&&Number.isFinite(m.referencePositions[r*3+2])),'support rows must be ascending camera-eligible source rows');
   if(measured) {
-    const surface=g.measuredGround,p=surface?.partition,stamp=v=>typeof v==='string'&&/^[0-9]{1,32}$/.test(v);
+    const surface=g.measuredGround,p=surface?.partition,stamp=v=>typeof v==='string'&&/^(0|[1-9][0-9]{0,31})$/.test(v);
     need(object(surface)&&surface.version==='measured-ground-v1'&&finite(surface.cellMeters)&&surface.cellMeters>0&&
       positiveInt(surface.columns)&&positiveInt(surface.rows)&&surface.columns>=2&&surface.rows>=2&&surface.columns*surface.rows<=262144&&
       Array.isArray(surface.originXZ)&&surface.originXZ.length===2&&surface.originXZ.every(finite)&&Array.isArray(surface.heights)&&
@@ -143,11 +146,21 @@ function validateGround(g,scene) {
     let low=Infinity,high=-Infinity;for(const height of heights){low=Math.min(low,height);high=Math.max(high,height);}
     need(heights.length?Array.isArray(surface.heightBounds)&&surface.heightBounds.length===2&&surface.heightBounds[0]===low&&
       surface.heightBounds[1]===high:surface.heightBounds===null,'measured height bounds');
+    // The scoring sweep's identity must exist for the byte-level exclusion below to mean anything.
+    const scoringHash=m.provenance.originalSources?.lidar?.sha256;
+    need(hash(scoringHash),'measured support needs the scoring sweep sha256 (measurements.provenance.originalSources.lidar)');
     need(s.rows.length===0&&object(p)&&p.frameTimestampNs===m.provenance.lidarTimestampNs&&stamp(p.frameTimestampNs)&&
       p.excludedNearNs===250000000&&Array.isArray(p.fit)&&Array.isArray(p.calibration)&&[...p.fit,...p.calibration].every(v=>object(v)&&stamp(v.timestampNs)&&hash(v.sha256)&&
+        v.sha256!==scoringHash&&
         (BigInt(v.timestampNs)-BigInt(p.frameTimestampNs)>250000000n||BigInt(p.frameTimestampNs)-BigInt(v.timestampNs)>250000000n))&&
-      new Set([...p.fit,...p.calibration].map(v=>v.timestampNs)).size===p.fit.length+p.calibration.length&&(!heights.length||p.fit.length>=3),
+      new Set([...p.fit,...p.calibration].map(v=>v.timestampNs)).size===p.fit.length+p.calibration.length&&
+      new Set([...p.fit,...p.calibration].map(v=>v.sha256)).size===p.fit.length+p.calibration.length&&(!heights.length||p.fit.length>=3),
       'measured support must exclude the scoring sweep and its temporal neighbours, with disjoint calibration sweeps');
+    const coverage=band.coverage;
+    const calibrated=band.rangeRule==='linear'?band.knots:band.bins;
+    need(!calibrated.length||(p.calibration.length>0&&object(coverage)&&count(coverage.eligible)&&positiveInt(coverage.placed)&&
+      object(coverage.unknown)&&Object.values(coverage.unknown).every(count)&&coverage.placed+Object.values(coverage.unknown).reduce((a,b)=>a+b,0)===coverage.eligible&&
+      calibrated.every(b=>b.count<=coverage.placed)),'bands require independent calibration sweeps and consistent coverage counts');
   }
   need(keys(g.license,'attribution,changes,id,source')&&g.license.id==='CC-BY-NC-SA-4.0'&&['attribution','changes','source'].every(k=>text(g.license[k])),'license');
   need(Array.isArray(g.limitations)&&g.limitations.every(text),'limitations');

@@ -33,7 +33,7 @@ export function analytic({scene:mutateScene=()=>{},ground:mutateGround=()=>{},te
     processing:{},buffers:{},artifactHashes:{},recordedImage:{file:'recorded.png',mimeType:'image/png',bytes:image.length,sha256:sha(image)},
     measurements:{kind:'indexedSparse',evidence:'geometricallyProjected',groundPolicy:'mappedGround',binaryEncoding:'littleEndian',pixelCellPolicy:'nearestIntegerCenterRejectCollisions',
       count:xyz.length,provenance:{preparedManifestSha256:'a'.repeat(64),referencesSha256:'b'.repeat(64),logId:'81d2b40a-c579-3e9c-b520-bee26cda947d',
-        cameraTimestampNs:'123',lidarTimestampNs:'124',crossingId:'5'},buffers:{},artifactHashes:{}}};
+        cameraTimestampNs:'123',lidarTimestampNs:'124',crossingId:'5',originalSources:{lidar:{sha256:'e'.repeat(64)}}},buffers:{},artifactHashes:{}}};
   const heights=new Float32Array(COLUMNS*ROWS).fill(FLAT);
   heights[10*COLUMNS+10]=9;// raised cell: x in [0,1), z in (-6,-5], world Y -1
   heights[19*COLUMNS+8]=NaN;// no value: x in [-2,-1), z in (-15,-14]

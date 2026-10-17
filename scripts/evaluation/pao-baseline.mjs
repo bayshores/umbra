@@ -152,7 +152,8 @@ function behindAnyCuboid(ground,point) {
 // what a user's click gives) or, as a second column, its exact floating projection (protocol v3 accepts fractional
 // positions); the app's mappedGroundHit places it. Error = horizontal distance from the placed point to the return.
 // Partly independent: the publisher built the ground raster from LiDAR, and the ground gate uses that raster.
-export function clickToGround(scene) {
+export function clickToGround(scene,{refuseOverBandMeters=null}={}) {
+  if(refuseOverBandMeters!==null&&!(Number.isFinite(refuseOverBandMeters)&&refuseOverBandMeters>0))throw new Error('Invalid experimental placement-band limit.');
   const m=scene.measurements,c=scene.camera,g=scene.ground,rows=[],skipped={notCameraEligible:0,nonFinite:0,noMappedHeight:0,notGroundReturn:0,behindAnnotatedCuboid:0,outsideImage:0};
   for(let i=0;i<m.count;i++) {
     if(m.referenceEligible[i]!==1){skipped.notCameraEligible++;continue;}
@@ -167,7 +168,9 @@ export function clickToGround(scene) {
     const px=[Math.floor(m.referenceUV[2*i]+.5),Math.floor(m.referenceUV[2*i+1]+.5)];
     if(px[0]<0||px[0]>=c.width||px[1]<0||px[1]>=c.height){skipped.outsideImage++;continue;}
     const range=Math.hypot(p[0],p[2]),u=[p[0]/range,p[2]/range],place=position=>{
-      try{const hit=mappedGroundHit(scene,position),dx=hit.point[0]-p[0],dz=hit.point[2]-p[2];return {error:Math.hypot(dx,dz),along:dx*u[0]+dz*u[1],shown:hit.alongRayUncertaintyM};}
+      try{const hit=mappedGroundHit(scene,position),dx=hit.point[0]-p[0],dz=hit.point[2]-p[2];
+        if(refuseOverBandMeters!==null&&hit.alongRayUncertaintyM>refuseOverBandMeters)throw new Error('Too uncertain to place.');
+        return {error:Math.hypot(dx,dz),along:dx*u[0]+dz*u[1],shown:hit.alongRayUncertaintyM};}
       catch(e){return {unknown:e.message};}
     };
     rows.push({range,dy,...place(px),fractional:place([m.referenceUV[2*i],m.referenceUV[2*i+1]])});
@@ -226,7 +229,8 @@ export function suggestionConsistency(scene) {
     const used=anchorPoint(scene,key,e.pixel).point,hit=mappedGroundHit(scene,evaluatedPosition(scene,key,e.pixel));
     let anchor;try{anchor=mappedGroundHit(scene,e.pixel);}catch(error){anchor={unknown:error.message};}
     const usedResidual=Math.hypot(used[0]-e.mappedPoint[0],used[2]-e.mappedPoint[2]),hitResidual=Math.hypot(hit.point[0]-e.mappedPoint[0],hit.point[2]-e.mappedPoint[2]);
-    out[name]={pixel:e.pixel,pixelUV:e.pixelUV,pointUsed:{source:key==='parking'&&e.status==='annotated'?'averaged front point':'pixelUV ray hit',...parts(used)},
+    out[name]={pixel:e.pixel,pixelUV:e.pixelUV,pointUsed:{source:key==='parking'&&e.status==='annotated'?'averaged front point':
+      key==='crossing'&&scene.ground.schemaVersion===4&&s.schemaVersion===3?'mapped crossing source':'pixelUV ray hit',...parts(used)},
       pixelUVRayHit:{...parts(hit.point),rangeM:r(hit.rangeM,3)},integerAnchorAlone:anchor.unknown?{status:'unknown',reason:anchor.unknown}:parts(anchor.point),storedResidualM:r(e.pixelOffsetFromMappedM,6),
       metricC:{targetM:METRIC_C_TARGET_M,pointUsedMet:usedResidual<=METRIC_C_TARGET_M,pixelUVRayHitMet:hitResidual<=METRIC_C_TARGET_M}};
   }
