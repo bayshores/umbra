@@ -13,6 +13,19 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def local_commit(commit):
+    """commit when this repository has it; otherwise the same commit's ID in this copy from commit-map.txt (the public
+    copy rewrote every commit ID); commit unchanged when neither is available."""
+    try:
+        if subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', f'{commit}^{{commit}}'], capture_output=True).returncode == 0:
+            return commit
+        lines = (ROOT / '.local/evaluation/commit-map.txt').read_text().splitlines()
+    except OSError:
+        return commit
+    found = [line.split()[1] for line in lines if line and not line.startswith('#') and line.startswith(commit)]
+    return found[0] if len(found) == 1 else commit
+
+
 def load(name, relative):
     spec = importlib.util.spec_from_file_location(name, ROOT / relative)
     module = importlib.util.module_from_spec(spec)
@@ -352,7 +365,7 @@ assert 'scripts/california/car_shape.py' in refusal()
         self.assertEqual(result.returncode, 0, result.stderr)
         protocol = json.loads((ROOT / '.local/evaluation/pao-accuracy/lock-2/builder-protocol-v4.3.json').read_bytes())
         try:  # the lock still names exactly the committed lock-2 files
-            committed = {name: hashlib.sha256(subprocess.run(['git', '-C', str(ROOT), 'show', f'd71294d:{name}'], check=True,
+            committed = {name: hashlib.sha256(subprocess.run(['git', '-C', str(ROOT), 'show', f'{local_commit("d71294d")}:{name}'], check=True,
                                                              capture_output=True).stdout).hexdigest() for name in protocol['code']}
         except (OSError, subprocess.CalledProcessError):
             self.skipTest('lock-2 committed files unavailable')

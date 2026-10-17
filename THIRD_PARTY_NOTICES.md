@@ -322,7 +322,7 @@ The tracked-file inventory below was made from AV2 log UUIDs, site identifiers, 
 | [README.md](README.md) | Measured results, scene counts and calibration summaries. |
 | [scripts/california/README.md](scripts/california/README.md) | A real scene identifier in the catalog example. |
 | [public/scenes/index.json](public/scenes/index.json) | Scene identifiers and hashes of the derived scene files. |
-| `.local/evaluation/` frozen method files (30 files; `git ls-files .local` lists them) | Log and site identifiers, timestamps, coordinates, hashes of derived artifacts and measured values in the frozen split, protocols, lock records and reviews. |
+| `.local/evaluation/` frozen method files (30 files; `git ls-files .local` lists them and `commit-map.txt`) | Log and site identifiers, timestamps, coordinates, hashes of derived artifacts and measured values in the frozen split, protocols, lock records and reviews. |
 | [scripts/california/build_av2_scene.py](scripts/california/build_av2_scene.py) | Real dataset identifiers and observation metadata. |
 | [scripts/california/car_shape.py](scripts/california/car_shape.py) | Real dataset identifiers and metadata hashes. |
 | [scripts/california/measured_ground.py](scripts/california/measured_ground.py) | Real dataset identifiers. |

@@ -561,6 +561,20 @@ class BuilderTests(unittest.TestCase):
 
 
 FROZEN_V3_COMMIT = 'cb2f497'
+COMMIT_MAP = ROOT / '.local/evaluation/commit-map.txt'
+
+
+def local_commit(commit):
+    """commit when this repository has it; otherwise the same commit's ID in this copy from commit-map.txt (the public
+    copy rewrote every commit ID); commit unchanged when neither is available."""
+    try:
+        if subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', f'{commit}^{{commit}}'], capture_output=True).returncode == 0:
+            return commit
+        pairs = [line.split() for line in COMMIT_MAP.read_text().splitlines() if line and not line.startswith('#')]
+    except OSError:
+        return commit
+    found = [new for old, new in pairs if old.startswith(commit)]
+    return found[0] if len(found) == 1 else commit
 
 
 def frozen_v3_tree(dest):
@@ -568,7 +582,7 @@ def frozen_v3_tree(dest):
     None when git or the commit is unavailable."""
     for name in tool.RUNTIME_CODE_V3 + ('scripts/rectified_calibration.py',):
         try:
-            data = subprocess.run(['git', '-C', str(ROOT), 'show', f'{FROZEN_V3_COMMIT}:{name}'], check=True, capture_output=True).stdout
+            data = subprocess.run(['git', '-C', str(ROOT), 'show', f'{local_commit(FROZEN_V3_COMMIT)}:{name}'], check=True, capture_output=True).stdout
         except (OSError, subprocess.CalledProcessError):
             return None
         path = Path(dest) / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
@@ -580,7 +594,7 @@ def committed_hashes(commit, names):
     out = {}
     for name in names:
         try:
-            out[name] = sha(subprocess.run(['git', '-C', str(ROOT), 'show', f'{commit}:{name}'], check=True, capture_output=True).stdout)
+            out[name] = sha(subprocess.run(['git', '-C', str(ROOT), 'show', f'{local_commit(commit)}:{name}'], check=True, capture_output=True).stdout)
         except (OSError, subprocess.CalledProcessError):
             return None
     return out
@@ -1069,7 +1083,7 @@ class V5RuleTests(unittest.TestCase):
         if code is None:
             self.skipTest('v4.3 committed files unavailable')
         for name in code:
-            data = subprocess.run(['git', '-C', str(ROOT), 'show', f'd71294d:{name}'], check=True, capture_output=True).stdout
+            data = subprocess.run(['git', '-C', str(ROOT), 'show', f'{local_commit("d71294d")}:{name}'], check=True, capture_output=True).stdout
             path = tree / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data)
         for case, options in (('valid', {}), ('off-edge', {}), ('occupied', dict(car_x=31., car_y=-5., drift=.05, evidence=[], expected_blocked=False))):
             with self.subTest(case=case):

@@ -78,7 +78,7 @@ done
 .local/venv-tests/bin/python -B -m pytest -p no:cacheprovider tests/evaluation/test_m7_child_preflight.py
 ```
 
-**Results on a fresh clone.** The frozen method files of the Palo Alto evaluation (the site split, protocols, lock records and reviews; `git ls-files .local` lists all 30) are tracked at their original `.local/evaluation/` paths. Saved job files, download receipts and older development builds stay in the maintainer's ignored `.local/` folder. This was checked on a fresh clone of commit `b8c806f` on 2026-10-16, with exactly the environments above and nothing else copied in:
+**Results on a fresh clone.** The frozen method files of the Palo Alto evaluation (the site split, protocols, lock records and reviews; `git ls-files .local` lists all 30, plus `commit-map.txt`) are tracked at their original `.local/evaluation/` paths. Commit IDs written inside files, including this README, are IDs of the maintainer's private repository; the public copy uses a GitHub no-reply email in every commit, which changes every ID, and [`.local/evaluation/commit-map.txt`](.local/evaluation/commit-map.txt) gives the public ID of each one; the tests that read old commits look their IDs up there. Saved job files, download receipts and older development builds stay in the maintainer's ignored `.local/` folder. This was checked on a fresh clone of commit `b8c806f` on 2026-10-16, with exactly the environments above and nothing else copied in:
 
 | Command | Result on a fresh clone |
 |---|---|
