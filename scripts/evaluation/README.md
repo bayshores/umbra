@@ -1,8 +1,9 @@
 # Matched development evaluation
 
-This lane replays actual saved CPU StereoSGBM outputs, verifies artifact bindings, and counts unsupported predictions against the full valid source reference. It never declares a release pass. Run with the existing NumPy/Pillow preparation environment; no new dependency, inference or cloud call is needed.
+This lane (DrivingStereo development frames; the Palo Alto results are in the main README) replays actual saved CPU StereoSGBM outputs, verifies artifact bindings, and counts unsupported predictions against the full valid source reference. It never declares a release pass. Run with the existing NumPy/Pillow preparation environment; no new dependency, inference or cloud call is needed.
 
 ```sh
+# Run from the repository root. The corpus and baseline report are saved local development artifacts (not in git).
 .local/venv-preparation/bin/python -m unittest discover -s tests/evaluation -v
 .local/venv-preparation/bin/python scripts/evaluation/replay_saved.py \
   --source-root . \

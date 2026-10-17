@@ -1,5 +1,384 @@
 # California offline data tools
 
+## Palo Alto scene build (current)
+
+This is the build order behind umbra's current local Palo Alto scenes, as of
+2026-10-16. The app accepts `ground.json` schema 3 from placement protocol v3.4
+(with a shape-v2 car shape when the suggested vehicle is annotated), and schema
+4 from `measured_ground.py` (`measured-ground-v1` or `measured-ground-v2`).
+Ground schemas 1 and 2 and shape-v1 are refused. Changing a schema number does
+not convert an old scene.
+
+**A fresh clone cannot yet complete this recipe unaided.** The frozen builder
+protocol (builderVersion 4.3), placement protocol (revision 3.4), frozen site
+split and its hash record, shape-v2 method and approach-half split addendum,
+and their freeze records exist only in the maintainer's ignored local folder.
+The current builds also depend on saved download listings and receipts. Obtain
+a reviewed method/input bundle and matching source snapshots from the
+maintainer first. Some split and lock lookups are hardcoded to ignored paths,
+with no command-line override; moving those files beside the commands below
+is insufficient. The full-recording support downloader and catalog installer
+are also local-only. The commands below document the interfaces and order;
+they are not a verified clean-clone run.
+
+### 1. Set up Python and obtain one recording
+
+Base-build receipts record CPython **3.13.5**, also recorded in the preparation
+virtual environment. Use that version and the pinned requirements; other
+Python versions/platforms are not established by these receipts. Node.js must
+also be on `PATH`: measured-ground finalization runs the app's JavaScript
+geometry. Follow the [app setup](../../README.md) for Node dependencies.
+
+Run the setup from a repository root. Replace CAPS placeholders with your own
+paths or values. Use full paths for input/output placeholders if switching
+between source snapshots. Every `*_SHA256` is the lowercase, 64-character
+SHA-256 of the exact file bytes, not a filename or a hash of parsed JSON.
+
+```sh
+python3.13 -m venv BUILD_VENV
+. BUILD_VENV/bin/activate
+python --version
+python -m pip install -r scripts/california/requirements-av2.txt
+shasum -a 256 INPUT_FILE
+```
+
+Choose a development site from the frozen split. It supplies the full log UUID,
+mapped crossing ID and publisher partition (`train` or `val`); do not guess the
+partition from the city. The measured-ground script currently allows only five
+specific development logs, not an arbitrary Palo Alto recording. Historical
+test roles remain enforced by the base builders; replaying those scenes needs
+the separate frozen lock procedure. Reserve/excluded recordings are outside
+this recipe.
+
+Download that log from the public AV2 **Sensor** dataset, under
+`s3://argoverse/datasets/av2/sensor/AV2_SPLIT/LOG_UUID/`. Keep publisher filenames
+and this layout:
+
+```text
+BASE_BUILD_DIRECTORY/data/LOG_UUID/
+  annotations.feather
+  city_SE3_egovehicle.feather
+  calibration/intrinsics.feather
+  calibration/egovehicle_SE3_sensor.feather
+  map/log_map_archive_LOG_UUID____PAO_city_MAP_NUMBER.json
+  map/LOG_UUID_ground_height_surface____PAO.npy
+  map/LOG_UUID___img_Sim2_city.json
+  sensors/cameras/stereo_front_left/CAMERA_TIMESTAMP_NS.jpg
+  sensors/cameras/stereo_front_right/CAMERA_TIMESTAMP_NS.jpg
+  sensors/lidar/LIDAR_TIMESTAMP_NS.feather
+```
+
+For example, with the AWS CLI installed, this downloads the needed metadata,
+both stereo cameras and LiDAR for just the selected log. It does not create the
+support receipts required later. Save the publisher license/attribution notice
+as `LICENSE_FILE` as well; the preparation hashes and copies that notice.
+
+```sh
+AV2_SITE=BASE_BUILD_DIRECTORY
+AV2_LOG_ID=LOG_UUID
+AV2_PARTITION=AV2_SPLIT
+AV2_SCENE_ID=SCENE_ID
+mkdir -p "$AV2_SITE/data/$AV2_LOG_ID" "$AV2_SITE/listings"
+aws s3 cp --no-sign-request --recursive \
+  "s3://argoverse/datasets/av2/sensor/$AV2_PARTITION/$AV2_LOG_ID/" \
+  "$AV2_SITE/data/$AV2_LOG_ID/" \
+  --exclude '*' --include 'annotations.feather' \
+  --include 'city_SE3_egovehicle.feather' --include 'calibration/*' \
+  --include 'map/*' --include 'sensors/cameras/stereo_front_left/*' \
+  --include 'sensors/cameras/stereo_front_right/*' --include 'sensors/lidar/*'
+for AV2_CAMERA in stereo_front_left stereo_front_right; do
+  curl --fail --location \
+    "https://argoverse.s3.amazonaws.com/?list-type=2&prefix=datasets/av2/sensor/$AV2_PARTITION/$AV2_LOG_ID/sensors/cameras/$AV2_CAMERA/&delimiter=/&max-keys=1000" \
+    --output "$AV2_SITE/listings/$AV2_CAMERA.xml"
+done
+curl --fail --location \
+  "https://argoverse.s3.amazonaws.com/?list-type=2&prefix=datasets/av2/sensor/$AV2_PARTITION/$AV2_LOG_ID/sensors/lidar/&delimiter=/&max-keys=1000" \
+  --output "$AV2_SITE/listings/lidar.xml"
+```
+
+The three saved XML listings must be complete (`IsTruncated` is `false`) and
+belong to these sensors in this log. Preserve their exact bytes for replay.
+The builder uses their timestamps, sizes and ETags to select and check sources.
+It can choose with metadata first, but writes `plan.json` only when the chosen
+stereo pair and frame sweep are present and match the listings.
+
+### 2. Select, prepare and assemble the base scene
+
+Use the source snapshot whose runtime hashes match the supplied builder
+protocol. The recorded builds used builderVersion 4.3, variant `v4-18.5`;
+today's builder also contains version 5 and will reject the old protocol's code
+pins. The two historical 4.3 protocol bundles also pin different versions of
+the shape helper. Match the whole bundle to its receipt, not just the builder
+version number. Do not regenerate a protocol merely to bypass a mismatch.
+
+From that build source root, with the environment from step 1 active:
+
+```sh
+python -I -B scripts/california/build_av2_scene.py \
+  --protocol BUILDER_PROTOCOL_FILE --protocol-sha256 BUILDER_PROTOCOL_SHA256 \
+  --placement-protocol PLACEMENT_TEMPLATE_FILE \
+  --placement-protocol-sha256 PLACEMENT_TEMPLATE_SHA256 \
+  --split SPLIT_FILE --split-lock SPLIT_HASH_RECORD_FILE \
+  --log-id "$AV2_LOG_ID" --crossing-id CROSSING_ID \
+  --log-dir "$AV2_SITE/data/$AV2_LOG_ID" \
+  --listing-left "$AV2_SITE/listings/stereo_front_left.xml" \
+  --listing-right "$AV2_SITE/listings/stereo_front_right.xml" \
+  --listing-lidar "$AV2_SITE/listings/lidar.xml" \
+  --license LICENSE_FILE --protocol-variant v4-18.5 \
+  --output "$AV2_SITE/builder"
+```
+
+Continue only if `builder/selection.json` says `plan-written`. Use its
+`protocolSceneValues.scene.sceneId` for `AV2_SCENE_ID`. A missing source or
+infeasible frame is a recorded failure, not permission to invent a crop or
+placement. Each tool requires a new output directory. If a metadata-only first
+pass reports missing sensors, download the exact files it names and use a new
+builder output directory for the second pass.
+
+Then run:
+
+```sh
+python -I -B scripts/california/prepare_av2.py \
+  --plan "$AV2_SITE/builder/plan.json" --output "$AV2_SITE/prepared"
+python -I -B scripts/california/assemble_av2_scene.py \
+  --manifest "$AV2_SITE/prepared/manifest.json" \
+  --output "$AV2_SITE/assembled" --id "$AV2_SCENE_ID"
+```
+
+Preparation reads all ten sources named in `plan.json` and writes
+`manifest.json`, `left.png`, `right.png`, `calibration.json`, `references.npz`
+and `LICENSE-AND-ATTRIBUTION.md`. Assembly reads those outputs and writes the
+indexed scene, recorded image, binary buffers and an initial catalog entry.
+Keep the original source/prepared directories available for the ground step.
+
+### 3. Freeze the per-scene placement inputs; measure paint if needed
+
+The template's example scene values do not describe every log. Before grounding,
+obtain a derived, hash-recorded `SCENE_PLACEMENT_PROTOCOL_FILE` (revision 3.4).
+Its `scene` identity, timestamps, crop, lane ID in `mapElements.roadAxis` and
+`currentVehicle.trackPrefix` must come from the builder's
+`protocolSceneValues`. For a declared vehicle the prefix is `declared-default`,
+not null. Preserve the template's method rules and the recorded fixed-versus-fit
+height-band choice. The tracked evaluation runner's `scene_protocol` method in
+`scripts/evaluation/m7/run_heldout.py` performs this derivation as part of a
+larger run; the builder has no standalone command for it. The reviewed
+per-scene protocol and its freeze record are currently missing public inputs.
+
+Paint measurement is separate. The current template already contains earlier
+paint-v4 evidence for two development crossings; other crossings can remain
+`unmeasured`. To reproduce that evidence, obtain the frozen paint protocol
+(version 4), its matching archived `measure_paint_edge.py`, a config and sweep
+download receipts. The current script supports later method work too; its bytes
+are not the archived paint-v4 code. Use the code named by the paint receipt:
+
+```sh
+python -I -B PAINT_CODE_FILE select \
+  --protocol PAINT_PROTOCOL_FILE --protocol-sha256 PAINT_PROTOCOL_SHA256 \
+  --config PAINT_CONFIG_FILE --output PAINT_SELECTION_FILE
+python -I -B PAINT_CODE_FILE measure \
+  --protocol PAINT_PROTOCOL_FILE --protocol-sha256 PAINT_PROTOCOL_SHA256 \
+  --config PAINT_CONFIG_FILE --sweeps PAINT_SWEEP_RECEIPTS_FILE \
+  --output PAINT_RESULT_FILE
+```
+
+The config needs `schemaVersion: 1`, `logId`, `crossingId`, and `sources` records
+for `poses`, `extrinsics`, `map`, `groundRaster`, `groundTransform` and
+`lidarListing`, each with `path` and `sha256` (record byte counts too). Relative
+paths resolve beside the config. `select` reads metadata only; download its
+chosen sweeps before `measure`. The sweep receipt uses a `files` array with
+`timestampNs`, `path` and `sha256` for every selected sweep; paths resolve beside
+that receipt. Paint-v4 selects 15 sweeps. Its downloader/receipt writer is
+local-only, not an extra subcommand of `measure_paint_edge.py`.
+
+Neither paint command updates ground, suggestions or the catalog. A measured
+label must be carried in the per-scene protocol's `crossingError.perCrossing`
+entry with its evidence file/hash; unresolved evidence stays unresolved. Do
+this before freezing the per-scene protocol and building ground/suggestions.
+The mapped crossing is never moved by paint measurement. Later evaluation
+paint receipts alone do not attach their result to an app scene.
+
+### 4. Build ground schema 3 and the car shape, then initial suggestions
+
+For a builder selection with `carShape.applies: true`, first build a temporary
+box-only ground layer. It supplies the averaged annotated pose to the shape
+planner; do not generate suggestions from this intermediate layer.
+
+```sh
+python -I -B scripts/california/prepare_av2_ground.py \
+  --scene "$AV2_SITE/assembled/scene.json" --scene-sha256 ASSEMBLED_SCENE_SHA256 \
+  --prepared "$AV2_SITE/prepared/manifest.json" --prepared-sha256 MANIFEST_SHA256 \
+  --protocol SCENE_PLACEMENT_PROTOCOL_FILE --protocol-sha256 SCENE_PROTOCOL_SHA256 \
+  --annotations "$AV2_SITE/data/$AV2_LOG_ID/annotations.feather" \
+  --annotations-sha256 ANNOTATIONS_SHA256 \
+  --output "$AV2_SITE/grounded-box" --no-car-shape
+python -I -B scripts/california/car_shape.py plan \
+  --log "$AV2_LOG_ID" \
+  --ground "$AV2_SITE/grounded-box/ground.json" --ground-sha256 BOX_GROUND_SHA256 \
+  --annotations "$AV2_SITE/data/$AV2_LOG_ID/annotations.feather" \
+  --annotations-sha256 ANNOTATIONS_SHA256 \
+  --poses "$AV2_SITE/data/$AV2_LOG_ID/city_SE3_egovehicle.feather" \
+  --poses-sha256 POSES_SHA256 \
+  --listing-file "$AV2_SITE/listings/lidar.xml" --listing-sha256 LIDAR_LISTING_SHA256 \
+  --out-root "$AV2_SITE/shape"
+python -I -B scripts/california/car_shape.py download \
+  --log "$AV2_LOG_ID" --plan-sha256 SHAPE_PLAN_SHA256 --out-root "$AV2_SITE/shape"
+python -I -B scripts/california/prepare_av2_ground.py \
+  --scene "$AV2_SITE/assembled/scene.json" --scene-sha256 ASSEMBLED_SCENE_SHA256 \
+  --prepared "$AV2_SITE/prepared/manifest.json" --prepared-sha256 MANIFEST_SHA256 \
+  --protocol SCENE_PLACEMENT_PROTOCOL_FILE --protocol-sha256 SCENE_PROTOCOL_SHA256 \
+  --annotations "$AV2_SITE/data/$AV2_LOG_ID/annotations.feather" \
+  --annotations-sha256 ANNOTATIONS_SHA256 --output "$AV2_SITE/grounded" \
+  --car-shape-dir "$AV2_SITE/shape/shape-v2-$AV2_LOG_ID" \
+  --car-shape-plan-sha256 SHAPE_PLAN_SHA256
+SOURCE_DATE_EPOCH=UNIX_SECONDS python -I -B scripts/california/suggest_av2_placements.py \
+  --grounded "$AV2_SITE/grounded" --metadata-sha256 GROUNDED_SCENE_SHA256 \
+  --buffers "$AV2_SITE/assembled" \
+  --protocol SCENE_PLACEMENT_PROTOCOL_FILE --protocol-sha256 SCENE_PROTOCOL_SHA256
+```
+
+`plan` writes `shape/shape-v2-LOG_UUID/sweep-plan.json` and `listing.xml`, and
+prints the plan hash. Record that hash before `download`, which writes
+`receipt.json` and `sweeps/TIMESTAMP_NS.feather` beside the plan. The final ground
+build verifies those receipts and embeds `carShape` in `ground.json`; there is
+no separate runtime car-shape file. Unsupported shape cells remain null.
+
+When `carShape.applies` is false, skip the temporary ground and shape commands.
+Run the final ground command with `--no-car-shape` instead of both
+`--car-shape-*` flags, then generate suggestions. That scene has `carShape:
+null`; a shape is required exactly when suggestions name an annotated
+stationary vehicle. A real AV2 vehicle is described only as stationary.
+
+Ground reads the assembled metadata/reference buffers, prepared manifest and
+references, publisher map/raster/transform/poses, annotations and per-scene
+protocol. It writes `scene.json`, `ground.json` and `terrain.bin` in `grounded`;
+the buffers remain in `assembled`. The suggestion step reads these plus
+`referencepositions.bin` and `referenceeligible.bin`, and writes
+`suggestions.json` and `catalog-entry.json`. Use a fixed integer
+`SOURCE_DATE_EPOCH` to reproduce its timestamp. Neither file can already exist.
+
+### 5. Build measured-ground-v1, then measured-ground-v2
+
+Run these commands using the **current app source**, which contains
+`measured_ground.py` and its matching JavaScript geometry. `AV2_SITE` still
+names the original base build, with `assembled/`, `grounded/` (including
+suggestions and catalog entry) and `data/LOG_UUID/` intact.
+
+V1 needs a receipted set of other sweeps. For annotated-vehicle builds this is
+normally `AV2_SITE/shape/shape-v2-LOG_UUID/receipt.json`, together with its
+`sweep-plan.json` and `sweeps/` directory. The declared-vehicle builds used
+separate near-time support receipts/listings/sweeps. Pass the receipt explicitly
+to avoid an ignored-path fallback. V1 uses eligible sweeps within one second of
+the frame, excludes the frame and the inclusive ±0.25 second neighbourhood,
+and holds every fourth eligible sweep back for calibration.
+
+V2 requires a **full-recording support bundle**, not the car-shape receipt:
+`receipt.json`, its hash-pinned `listing.json`, and `sweeps/TIMESTAMP_NS.feather`.
+The recorded full bundles used a 30-second window around the frame and omitted
+the frame sweep. There is currently no tracked command that produces this
+bundle: obtain the receipted bundle or a reviewed downloader from the maintainer.
+Raw LiDAR files alone are insufficient. `receipt.json` must have
+`schema: "support-sweeps-download-receipt"`, `log`, `split`,
+`frameSweepTimestampNs`, `listingSha256`, `rule.excludesFrameSweep: true`, and a
+`sweeps` array. Each sweep records `timestampNs`, `key`, `file`, `status`,
+`bytes`, `contentLength`, `etag`, `md5`, `md5MatchesEtag`, `sizeMatches` and
+`sha256`. The script checks these against the saved listing and actual bytes.
+
+```sh
+python -B scripts/california/measured_ground.py \
+  --site "$AV2_SITE" --out MEASURED_V1_DIRECTORY \
+  --version measured-ground-v1 --band-range-rule bins \
+  --support-receipt NEAR_SUPPORT_RECEIPT_FILE
+python -B scripts/california/measured_ground.py \
+  --site "$AV2_SITE" --out MEASURED_V2_DIRECTORY \
+  --version measured-ground-v2 --band-range-rule bins \
+  --tier-0 MEASURED_V1_DIRECTORY --support-receipt FULL_SUPPORT_RECEIPT_FILE
+```
+
+Both commands need new output directories. They copy `assembled/` and
+`grounded/`, write schema-4 ground and a `measured-ground-protocol.json`, and
+refresh suggestions and catalog hashes themselves. **Do not rerun
+`suggest_av2_placements.py` on schema 4:** that script accepts the earlier
+schema-3 input for v3.4, not a measured-ground layer.
+
+V2 keeps every v1 height and its calibration exactly as tier 0, fills only
+supported v1 holes using additional same-recording sweeps, and writes the exact
+v1 ground bytes to `MEASURED_V2_DIRECTORY/tier-0-ground.json`. Retain the whole
+v1 directory: v2 also reads its catalog ground pin, `calibration-points.json`
+and `calibration-errors.json`. Missing ground or calibration remains Unknown.
+These are development builds, not a new held-out accuracy pass.
+
+### 6. Put the finished files in the app and update its catalog
+
+The app fetches `/scenes/index.json`; it does not discover build folders.
+Install into `public/scenes/SCENE_ID/` under the current app source. The local
+installer copies `assembled` first, then overlays the final `grounded` files,
+excluding both intermediate `catalog-entry.json` files. For v2 it then copies
+`tier-0-ground.json` from the build root. This preserves the final metadata
+instead of replacing it with the ungrounded assembled metadata.
+
+| Files in `public/scenes/SCENE_ID/` | Source |
+| --- | --- |
+| `positions.bin`, `colors.bin`, `triangles.bin` (including the empty triangle file) | Final build's `assembled/` |
+| `sourceindices.bin`, `referencepositions.bin`, `referencecamerapositions.bin`, `referenceuv.bin`, `referenceeligible.bin` | Final build's `assembled/` |
+| `recorded.png`, `LICENSE-AND-ATTRIBUTION.md` | Final build's `assembled/` |
+| `scene.json`, `ground.json`, `terrain.bin`, `suggestions.json` | Final build's `grounded/` |
+| `measured-ground-protocol.json` | Final measured build's `grounded/`; keep for provenance |
+| `tier-0-ground.json` | V2 build root only; required by the loader for v2 |
+
+For a new scene directory, these are the manual copy commands. Set
+`AV2_FINAL` to the v2 output, or to the v1/base build if installing that version;
+omit the last copy unless it is v2. No tracked catalog-install tool currently
+performs these steps.
+
+```sh
+AV2_FINAL=FINAL_BUILD_DIRECTORY
+mkdir -p public/scenes
+mkdir "public/scenes/$AV2_SCENE_ID"
+cp "$AV2_FINAL/assembled/"*.bin "$AV2_FINAL/assembled/recorded.png" \
+  "$AV2_FINAL/assembled/LICENSE-AND-ATTRIBUTION.md" "public/scenes/$AV2_SCENE_ID/"
+cp "$AV2_FINAL/grounded/scene.json" "$AV2_FINAL/grounded/ground.json" \
+  "$AV2_FINAL/grounded/terrain.bin" "$AV2_FINAL/grounded/suggestions.json" \
+  "public/scenes/$AV2_SCENE_ID/"
+cp "$AV2_FINAL/grounded/measured-ground-protocol.json" "public/scenes/$AV2_SCENE_ID/"
+cp "$AV2_FINAL/tier-0-ground.json" "public/scenes/$AV2_SCENE_ID/"
+```
+
+Omit the protocol copy too for a base schema-3 build. Copy the object from the
+**final** `grounded/catalog-entry.json` into the JSON array in
+`public/scenes/index.json`, replacing the same `id` if present and preserving
+other entries. Create the file as a JSON array if it is absent. A catalog
+object has these fields (one example ID; replace the
+hash placeholders with the final generated values):
+
+```json
+{
+  "id": "av2-pao-c780d53a-2069452",
+  "label": "Palo Alto 1 · AV2 c780d53a (development)",
+  "metadataSha256": "FINAL_SCENE_SHA256",
+  "ground": {"file": "ground.json", "sha256": "FINAL_GROUND_SHA256"},
+  "suggestions": {"file": "suggestions.json", "sha256": "FINAL_SUGGESTIONS_SHA256"}
+}
+```
+
+`id` must match the directory and `scene.json` and contain only letters, digits,
+`_` or `-`. `label` is display text; the current menu uses its part before
+` · `. `metadataSha256` pins the raw final `scene.json` bytes. The catalog
+`ground` pin must equal `scene.measurements.ground`'s file/hash; that scene
+descriptor also records its exact byte length. `suggestions` pins the final
+suggestion bytes. Both catalog descriptors have exactly `file` and `sha256`.
+
+The loader additionally checks `scene.artifactHashes` for the render buffers,
+`scene.measurements.artifactHashes` for reference buffers, the recorded PNG's
+hash/length/dimensions, and `ground.terrain`'s hash/length. V2 also pins
+`tier-0-ground.json` by `ground.measuredGround.tier0.groundSha256` and checks
+that tier 0 exactly preserves v1. Suggestions must name the same hashes for
+`scene.json`, `ground.json`, `terrain.bin`, `recorded.png`,
+`referencepositions.bin`, `referenceeligible.bin` and `protocol.json` (the
+ground layer's protocol hash). A stale file/pin fails loading; copying only
+`scene.json` or only editing the catalog cannot install a scene. Preserve the
+source snapshots, protocols, listings and receipts separately for provenance;
+the browser does not fetch those original sources to fill missing evidence.
+
 ## Native AV2 stereo preparation
 
 `prepare_av2.py` prepares one explicitly selected native Argoverse 2 Sensor
@@ -214,6 +593,10 @@ snapshot. Concurrent source mutation and output write/cleanup failures are not
 validated transaction guarantees.
 
 ## Map-first ground layer and placement suggestions
+
+This section documents the earlier chain (placement protocol v3, ground schema
+2), which the current app refuses. Use [Palo Alto scene build (current)](#palo-alto-scene-build-current)
+for the current build and catalog installation; the older method is retained here as history.
 
 `prepare_av2_ground.py` adds a mapped-ground layer to one assembled indexed
 AV2 scene. `suggest_av2_placements.py` then writes schema-v3 placement
