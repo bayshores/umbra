@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "sceneId": "2018-10-19-09-30-39_2018-10-19-09-40-40-716",
+  "generatedUtc": "2026-10-11T21:46:50Z",
+  "generator": {
+    "script": "scripts/suggest-placements.py",
+    "sha256": "b15abf6ae8ebfab39db92a376252cf8a579d2bc7d2a3294b8637c98d66da0bc6",
+    "python": "3.13.5",
+    "numpy": "2.3.1",
+    "pillow": "11.3.0"
+  },
+  "inputs": {
+    "scene.json": "67dce6b0fd9198481e97514ac45857718a52489c371aaf249362ea547aa2f942",
+    "recorded.jpg": "238d845f9519144ceb8b1d262b211e1a5b5989e5a192ac19caf4502811e33d97",
+    "depth.bin": "b44088f7a56cda9b72abd0fb229a058d57c4840b9e764368cbe3e7413599b011"
+  },
+  "crossing": {
+    "pixel": [
+      572,
+      242
+    ],
+    "status": "detected",
+    "method": "zebra-stripe detector on the depth-registered ground plane",
+    "alongRoadUncertaintyM": 0.5,
+    "distanceFromCameraM": 29.35,
+    "barCount": 11
+  },
+  "roadAxis": {
+    "status": "detected",
+    "source": "curb face fit",
+    "barAgreementDeg": 0.34
+  },
+  "curb": {
+    "status": "detected",
+    "rmsM": 0.05,
+    "stepHeightM": 0.217
+  },
+  "vehicle": {
+    "pixel": [
+      603,
+      259
+    ],
+    "status": "declared-default",
+    "label": "SUV",
+    "dimensions": {
+      "width": 1.9,
+      "height": 1.8,
+      "length": 4.9
+    },
+    "setbackM": 6.096,
+    "reason": "No parked vehicle detected in the curb lane; 20 ft default."
+  },
+  "person": {
+    "pixel": [
+      593,
+      242
+    ],
+    "status": "declared-default",
+    "label": "child",
+    "heightM": 1.1,
+    "reason": "Curb end of the crossing near edge."
+  },
+  "detection": {
+    "status": "ran",
+    "model": "RF-DETR Medium",
+    "package": "rfdetr 1.11.2",
+    "license": "Apache-2.0",
+    "weightsSha256": "749ff6071828aaffac63e204c4f4135ed3d6cdae4d702e086c360edc3b5768c8",
+    "detectionsSha256": "ed0329071f0fcc9f3790d6eb77cd21b8d9643cb732ea9d728db1bc3f2b6489f9",
+    "curbLaneParked": 0
+  },
+  "limitations": [
+    "One frame; no independent reference. The hand test annotation is not ground truth.",
+    "Crossing is the near edge of the crosswalk in the curb lane. Measured depth near it clusters about 1 m apart; the nearer cluster is used, so it is uncertain by about 0.5 m along the road.",
+    "The near-edge angle is not measured reliably and is not used; the road axis follows the curb.",
+    "The curb face is the half-height point of a measured transition about 0.3 m wide; the declared 0.15 m curb gap is measured from it.",
+    "No parked vehicle is measured here: the vehicle is a declared what-if with default SUV size.",
+    "The person position and 1.1 m height are declared defaults, not detections.",
+    "Geometric visibility only; not parking safety, recognition or compliance."
+  ]
+}

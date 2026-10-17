@@ -12,12 +12,12 @@ not convert an old scene.
 **A fresh clone cannot yet complete this recipe unaided.** The frozen builder
 protocol (builderVersion 4.3), placement protocol (revision 3.4), frozen site
 split and its hash record, shape-v2 method and approach-half split addendum,
-and their freeze records exist only in the maintainer's ignored local folder.
-The current builds also depend on saved download listings and receipts. Obtain
-a reviewed method/input bundle and matching source snapshots from the
-maintainer first. Some split and lock lookups are hardcoded to ignored paths,
-with no command-line override; moving those files beside the commands below
-is insufficient. The full-recording support downloader and catalog installer
+and their freeze records are tracked at their original `.local/evaluation/`
+paths (`git ls-files .local` lists all 30 frozen method files). The current
+builds also depend on saved download listings and receipts, which are not
+tracked. Obtain matching source snapshots and receipts from the maintainer
+first. Some split and lock lookups are hardcoded to those `.local/` paths, with
+no command-line override. The full-recording support downloader and catalog installer
 are also local-only. The commands below document the interfaces and order;
 they are not a verified clean-clone run.
 
@@ -166,9 +166,10 @@ per-scene protocol and its freeze record are currently missing public inputs.
 
 Paint measurement is separate. The current template already contains earlier
 paint-v4 evidence for two development crossings; other crossings can remain
-`unmeasured`. To reproduce that evidence, obtain the frozen paint protocol
-(version 4), its matching archived `measure_paint_edge.py`, a config and sweep
-download receipts. The current script supports later method work too; its bytes
+`unmeasured`. To reproduce that evidence, use the frozen paint protocol
+(version 4, `.local/evaluation/pao-paint/protocol-v4.json`) and its archived
+`.local/evaluation/pao-paint/code-v4/measure_paint_edge.py`, both tracked, plus
+a config and sweep download receipts, which are not tracked. The current script supports later method work too; its bytes
 are not the archived paint-v4 code. Use the code named by the paint receipt:
 
 ```sh
@@ -315,6 +316,11 @@ installer copies `assembled` first, then overlays the final `grounded` files,
 excluding both intermediate `catalog-entry.json` files. For v2 it then copies
 `tier-0-ground.json` from the build root. This preserves the final metadata
 instead of replacing it with the ungrounded assembled metadata.
+
+The builder's `LICENSE-AND-ATTRIBUTION.md` links to local folders, so the four
+tracked Palo Alto scenes leave it out and carry an `ATTRIBUTION.md` instead
+(credit, license, log id and changes). Write one for a new scene before
+sharing it.
 
 | Files in `public/scenes/SCENE_ID/` | Source |
 | --- | --- |

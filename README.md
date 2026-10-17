@@ -13,7 +13,7 @@ The runtime contains no procedural street, built-in actor dimension tables, fabr
 - **No Clear.** Missing depth, ground or calibration evidence stays Unknown with its reason; nothing is filled in. A line counts as Blocked only when it cuts at least 0.10 m into the vehicle; everything else is Unknown.
 - **Development-grade references.** Distances are referenced to Argoverse 2 LiDAR and map data, or to DrivingStereo reference depth, not to a survey. Calibration and metric scale are provisional.
 - **Declared what-ifs.** Vehicle and person sizes and positions that you enter, or that the assistant declares, are hypothetical. Suggested placements are labelled with their source and stay editable.
-- **No scene data in this repository.** The app reads prepared scenes from `public/scenes/`, which is not tracked in git. Argoverse 2 data is licensed CC BY-NC-SA 4.0 and DrivingStereo data under its own license; prepare scenes locally from the official datasets (see [Reproduce scene preparation](#reproduce-scene-preparation)). Without a scene catalog the app shows "Scene catalog unavailable (404)." and the Node tests fail.
+- **Scene data has its own terms.** `public/scenes/` holds four prepared Palo Alto scenes made from Argoverse 2 data (CC BY-NC-SA 4.0: non-commercial use only, with attribution, and adaptations under the same license) and one DrivingStereo scene (MIT). Each folder names its terms in `ATTRIBUTION.md`; see [public/scenes/README.md](public/scenes/README.md). The Apache-2.0 code license does not cover them.
 
 ## Requirements
 
@@ -37,9 +37,9 @@ The local loader supports at most 1,000,000 points and 2,000,000 triangles per m
 
 | Command | What it checks | What it needs |
 |---|---|---|
-| `npm test` | Node tests: geometry, scene loading, suggestions, the assistant's guards and the evaluation scripts | the prepared DrivingStereo scene in `public/scenes/` ([below](#reproduce-scene-preparation)) with its `suggestions.json` (below) |
+| `npm test` | Node tests: geometry, scene loading, suggestions, the assistant's guards and the evaluation scripts | the tracked scenes in `public/scenes/` |
 | `npm run build` | the frontend build | nothing private |
-| `npm run build:sites`, then `npm run test:sites` | packages the optional Sites worker (`worker/`) into `dist/` and tests it | `.openai/hosting.json` (below) and the prepared DrivingStereo scene |
+| `npm run build:sites`, then `npm run test:sites` | packages the optional Sites worker (`worker/`) into `dist/` and tests it | `.openai/hosting.json` (below) and the tracked DrivingStereo scene |
 | the Python commands below | scene preparation, Argoverse 2 tools, evaluation, cloud-job and sponsor adapters | one Python 3.13.5 environment |
 
 `npm run build:sites` reads `.openai/hosting.json`, which is not tracked. For this worker it holds no database or storage binding; create it with exactly this content:
@@ -53,7 +53,7 @@ The local loader supports at most 1,000,000 points and 2,000,000 triangles per m
 
 Packaging does not publish anything. A frontend-only build does not establish packaged-worker verification.
 
-`npm test` also needs the DrivingStereo scene's placement suggestions. Make them with the RF-DETR detector, which uses Python 3.12.0 in its own environment. The weights (about 405 MB) are not installed by pip:
+The DrivingStereo scene's placement suggestions (`suggestions.json`) are tracked. To make them again, use the RF-DETR detector, which uses Python 3.12.0 in its own environment. The weights (about 405 MB) are not installed by pip:
 
 ```sh
 python3.12 -m venv .local/venv-detect
@@ -173,7 +173,7 @@ Paint measurements did not produce a scored paint-position (A) result. Browser s
 
 ## Measured evidence
 
-The prepared scene catalog and assets live in the untracked `public/scenes/`. The prepared DrivingStereo development frame (`2018-10-19-09-30-39_2018-10-19-09-40-40-716`) contains 72,707 points and 11,990 triangles after an 80 m depth cutoff. Supported reference covers 20.7% of image pixels. Triangles connect only fully supported adjacent pixels whose three edges are at most 0.4 m. Missing regions stay dark; moved cameras expose additional unknown surfaces. RGB colors come from the recorded left image.
+The prepared scene catalog and assets live in `public/scenes/`. The prepared DrivingStereo development frame (`2018-10-19-09-30-39_2018-10-19-09-40-40-716`) contains 72,707 points and 11,990 triangles after an 80 m depth cutoff. Supported reference covers 20.7% of image pixels. Triangles connect only fully supported adjacent pixels whose three edges are at most 0.4 m. Missing regions stay dark; moved cameras expose additional unknown surfaces. RGB colors come from the recorded left image.
 
 The road plane is estimated by RANSAC and SVD from supported points in a declared lower-central image region. This frame's fitted camera height is 1.805 m, road inlier fraction 96.3%, and median road-fit residual 0.0234 m. Residual is not an accuracy guarantee or surveyed ground truth. A failed support gate stops preprocessing.
 
@@ -232,7 +232,7 @@ Measured depth, measured geometry, actor anchors, movement limits and visibility
 
 The Palo Alto (Argoverse 2) scenes are built with the [California offline tools](scripts/california/README.md), which download public AV2 sensor logs, assemble indexed LiDAR scenes without inventing dense depth, and add the measured ground layer, the recorded vehicle's shape and placement suggestions. Physical validation remains incomplete (see [Status and limitations](#status-and-limitations)). The DrivingStereo scene below is prepared separately.
 
-The source is the official [DrivingStereo dataset](https://drivingstereo-dataset.github.io/); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for its license. Download it yourself; no DrivingStereo file is tracked in git. The maintainer's copy (500 matched image/depth triplets, calibrations, acquisition hashes and inspection records) lives in the ignored `.local/data/drivingstereo/`. The preparer copies the dataset license into each prepared scene and into `public/scenes/LICENSE`.
+The source is the official [DrivingStereo dataset](https://drivingstereo-dataset.github.io/); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for its license. Only the one prepared scene above is tracked; download the dataset yourself to prepare others. The maintainer's copy (500 matched image/depth triplets, calibrations, acquisition hashes and inspection records) lives in the ignored `.local/data/drivingstereo/`. The preparer copies the dataset license into each prepared scene and into `public/scenes/LICENSE`.
 
 Install the verified preparation dependencies in a dedicated environment:
 
@@ -285,7 +285,7 @@ The Python checks exercise unsupported/malformed calibration and processing cont
 
 umbra's own code is licensed under the [Apache License 2.0](LICENSE). Third-party software, fonts, icons, models, services and datasets, with their licenses, are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); full license texts are in [licenses/](licenses/).
 
-- Argoverse 2 data is licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), © 2021 Argo AI, LLC. No AV2 sensor data is tracked in git. Values derived from it that appear in tracked files (log and annotation identifiers, file hashes, measured numbers in tests and evaluation records) remain under CC BY-NC-SA 4.0: attribution, non-commercial use only, share-alike, and changes noted. The app shows the attribution and a change notice on every AV2 scene. The [Argoverse terms of use](https://www.argoverse.org/about.html#terms-of-use) also forbid trying to identify people in the data and using Argo's name, logo or trademarks without written permission (attribution excepted). An Argoverse maintainer confirmed on [argoverse/av2-api#340](https://github.com/argoverse/av2-api/issues/340) that this hackathon use is fine under those terms and that ShareAlike covers only the data, not the code.
+- Argoverse 2 data is licensed [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), © 2021 Argo AI, LLC. No raw AV2 file is tracked in git. The four Palo Alto scenes in `public/scenes/av2-pao-*` are derived from AV2 sensor data (camera image, LiDAR points, ground surfaces, map geometry); each folder's `ATTRIBUTION.md` gives the credit, license, log id and changes. These scenes and the values derived from AV2 that appear in other tracked files (log and annotation identifiers, file hashes, measured numbers in tests and evaluation records) remain under CC BY-NC-SA 4.0: attribution, non-commercial use only, share-alike, and changes noted. The app shows the attribution and a change notice on every AV2 scene. The [Argoverse terms of use](https://www.argoverse.org/about.html#terms-of-use) also forbid trying to identify people in the data and using Argo's name, logo or trademarks without written permission (attribution excepted). An Argoverse maintainer confirmed on [argoverse/av2-api#340](https://github.com/argoverse/av2-api/issues/340) that this hackathon use is fine under those terms and that ShareAlike covers only the data, not the code.
 - NVIDIA Nemotron 3.5 Lightning is used through the Nebius Token Factory API under the OpenMDW License Agreement 1.1 and the Token Factory terms of service; no model weights are included.
-- DrivingStereo data stays under its own license (see the notices file); no DrivingStereo file is tracked in git.
+- DrivingStereo data is MIT-licensed; its website asks users to cite the CVPR 2019 paper by Yang et al. One prepared DrivingStereo scene is tracked with its license, citation and change notes.
 - Dataset terms are separate from the license of umbra's own code.

@@ -23,7 +23,7 @@ The included Phosphor icon definitions are ArrowCounterClockwise, ArrowUp, Caret
 
 The MIT notices and permission texts must accompany redistributed copies. The Overpass Mono fonts stay under OFL-1.1. That license requires the font copyright and license notice, restricts selling the fonts by themselves, and has rules for modified font names.
 
-A local build also copies the local `public/scenes` directory when it exists. Prepared scene assets are ignored by Git. Their data and model terms are covered below. This notice does not authorize their public distribution.
+A build also copies `public/scenes`. It holds four tracked Argoverse 2 scenes (CC BY-NC-SA 4.0) and one tracked DrivingStereo scene (MIT); their data and model terms are covered below and in [public/scenes/README.md](public/scenes/README.md).
 
 ## Build and test tools
 
@@ -311,7 +311,7 @@ Attribution: **© 2021 Argo AI, LLC. Argoverse 2 Sensor Dataset.** License: **Cr
 
 On the public issue [argoverse/av2-api#340](https://github.com/argoverse/av2-api/issues/340), this project described its use (processing selected AV2 images, LiDAR, calibration and maps into scene geometry and evaluation results; showing attributed images and derived geometry in a public demo and video; open-source application code; entering a cash-prize hackathon with the organizers' judging and promotional use). An Argoverse maintainer replied on 2026-10-05 that this use is fine under the Argoverse 2 terms, that the code may be MIT, Apache 2.0 or another license, and that only the data side is covered by ShareAlike. This clarifies the existing terms for that described use; it is not a waiver of the license conditions or a permission for other commercial use.
 
-AV2 sensor data is not in Git. Source-derived values in the tracked files below remain under CC BY-NC-SA 4.0: retain attribution, use them non-commercially, share adaptations under the same license, and note changes. This covers the data-derived portions, including identifiers, source/derived-file hashes, measured results and transformed coordinates. It does not change the license of umbra's own code (Apache-2.0).
+No raw AV2 file is in Git. Four prepared scenes derived from AV2 sensor data are tracked: `public/scenes/av2-pao-8c52d911-2658849`, `av2-pao-c780d53a-2069452`, `av2-pao-e1d68dde-5987490` and `av2-pao-fd5c6932-2659589`. Each holds a camera image, LiDAR points, measured ground surfaces and map-based geometry from one log, plus an `ATTRIBUTION.md` with the credit, license, change notes and log id. Each scene's `scene.json` records the sha256 of the original local source record (`sourceHashes.license`); that record names local folders, so `ATTRIBUTION.md` replaces it. These scenes, and the source-derived values in the tracked files below, remain under CC BY-NC-SA 4.0: retain attribution, use them non-commercially, share adaptations under the same license, and note changes. This covers the data-derived portions, including identifiers, source/derived-file hashes, measured results and transformed coordinates. It does not change the license of umbra's own code (Apache-2.0).
 
 Changes made by umbra include selecting source observations, converting mapped geometry and annotations into scenario coordinates, registering LiDAR sweeps, preparing ground surfaces with explicit holes and calibration, deriving shape and visibility measurements, and reporting development/test results. No publisher endorsement is implied. Frozen legacy source strings keep their existing identifiers.
 
@@ -321,6 +321,8 @@ The tracked-file inventory below was made from AV2 log UUIDs, site identifiers, 
 | --- | --- |
 | [README.md](README.md) | Measured results, scene counts and calibration summaries. |
 | [scripts/california/README.md](scripts/california/README.md) | A real scene identifier in the catalog example. |
+| [public/scenes/index.json](public/scenes/index.json) | Scene identifiers and hashes of the derived scene files. |
+| `.local/evaluation/` frozen method files (30 files; `git ls-files .local` lists them) | Log and site identifiers, timestamps, coordinates, hashes of derived artifacts and measured values in the frozen split, protocols, lock records and reviews. |
 | [scripts/california/build_av2_scene.py](scripts/california/build_av2_scene.py) | Real dataset identifiers and observation metadata. |
 | [scripts/california/car_shape.py](scripts/california/car_shape.py) | Real dataset identifiers and metadata hashes. |
 | [scripts/california/measured_ground.py](scripts/california/measured_ground.py) | Real dataset identifiers. |
@@ -367,7 +369,7 @@ The following files are also included conservatively. The origin of their numeri
 
 ### DrivingStereo
 
-The local publisher license says exactly **MIT License** and **Copyright (c) 2019 drivingstereo-dataset**. Its complete text is copied byte-for-byte in [licenses/MIT-drivingstereo.txt](licenses/MIT-drivingstereo.txt). The source is the [official DrivingStereo dataset](https://drivingstereo-dataset.github.io/). No online terms were re-checked. The sensor data and prepared scene assets are not tracked in Git.
+The local publisher license says exactly **MIT License** and **Copyright (c) 2019 drivingstereo-dataset**. Its complete text is copied byte-for-byte in [licenses/MIT-drivingstereo.txt](licenses/MIT-drivingstereo.txt). The source is the [official DrivingStereo dataset](https://drivingstereo-dataset.github.io/). Its website, checked online on 2026-10-16, says the dataset "is released under the MIT license" and asks users who use it in research to cite the CVPR 2019 paper by Yang et al. One prepared scene is tracked: `public/scenes/2018-10-19-09-30-39_2018-10-19-09-40-40-716`, with the MIT `LICENSE`, the citation and change notes in its `ATTRIBUTION.md`. Its `estimated*.bin` files are a depth prediction by NVIDIA C-FoundationStereo-S; no model weights are tracked. No other DrivingStereo file is tracked.
 
 Changes include image/depth cropping and resizing, calibration processing, depth/point preparation, pixel annotations, reconstruction comparisons and measured summaries. The following tracked files contain DrivingStereo-derived values.
 

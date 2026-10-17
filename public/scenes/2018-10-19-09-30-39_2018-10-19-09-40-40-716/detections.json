@@ -1,0 +1,957 @@
+{
+ "schemaVersion": 1,
+ "sceneId": "2018-10-19-09-30-39_2018-10-19-09-40-40-716",
+ "generatedUtc": "2026-10-11T21:32:20Z",
+ "generator": {
+  "script": "scripts/detect-vehicles.py",
+  "sha256": "2cd1d06456e526793a51725184414371955e41f14f6b6448d0231c791a87cf4a",
+  "python": "3.12.0",
+  "torch": "2.14.1",
+  "numpy": "2.5.4",
+  "pillow": "12.3.0"
+ },
+ "inputs": {
+  "scene.json": "67dce6b0fd9198481e97514ac45857718a52489c371aaf249362ea547aa2f942",
+  "recorded.jpg": "238d845f9519144ceb8b1d262b211e1a5b5989e5a192ac19caf4502811e33d97",
+  "depth.bin": "b44088f7a56cda9b72abd0fb229a058d57c4840b9e764368cbe3e7413599b011"
+ },
+ "model": {
+  "name": "RF-DETR Medium",
+  "package": "rfdetr 1.11.2",
+  "license": "Apache-2.0",
+  "weightsFile": "rf-detr-medium.pth",
+  "weightsUrl": "https://storage.googleapis.com/rfdetr/medium_coco/checkpoint_best_regular.pth",
+  "weightsSha256": "749ff6071828aaffac63e204c4f4135ed3d6cdae4d702e086c360edc3b5768c8",
+  "weightsBytes": 404992918,
+  "weightsLicense": "Apache-2.0",
+  "labelSpace": "COCO category ids"
+ },
+ "run": {
+  "device": "cpu",
+  "platform": "Darwin arm64",
+  "timingSeconds": {
+   "weightsHash": 0.217,
+   "import": 3.502,
+   "modelBuild": 2.766,
+   "firstPredict": 0.29,
+   "warmMedian": 0.1585
+  },
+  "timingNote": "Wall clock in one process; functional record, not a serialized benchmark."
+ },
+ "rules": {
+  "threshold": 0.25,
+  "candidateMinScore": 0.5,
+  "candidateClasses": [
+   "car",
+   "truck",
+   "bus"
+  ],
+  "lowerBoxFraction": 0.3,
+  "minMeasuredPixels": 8,
+  "bodyMaxHeightMeters": 3.0,
+  "curbBandsForwardMeters": [
+   8,
+   29,
+   3
+  ],
+  "curbRaisedMaxHeightMeters": 0.6,
+  "curbLaneMeters": [
+   -3.0,
+   0.5
+  ],
+  "bodyMinHeightMeters": 0.16,
+  "placement": "measured depth only (src/geometry.mjs measuredPoint); world x right, y up, -z forward"
+ },
+ "rightCurb": {
+  "status": "measured",
+  "lateralX": 4.592,
+  "bands": 7
+ },
+ "detections": [
+  {
+   "id": 0,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.8959,
+   "box": [
+    149.2,
+    181.2,
+    235.7,
+    217.8
+   ],
+   "measuredPixels": 735,
+   "lowerMeasuredPixels": 336,
+   "lowerMedianWorld": [
+    -12.036,
+    0.166,
+    -46.178
+   ],
+   "bodyPoints": 572,
+   "bodyForwardRangeM": [
+    45.487,
+    61.437
+   ],
+   "bodyLateralRangeM": [
+    -17.518,
+    -10.897
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "not in the right curb lane (x -12.04 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 1,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.8346,
+   "box": [
+    230.3,
+    183.1,
+    262.1,
+    208.8
+   ],
+   "measuredPixels": 272,
+   "lowerMeasuredPixels": 124,
+   "lowerMedianWorld": [
+    -11.412,
+    0.265,
+    -56.158
+   ],
+   "bodyPoints": 228,
+   "bodyForwardRangeM": [
+    55.823,
+    60.623
+   ],
+   "bodyLateralRangeM": [
+    -12.131,
+    -11.126
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "not in the right curb lane (x -11.41 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 2,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.6746,
+   "box": [
+    271.4,
+    180.6,
+    308.1,
+    202.3
+   ],
+   "measuredPixels": 395,
+   "lowerMeasuredPixels": 200,
+   "lowerMedianWorld": [
+    -10.647,
+    0.399,
+    -67.87
+   ],
+   "bodyPoints": 367,
+   "bodyForwardRangeM": [
+    59.591,
+    70.516
+   ],
+   "bodyLateralRangeM": [
+    -11.718,
+    -10.352
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "not in the right curb lane (x -10.65 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 3,
+   "class": "motorcycle",
+   "cocoCategoryId": 4,
+   "score": 0.6025,
+   "box": [
+    453.8,
+    187.0,
+    463.2,
+    203.1
+   ],
+   "measuredPixels": 41,
+   "lowerMeasuredPixels": 13,
+   "lowerMedianWorld": [
+    0.383,
+    0.272,
+    -72.582
+   ],
+   "bodyPoints": 40,
+   "bodyForwardRangeM": [
+    68.576,
+    77.008
+   ],
+   "bodyLateralRangeM": [
+    0.152,
+    0.759
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 4,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.5766,
+   "box": [
+    0.1,
+    188.4,
+    14.5,
+    228.2
+   ],
+   "measuredPixels": 78,
+   "lowerMeasuredPixels": 31,
+   "lowerMedianWorld": [
+    -15.877,
+    0.211,
+    -35.495
+   ],
+   "bodyPoints": 66,
+   "bodyForwardRangeM": [
+    34.754,
+    36.096
+   ],
+   "bodyLateralRangeM": [
+    -16.181,
+    -15.225
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "not in the right curb lane (x -15.88 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 5,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.521,
+   "box": [
+    465.1,
+    180.0,
+    475.3,
+    188.4
+   ],
+   "measuredPixels": 1,
+   "lowerMeasuredPixels": 1,
+   "lowerMedianWorld": null,
+   "bodyPoints": 1,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 6,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.5156,
+   "box": [
+    453.4,
+    178.7,
+    463.5,
+    199.6
+   ],
+   "measuredPixels": 50,
+   "lowerMeasuredPixels": 24,
+   "lowerMedianWorld": [
+    0.414,
+    0.473,
+    -72.642
+   ],
+   "bodyPoints": 50,
+   "bodyForwardRangeM": [
+    68.576,
+    77.224
+   ],
+   "bodyLateralRangeM": [
+    0.161,
+    0.788
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 7,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.4852,
+   "box": [
+    309.8,
+    182.9,
+    322.2,
+    199.4
+   ],
+   "measuredPixels": 74,
+   "lowerMeasuredPixels": 39,
+   "lowerMedianWorld": [
+    -10.413,
+    0.307,
+    -76.287
+   ],
+   "bodyPoints": 69,
+   "bodyForwardRangeM": [
+    73.57,
+    76.665
+   ],
+   "bodyLateralRangeM": [
+    -10.587,
+    -10.291
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.4852 below 0.5",
+     "not in the right curb lane (x -10.41 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 8,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.4762,
+   "box": [
+    431.9,
+    180.2,
+    444.8,
+    189.5
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.4762 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 9,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.4361,
+   "box": [
+    496.3,
+    179.2,
+    505.5,
+    204.0
+   ],
+   "measuredPixels": 84,
+   "lowerMeasuredPixels": 31,
+   "lowerMedianWorld": [
+    3.175,
+    0.535,
+    -63.349
+   ],
+   "bodyPoints": 84,
+   "bodyForwardRangeM": [
+    61.02,
+    70.025
+   ],
+   "bodyLateralRangeM": [
+    3.041,
+    3.411
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 10,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.4117,
+   "box": [
+    450.3,
+    177.4,
+    462.4,
+    188.1
+   ],
+   "measuredPixels": 21,
+   "lowerMeasuredPixels": 19,
+   "lowerMedianWorld": [
+    0.463,
+    1.212,
+    -72.772
+   ],
+   "bodyPoints": 21,
+   "bodyForwardRangeM": [
+    69.669,
+    77.415
+   ],
+   "bodyLateralRangeM": [
+    0.224,
+    0.787
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.4117 below 0.5",
+     "not in the right curb lane (x 0.46 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 11,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.4016,
+   "box": [
+    293.2,
+    181.3,
+    309.0,
+    200.7
+   ],
+   "measuredPixels": 146,
+   "lowerMeasuredPixels": 78,
+   "lowerMedianWorld": [
+    -10.518,
+    0.445,
+    -70.135
+   ],
+   "bodyPoints": 142,
+   "bodyForwardRangeM": [
+    66.847,
+    70.682
+   ],
+   "bodyLateralRangeM": [
+    -10.822,
+    -10.315
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.4016 below 0.5",
+     "not in the right curb lane (x -10.52 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 12,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.3962,
+   "box": [
+    500.8,
+    178.1,
+    512.6,
+    205.3
+   ],
+   "measuredPixels": 155,
+   "lowerMeasuredPixels": 53,
+   "lowerMedianWorld": [
+    3.28,
+    0.467,
+    -61.147
+   ],
+   "bodyPoints": 155,
+   "bodyForwardRangeM": [
+    57.418,
+    66.982
+   ],
+   "bodyLateralRangeM": [
+    3.119,
+    3.533
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 13,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.3738,
+   "box": [
+    44.0,
+    176.0,
+    153.0,
+    219.1
+   ],
+   "measuredPixels": 1738,
+   "lowerMeasuredPixels": 482,
+   "lowerMedianWorld": [
+    -15.223,
+    0.329,
+    -44.834
+   ],
+   "bodyPoints": 1634,
+   "bodyForwardRangeM": [
+    30.007,
+    46.729
+   ],
+   "bodyLateralRangeM": [
+    -16.625,
+    -9.547
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.3738 below 0.5",
+     "not in the right curb lane (x -15.22 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 14,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.3482,
+   "box": [
+    398.9,
+    178.7,
+    410.2,
+    191.2
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.3482 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 15,
+   "class": "motorcycle",
+   "cocoCategoryId": 4,
+   "score": 0.3475,
+   "box": [
+    412.9,
+    184.2,
+    420.2,
+    193.8
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 16,
+   "class": "truck",
+   "cocoCategoryId": 8,
+   "score": 0.3407,
+   "box": [
+    44.0,
+    176.0,
+    153.0,
+    219.1
+   ],
+   "measuredPixels": 1738,
+   "lowerMeasuredPixels": 482,
+   "lowerMedianWorld": [
+    -15.223,
+    0.329,
+    -44.834
+   ],
+   "bodyPoints": 1634,
+   "bodyForwardRangeM": [
+    30.007,
+    46.729
+   ],
+   "bodyLateralRangeM": [
+    -16.625,
+    -9.547
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.3407 below 0.5",
+     "not in the right curb lane (x -15.22 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 17,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.3247,
+   "box": [
+    509.7,
+    179.0,
+    519.9,
+    204.0
+   ],
+   "measuredPixels": 82,
+   "lowerMeasuredPixels": 24,
+   "lowerMedianWorld": [
+    3.505,
+    0.673,
+    -58.201
+   ],
+   "bodyPoints": 82,
+   "bodyForwardRangeM": [
+    56.884,
+    61.483
+   ],
+   "bodyLateralRangeM": [
+    3.319,
+    3.681
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 18,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.3171,
+   "box": [
+    399.0,
+    180.0,
+    406.1,
+    192.9
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 19,
+   "class": "motorcycle",
+   "cocoCategoryId": 4,
+   "score": 0.3138,
+   "box": [
+    497.9,
+    189.6,
+    506.8,
+    205.8
+   ],
+   "measuredPixels": 78,
+   "lowerMeasuredPixels": 17,
+   "lowerMedianWorld": [
+    3.231,
+    0.332,
+    -62.138
+   ],
+   "bodyPoints": 78,
+   "bodyForwardRangeM": [
+    60.082,
+    69.478
+   ],
+   "bodyLateralRangeM": [
+    3.046,
+    3.416
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 20,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.3006,
+   "box": [
+    415.3,
+    180.2,
+    422.3,
+    192.6
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 21,
+   "class": "person",
+   "cocoCategoryId": 1,
+   "score": 0.2927,
+   "box": [
+    516.1,
+    179.8,
+    525.4,
+    202.3
+   ],
+   "measuredPixels": 59,
+   "lowerMeasuredPixels": 27,
+   "lowerMedianWorld": [
+    4.708,
+    0.496,
+    -66.103
+   ],
+   "bodyPoints": 58,
+   "bodyForwardRangeM": [
+    58.431,
+    66.245
+   ],
+   "bodyLateralRangeM": [
+    3.714,
+    4.839
+   ],
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 22,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2925,
+   "box": [
+    435.9,
+    176.5,
+    449.6,
+    188.0
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2925 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 23,
+   "class": "truck",
+   "cocoCategoryId": 8,
+   "score": 0.2912,
+   "box": [
+    149.3,
+    181.1,
+    235.9,
+    218.0
+   ],
+   "measuredPixels": 735,
+   "lowerMeasuredPixels": 336,
+   "lowerMedianWorld": [
+    -12.036,
+    0.166,
+    -46.178
+   ],
+   "bodyPoints": 572,
+   "bodyForwardRangeM": [
+    45.487,
+    61.437
+   ],
+   "bodyLateralRangeM": [
+    -17.518,
+    -10.897
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2912 below 0.5",
+     "not in the right curb lane (x -12.04 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 24,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2853,
+   "box": [
+    43.7,
+    177.0,
+    115.6,
+    218.7
+   ],
+   "measuredPixels": 1195,
+   "lowerMeasuredPixels": 345,
+   "lowerMedianWorld": [
+    -15.828,
+    0.299,
+    -44.881
+   ],
+   "bodyPoints": 1109,
+   "bodyForwardRangeM": [
+    34.543,
+    46.161
+   ],
+   "bodyLateralRangeM": [
+    -16.696,
+    -13.451
+   ],
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2853 below 0.5",
+     "not in the right curb lane (x -15.83 m, curb 4.59 m)"
+    ]
+   }
+  },
+  {
+   "id": 25,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.285,
+   "box": [
+    347.6,
+    181.2,
+    360.8,
+    193.4
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.285 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 26,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2696,
+   "box": [
+    383.9,
+    181.7,
+    393.5,
+    191.7
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2696 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 27,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2662,
+   "box": [
+    387.4,
+    178.5,
+    409.3,
+    191.6
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2662 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 28,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2549,
+   "box": [
+    325.0,
+    184.8,
+    339.7,
+    198.3
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2549 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  },
+  {
+   "id": 29,
+   "class": "traffic light",
+   "cocoCategoryId": 10,
+   "score": 0.2531,
+   "box": [
+    457.4,
+    158.2,
+    466.3,
+    163.0
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": null
+  },
+  {
+   "id": 30,
+   "class": "car",
+   "cocoCategoryId": 3,
+   "score": 0.2514,
+   "box": [
+    349.6,
+    177.5,
+    372.3,
+    192.7
+   ],
+   "measuredPixels": 0,
+   "lowerMeasuredPixels": 0,
+   "lowerMedianWorld": null,
+   "bodyPoints": 0,
+   "bodyForwardRangeM": null,
+   "bodyLateralRangeM": null,
+   "curbLaneCandidate": {
+    "eligible": false,
+    "reasons": [
+     "score 0.2514 below 0.5",
+     "too little measured depth in the lower box (position Unknown)"
+    ]
+   }
+  }
+ ],
+ "curbLaneCandidates": []
+}
